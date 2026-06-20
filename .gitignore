@@ -1,0 +1,7 @@
+# Build artifacts
+microbit/build/
+microbit/*.zip
+
+# ESP32 sidecar (future) build output
+esp-sidecar/build/
+esp-sidecar/.pio/
