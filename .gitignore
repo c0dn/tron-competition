@@ -2,6 +2,8 @@
 microbit/build/
 microbit/*.zip
 
-# ESP32 sidecar (future) build output
+# ESP32 sidecar build output + generated config
 esp-sidecar/build/
 esp-sidecar/.pio/
+esp-sidecar/sdkconfig
+esp-sidecar/sdkconfig.old

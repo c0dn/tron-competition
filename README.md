@@ -8,7 +8,7 @@ Monorepo for the TRON competition project.
 .
 ├── microbit/       # micro:bit v2 (nRF52833) firmware workspace (uT-Kernel 3.0)
 │   └── libs/mtkernel_3/   # uT-Kernel 3.0 (git submodule)
-└── esp-sidecar/    # ESP32 sidecar (placeholder, not yet started)
+└── esp-sidecar/    # ESP32-C3 sidecar (ESP-IDF/FreeRTOS bring-up)
 ```
 
 The `microbit/` workspace is based on the public template
