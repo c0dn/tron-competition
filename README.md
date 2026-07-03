@@ -11,10 +11,6 @@ Monorepo for the TRON competition project.
 └── esp-sidecar/    # ESP32-C3 sidecar (ESP-IDF/FreeRTOS bring-up)
 ```
 
-The `microbit/` workspace is based on the public template
-[`c0dn/microbit-tron`](https://github.com/c0dn/microbit-tron); this private
-repo carries the competition-specific firmware and tooling.
-
 ## Clone (with submodule)
 
 ```bash
