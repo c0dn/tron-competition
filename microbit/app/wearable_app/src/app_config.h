@@ -22,11 +22,12 @@
 #define LOG_EVERY_N             25
 
 /* --- Fall state machine (Plan 01 4.2), milli-g --------------------------- */
-#define FALL_FREEFALL_MG        600     /* SVM below this => free-fall        */
-#define FALL_IMPACT_MG          2000    /* SVM above this => impact           */
-#define FALL_IMPACT_WINDOW_MS   1000    /* impact must follow free-fall in    */
-#define FALL_IMMOBILE_MS        1500    /* post-impact observation window     */
-#define FALL_IMMOBILE_RANGE_MG  350     /* SVM spread under this => immobile  */
+#define FALL_FREEFALL_MG        600     /* SVM below this => free-fall         */
+#define FALL_IMPACT_MG          2000    /* SVM above this => impact            */
+#define FALL_IMPACT_WINDOW_MS   1000    /* impact must follow free-fall in     */
+#define FALL_STILL_BAND_MG      300     /* |SVM-1000| under this => "still"    */
+#define FALL_IMMOBILE_MS        1500    /* continuous stillness => CONFIRMED   */
+#define FALL_OBSERVE_MS         3000    /* if never still by here => POSSIBLE  */
 
 /* --- Shout detector (Plan 01 4.3.1) -------------------------------------- */
 #define SHOUT_GATE_INTERVAL_MS  150     /* Stage A loudness-gate cadence      */
