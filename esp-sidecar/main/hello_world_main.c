@@ -4,6 +4,20 @@
  * Minimal firmware that prints chip info once and then spins a FreeRTOS task
  * printing a heartbeat, to verify the build/flash/monitor toolchain on the
  * SuperMini over native USB Serial/JTAG.
+ *
+ * TODO(decoder): the BLE wire contract already lives in the repo at
+ *   <repo>/shared/schema.h  (single source of truth, shared with the
+ *   micro:bit encoder). To decode wearable adverts:
+ *     1. Add the include path in main/CMakeLists.txt:
+ *          idf_component_register(... INCLUDE_DIRS "." "../../shared")
+ *     2. #include "schema.h"
+ *     3. After matching company_id == MIND_COMPANY_ID (0xFFFF) in the MSD,
+ *        cast the payload to const mind_adv_payload_t * and read the fields
+ *        (both sides little-endian -> byte-for-byte, no manual unpack).
+ *     4. Resolve identity from AdvA: byte[4] == DEVICE_ID, byte[5] == 0xC0
+ *        (see MIND_ADVA); map DEVICE_ID -> device label via a static table.
+ *   The micro:bit side (microbit/app/wearable_app) already emits against this
+ *   header. FREEZE the contract with the team before writing decode.
  */
 
 #include <stdio.h>
