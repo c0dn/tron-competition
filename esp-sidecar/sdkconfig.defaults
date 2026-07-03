@@ -4,3 +4,18 @@ CONFIG_IDF_TARGET="esp32c3"
 # SuperMini exposes the console over the native USB Serial/JTAG port, not UART0.
 # Without this, `idf.py monitor` over /dev/ttyACM* shows no output.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- Bluetooth LE: NimBLE host in observer-only role ---------------------
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+# We only scan; drop the roles we don't use to save RAM/flash (coex + mesh
+# leave little headroom on the C3).
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+
+# --- WiFi + BLE coexistence (single 2.4 GHz radio on the C3) -------------
+# Required so the scan window and WiFi mesh time-slice the radio instead of
+# starving each other. See components/mind_ble scan duty-cycle comment.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

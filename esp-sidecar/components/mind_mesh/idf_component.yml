@@ -1,0 +1,4 @@
+# Managed dependency: ESP-MESH-LITE (pulls in iot_bridge transitively).
+# Pin to the 1.0.x line; bump deliberately after testing.
+dependencies:
+  espressif/mesh_lite: "~1.0.2"

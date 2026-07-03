@@ -1,0 +1,45 @@
+menu "MIND Sidecar Configuration"
+
+    config MIND_NODE_ID
+        int "This node's ID (1..254)"
+        range 1 254
+        default 1
+        help
+            Stable per-unit identifier for this ESP32-C3, stamped into every
+            uplink record so observations are attributable before the MAC is
+            known. Set a distinct value per flashed unit.
+
+    menu "WiFi router (mesh uplink to the LAN)"
+        config MIND_ROUTER_SSID
+            string "Router SSID"
+            default "mind-lab"
+            help
+                SSID of the WiFi router the mesh root connects to. The broker
+                host must be reachable on this LAN.
+
+        config MIND_ROUTER_PASSWORD
+            string "Router password"
+            default "changeme123"
+    endmenu
+
+    menu "Mesh SoftAP (node-to-node link)"
+        config MIND_MESH_SOFTAP_SSID
+            string "Mesh SoftAP SSID prefix"
+            default "MIND-MESH"
+            help
+                SSID used between mesh nodes. mesh-lite appends the level.
+
+        config MIND_MESH_SOFTAP_PASSWORD
+            string "Mesh SoftAP password (>= 8 chars)"
+            default "mindmesh123"
+    endmenu
+
+    menu "MQTT broker (root uplink)"
+        config MIND_BROKER_URI
+            string "Broker URI"
+            default "mqtt://192.168.1.10:1883"
+            help
+                Only the mesh root connects. Example: mqtt://<host>:1883.
+    endmenu
+
+endmenu

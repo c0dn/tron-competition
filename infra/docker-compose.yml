@@ -1,0 +1,18 @@
+# MIND broker — one-command bring-up on the demo host.
+#   docker compose up        (foreground, logs to stdout)
+#   docker compose up -d      (detached)
+#
+# The host must be on the same LAN/WiFi router the mesh root uplinks through.
+# Point the firmware's CONFIG_MIND_BROKER_URI at mqtt://<this-host-ip>:1883
+# and the dashboard at ws://<this-host-ip>:9001.
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mind-broker
+    ports:
+      - "1883:1883"   # MQTT/TCP   — ESP32-C3 root
+      - "9001:9001"   # WebSocket  — dashboard
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped

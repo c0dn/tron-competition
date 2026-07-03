@@ -1,7 +1,4 @@
-idf_component_register(SRCS "hello_world_main.c"
-                       INCLUDE_DIRS "")
-
-# TODO(decoder): to consume the shared BLE contract (<repo>/shared/schema.h),
-# add it to INCLUDE_DIRS above, e.g.:
-#   INCLUDE_DIRS "." "../../shared"
-# Then #include "schema.h" in the decoder. See hello_world_main.c TODO.
+idf_component_register(SRCS "main.c"
+                       INCLUDE_DIRS "."
+                       REQUIRES mind_ble mind_uplink mind_shared
+                                nvs_flash esp_netif esp_event)
