@@ -1,117 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MIND — Live Monitor</title>
-  <style>
-    :root {
-      --bg: #0e1116; --panel: #161b22; --card: #1c222b; --line: #2a313c;
-      --txt: #e6edf3; --dim: #8b949e;
-      --ok: #2ea043; --info: #388bfd; --warn: #d29922; --crit: #f85149;
-      --root: #a371f7;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; background: var(--bg); color: var(--txt);
-      font: 14px/1.4 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-    }
-    header {
-      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-      padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
-    }
-    header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
-    header .sub { color: var(--dim); font-size: 12px; }
-    .spacer { flex: 1; }
-    input#broker {
-      background: var(--bg); color: var(--txt); border: 1px solid var(--line);
-      border-radius: 6px; padding: 6px 10px; width: 230px; font-size: 13px;
-    }
-    button#connect {
-      background: var(--info); color: #fff; border: 0; border-radius: 6px;
-      padding: 6px 14px; cursor: pointer; font-size: 13px;
-    }
-    .conn { font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--line); }
-    .conn.online { color: var(--ok); border-color: var(--ok); }
-    .conn.connecting { color: var(--warn); border-color: var(--warn); }
-    .conn.offline { color: var(--crit); border-color: var(--crit); }
-
-    main { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 20px; }
-    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-    section h2 {
-      font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);
-      margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
-    }
-    section h2 .count {
-      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-      padding: 1px 8px; font-size: 12px; color: var(--txt);
-    }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-
-    .card {
-      background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--line);
-      border-radius: 8px; padding: 12px; transition: border-color .2s, opacity .2s;
-    }
-    .card.stale { opacity: .45; }
-    .card.sev0 { border-left-color: var(--ok); }
-    .card.sev1 { border-left-color: var(--info); }
-    .card.sev2 { border-left-color: var(--warn); }
-    .card.sev3 { border-left-color: var(--crit); box-shadow: 0 0 0 1px var(--crit) inset; }
-    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-    .id { font-weight: 600; }
-    .root { color: var(--root); font-size: 10px; border: 1px solid var(--root); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
-    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
-    .badge.sev2 { color: var(--warn); border-color: var(--warn); }
-    .badge.sev3 { color: var(--crit); border-color: var(--crit); }
-    .dot { width: 10px; height: 10px; border-radius: 50%; }
-    .dot.up { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-    .dot.down { background: var(--crit); }
-
-    .metric-row { display: flex; gap: 6px; }
-    .metric { flex: 1; background: var(--panel); border-radius: 6px; padding: 6px; text-align: center; }
-    .metric span { display: block; font-size: 10px; color: var(--dim); text-transform: uppercase; }
-    .metric b { font-size: 16px; } .metric small { font-size: 10px; color: var(--dim); margin-left: 1px; }
-    .card-foot { display: flex; justify-content: space-between; margin-top: 10px; font-size: 11px; color: var(--dim); }
-
-    .feed-row { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; background: var(--card); border-left: 3px solid var(--line); }
-    .feed-row.sev2 { border-left-color: var(--warn); }
-    .feed-row.sev3 { border-left-color: var(--crit); }
-    .feed-time { font-size: 10px; color: var(--dim); }
-    .feed-name { font-weight: 600; }
-    .feed-meta { font-size: 11px; color: var(--dim); }
-    .empty { color: var(--dim); font-style: italic; padding: 20px; text-align: center; }
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <h1>MIND · Live Monitor</h1>
-      <div class="sub">Multimodal Incident Detection — TRON 2026</div>
-    </div>
-    <span id="conn" class="conn offline">offline</span>
-    <div class="spacer"></div>
-    <input id="broker" placeholder="ws://host:9001" />
-    <button id="connect">Connect</button>
-  </header>
-
-  <main>
-    <div>
-      <section>
-        <h2>Wearables <span class="count" id="wearable-count">0</span></h2>
-        <div class="grid" id="wearables"></div>
-      </section>
-      <section style="margin-top:22px">
-        <h2>ESP32-C3 Nodes <span class="count" id="node-count">0</span></h2>
-        <div class="grid" id="nodes"></div>
-      </section>
-    </div>
-    <section>
-      <h2>Incident Feed</h2>
-      <div id="feed"></div>
-    </section>
-  </main>
-
-  <script src="./vendor/mqtt.min.js"></script>
-  <script type="module" src="./app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MIND — Live Monitor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
