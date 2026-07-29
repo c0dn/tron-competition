@@ -70,7 +70,7 @@ cd microbit
 
 Expected:
 
-- 15 packet tests pass.
+- 16 packet tests pass.
 - BLE radio host tests pass.
 - BLE scheduler tests pass.
 - `build/firmware/ble_mesh_node/ble_mesh_node.elf` is produced.
