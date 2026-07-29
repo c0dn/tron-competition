@@ -5,6 +5,7 @@ mtkernel_add_microbit_firmware(
   APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/hw_timer.c
 )
 
 target_include_directories(mesh_echo PRIVATE

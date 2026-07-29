@@ -52,6 +52,44 @@
 #define FICR_DEVICEADDR0    0x100000A4UL    /* device address (random) */
 #define FICR_DEVICEADDR1    0x100000A8UL
 
+/* --- Hardware receive counter: PPI ch0 routes RADIO EVENTS_END to TIMER3 ---
+ *
+ * SHORT_END_START restarts the receiver into one buffer, so a packet arriving
+ * before the next poll replaces its predecessor, and EVENTS_END - a single flag
+ * - cannot record that it happened. Software cannot count what it never sees,
+ * and a software ring would not help either: the overwrite is done by the
+ * radio's own DMA before any copy could run.
+ *
+ * A timer in counter mode, incremented directly by the END event over PPI, sees
+ * every packet whether or not software got there. The difference between it and
+ * the poll count is the real loss. Without that figure, a mesh quietly dropping
+ * most of its traffic is indistinguishable from one that is working.
+ *
+ * TIMER3 is physical timer 4 in micro T-Kernel/SM terms, and USE_PTMR is 1 in
+ * every app config here, so it is reachable through StartPhysicalTimer(). It is
+ * driven directly anyway because the ptimer API has no counter mode - it always
+ * programs MODE=0 (timer) off the 16 MHz clock. Physical timer 4 is therefore
+ * RESERVED: do not call StartPhysicalTimer(4, ...) anywhere in this tree.
+ * hw_timer.c takes physical timers 2 and 3 and documents the same split.
+ */
+#define PPI_BASE            0x4001F000UL
+#define PPI_CHENSET         (PPI_BASE + 0x504)
+#define PPI_CHENCLR         (PPI_BASE + 0x508)
+#define PPI_CH0_EEP         (PPI_BASE + 0x510)
+#define PPI_CH0_TEP         (PPI_BASE + 0x514)
+#define PPI_CH_RXCOUNT      (1UL << 0)
+
+#define T3_BASE             0x4001A000UL    /* TIMER3 == physical timer 4 */
+#define T3_TASKS_START      (T3_BASE + 0x000)
+#define T3_TASKS_COUNT      (T3_BASE + 0x008)
+#define T3_TASKS_CLEAR      (T3_BASE + 0x00C)
+#define T3_TASKS_CAPTURE0   (T3_BASE + 0x040)
+#define T3_MODE             (T3_BASE + 0x504)
+#define T3_BITMODE          (T3_BASE + 0x508)
+#define T3_CC0              (T3_BASE + 0x540)
+#define T3_MODE_COUNTER     1UL
+#define T3_BITMODE_32       3UL
+
 /* BLE advertising physical-channel parameters */
 #define BLE_ACCESS_ADDR     0x8E89BED6UL
 #define BLE_CRC_POLY        0x0000065BUL     /* x^24+x^10+x^9+x^6+x^4+x^3+x+1 */
@@ -89,6 +127,10 @@ static ID   radio_mtx = 0;
 static UINT rx_ch = 37;
 static BOOL rx_active = FALSE;
 
+/* Software-side receive tallies, compared against the TIMER2 hardware count. */
+static UW rx_observed = 0;
+static UW rx_crc_err = 0;
+
 static void radio_lock(void)
 {
     if (radio_mtx > 0) {
@@ -122,6 +164,17 @@ void ble_radio_init(void)
 
     radio_disable();
     rx_active = FALSE;
+    rx_observed = 0;
+    rx_crc_err = 0;
+
+    /* TIMER3 counts RADIO END events fed to it over PPI (see the note above). */
+    out_w(T3_MODE, T3_MODE_COUNTER);
+    out_w(T3_BITMODE, T3_BITMODE_32);
+    out_w(T3_TASKS_CLEAR, 1);
+    out_w(T3_TASKS_START, 1);
+    out_w(PPI_CH0_EEP, RADIO_EVENTS_END);
+    out_w(PPI_CH0_TEP, T3_TASKS_COUNT);
+    out_w(PPI_CHENSET, PPI_CH_RXCOUNT);
 
     out_w(RADIO_MODE, 3);               /* Ble_1Mbit */
     out_w(RADIO_TXPOWER, 0);            /* 0 dBm */
@@ -238,11 +291,17 @@ void ble_radio_tx(const UB *adv, UINT adv_len, const UB *addr6, UB chan_mask)
         pkt[8 + i] = adv[i];
     }
 
+    /* END fires on transmit completion too, and counting those would inflate
+       the receive tally. Unhook the counter for the duration of the burst. */
+    out_w(PPI_CHENCLR, PPI_CH_RXCOUNT);
+
     for (ch = 0; ch < 3; ch++) {
         if (chan_mask & (1U << ch)) {
             radio_tx_one(ch);
         }
     }
+
+    out_w(PPI_CHENSET, PPI_CH_RXCOUNT);
 
     /* Hand the radio back to the receiver if it was listening before. A relay
        transmits constantly; without this it hears exactly one packet ever. */
@@ -279,11 +338,13 @@ int ble_radio_poll_ex(ble_rx_t *out)
         return 0;                        /* nothing received yet */
     }
     out_w(RADIO_EVENTS_END, 0);
+    rx_observed++;      /* one END serviced, whatever its CRC turns out to be */
 
     /* RSSISAMPLE is positive; actual power = -RSSISAMPLE dBm */
     out->rssi_dbm = in_w(RADIO_RSSISAMPLE) & 0x7F;
 
     if ((in_w(RADIO_CRCSTATUS) & 1) == 0) {
+        rx_crc_err++;
         radio_unlock();
         return 0;                        /* CRC error - drop */
     }
@@ -304,6 +365,23 @@ int ble_radio_poll_ex(ble_rx_t *out)
        than this and will come from a hardware timer, not the kernel clock. */
     out->t_ms = (tk_get_otm(&t) == E_OK) ? (UW)t.lo : 0;
     return 1;
+}
+
+void ble_radio_stats(ble_radio_stats_t *out)
+{
+    UW hw;
+
+    radio_lock();
+    out_w(T3_TASKS_CAPTURE0, 1);
+    hw = in_w(T3_CC0);
+
+    out->hw_end   = hw;
+    out->observed = rx_observed;
+    out->crc_err  = rx_crc_err;
+    /* Unsigned, so a transient hw < observed (a TX END slipping in at the
+       moment the counter was unhooked) reads as 0 rather than a huge number. */
+    out->dropped  = (hw > rx_observed) ? (hw - rx_observed) : 0;
+    radio_unlock();
 }
 
 int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)

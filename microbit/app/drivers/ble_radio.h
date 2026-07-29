@@ -70,6 +70,25 @@ void ble_radio_listen(UINT channel);
 /* As ble_radio_poll(), with the extra metadata described by ble_rx_t. */
 int ble_radio_poll_ex(ble_rx_t *out);
 
+/* Receive accounting.
+ *
+ * The receiver restarts into a single buffer, so a packet arriving before the
+ * next poll overwrites the previous one and no software counter can see it
+ * happen. 'hw_end' is incremented by the radio itself through PPI and therefore
+ * counts every packet; 'dropped' is what that reveals was lost.
+ *
+ * A flood mesh that is silently discarding most of its traffic behaves exactly
+ * like one that is working until this number is looked at, so treat any
+ * delivery figure quoted without it as unverified. */
+typedef struct {
+    UW hw_end;      /* END events counted in hardware - the true arrival count */
+    UW observed;    /* ENDs software actually serviced                         */
+    UW crc_err;     /* of those, packets that failed CRC                       */
+    UW dropped;     /* hw_end - observed: overwritten before anyone looked     */
+} ble_radio_stats_t;
+
+void ble_radio_stats(ble_radio_stats_t *out);
+
 /* Non-blocking poll for a received advertising packet. On a CRC-valid
    packet returns 1 with the raw PDU copied to 'buf' as
    [S0][LENGTH][AdvA(6)][AdvData...], *len = total bytes (>= 8),

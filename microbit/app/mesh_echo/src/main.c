@@ -1,5 +1,10 @@
 /*
- * mesh_echo - regression test for transmit-after-receive in ble_radio.c.
+ * mesh_echo - bench check for the driver layer the flood mesh sits on.
+ *
+ * Covers two prerequisites, each reported separately so a failure points at one
+ * of them and not the other:
+ *   1. transmit-after-receive in ble_radio.c   (the echo loop)
+ *   2. the microsecond time base in hw_timer.c (the boot self-check)
  *
  * WHY THIS EXISTS (do not delete - it has no product function by design)
  * ---------------------------------------------------------------------
@@ -52,12 +57,18 @@
  * ble_sniffer decodes them with no changes if one is to hand. accel_svm carries
  * the running receive count and seq the echo count, which makes loss visible
  * from the receiving end too.
+ *
+ * The alive line also reports ble_radio_stats(). hw= is counted by the radio
+ * itself over PPI and sw= by the poll loop; a growing gap means packets are
+ * being overwritten before anyone reads them, which is the one failure that
+ * would otherwise make a broken mesh look like a working one.
  */
 
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 
 #include "ble_radio.h"
+#include "hw_timer.h"
 #include "schema.h"
 
 /* Marker identity. 0xEE is outside the wearable id range so these adverts are
@@ -111,6 +122,43 @@ static UINT build_marker(UB *buf, UH rx_count, UB seq)
     return len;
 }
 
+/* Boot self-check for hw_timer: request a known delay repeatedly and measure it
+   against the same clock. Runs above HW_TIMER_SPIN_MAX_US so it exercises the
+   compare-and-suspend path rather than the spin shortcut - that is the path the
+   relay backoff will use, and the one that can silently deadlock if the
+   interrupt never arrives. A hang here means the TIMER1 interrupt is not
+   reaching the handler. */
+#define SELFTEST_N          100
+#define SELFTEST_TARGET_US  1000
+
+static void timer_selfcheck(void)
+{
+    UW worst = 0;
+    UW total = 0;
+    INT i;
+
+    tm_printf((UB *)"hw_timer: %d delays of %d us...\n",
+              SELFTEST_N, SELFTEST_TARGET_US);
+
+    for (i = 0; i < SELFTEST_N; i++) {
+        UW t0 = hw_timer_now();
+        UW dt, err;
+
+        hw_timer_delay_us(SELFTEST_TARGET_US);
+        dt = hw_timer_elapsed_us(t0);
+
+        err = (dt > SELFTEST_TARGET_US) ? (dt - SELFTEST_TARGET_US)
+                                        : (SELFTEST_TARGET_US - dt);
+        if (err > worst) {
+            worst = err;
+        }
+        total += dt;
+    }
+
+    tm_printf((UB *)"hw_timer: mean %u us, worst error %u us, rand %08x\n",
+              total / SELFTEST_N, worst, hw_rand32());
+}
+
 LOCAL void echo_task(INT stacd, void *exinf)
 {
     UB rxbuf[BLE_RX_MAX];
@@ -120,6 +168,8 @@ LOCAL void echo_task(INT stacd, void *exinf)
     UW echo_count = 0;
     UW last_echo = 0;
     UW last_alive = 0;
+
+    timer_selfcheck();
 
     tm_printf((UB *)"mesh_echo: camping on ch%d, echoing as dev 0x%02x\n",
               ECHO_CHANNEL, ECHO_DEVICE_ID);
@@ -153,7 +203,12 @@ LOCAL void echo_task(INT stacd, void *exinf)
         /* Proof of life. If this keeps printing while rx stops climbing, the
            driver transmitted but never went back to receive. */
         if ((UW)(t - last_alive) >= ALIVE_EVERY_MS) {
-            tm_printf((UB *)"alive: rx=%u echo=%u\n", rx_count, echo_count);
+            ble_radio_stats_t st;
+
+            ble_radio_stats(&st);
+            tm_printf((UB *)"alive: rx=%u echo=%u | hw=%u sw=%u crc_err=%u dropped=%u\n",
+                      rx_count, echo_count,
+                      st.hw_end, st.observed, st.crc_err, st.dropped);
             last_alive = t;
         }
     }
@@ -170,6 +225,8 @@ EXPORT INT usermain(void)
     };
     ID tskid;
 
+    hw_timer_init();
+    hw_rand_seed_mix(ECHO_DEVICE_ID);
     ble_radio_init();
 
     tskid = tk_cre_tsk(&ctsk);
