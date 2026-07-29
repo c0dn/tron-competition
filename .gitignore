@@ -1,5 +1,6 @@
 # Build artifacts
 microbit/build/
+microbit/artifacts/
 microbit/*.zip
 
 # ESP32 sidecar build output + generated config

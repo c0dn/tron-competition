@@ -1,0 +1,367 @@
+{
+  "schemaVersion": 2,
+  "id": "rf-mesh-aodv-root-plan",
+  "kind": "software-engineering",
+  "title": "RF mesh AODV/root-aware design and implementation plan",
+  "goal": "Design and later implement a pragmatic project-owned RF mesh path for micro:bit v2/nRF52833 using proprietary 2.4 GHz radio semantics, with root-aware/AODV-style discovery, bounded flood/relay behavior, dummy payloads, and strict no-hardware/no-flash gates during planning and software validation.",
+  "scope": [
+    "Workflow planning and later staged implementation for the RF mesh lane in `/home/lucas/Workspace/tron-worktrees/rf-mesh`.",
+    "Use current codebase reality: C/CMake μT-Kernel firmware under `microbit/`, existing BLE beacon/observer examples only, no RF mesh implementation yet.",
+    "Project-owned RF packet/routing design unless the user later overrides with an explicit compatibility requirement.",
+    "Implementation-facing protocol/radio ABI design before parallel code work.",
+    "Hardware-independent packet/routing/dedup/backoff core with non-hardware validation.",
+    "New proprietary RF radio driver and `rf_mesh_node` firmware target.",
+    "Code-checker gates before any hardware-related follow-up."
+  ],
+  "nonGoals": [
+    "No BLE mesh implementation.",
+    "No MakeCode/MicroPython wire compatibility unless the user later overrides this plan.",
+    "No ESP32 sidecar RF work in this lane.",
+    "No final application payload semantics; payloads remain dummy/test-only for now.",
+    "No hardware flashing, no pyOCD/probe/reset/erase/load commands, and no hardware runtime claims in this planning/software-validation workflow.",
+    "No MAINTENANCE/interface-firmware work.",
+    "No dependency upgrades or submodule pointer advances."
+  ],
+  "constraints": [
+    "No hardware actions, no flash commands, no pyOCD probe/list/reset/erase/load, and no `flash.sh` during this workflow.",
+    "Any future flash/run step requires a separate approved hardware plan, code-checker hardware-safety review, Hermes approval, probe UID targeting, and replacement/avoidance of the current mass-erase behavior unless explicitly approved.",
+    "One radio only: no true simultaneous TX/RX; all mesh behavior must be scheduled/interleaved.",
+    "Treat the approved conceptual schema as authoritative for now because no concrete local schema/spec file is visible; do not continue schema hunting unless the user reopens that question.",
+    "Initialize the existing `microbit/libs/mtkernel_3` submodule only to the repo-pinned commit; do not advance the submodule pointer or vendor new dependency contents.",
+    "Keep changes small and staged; freeze interfaces before safe parallel code-writer tasks.",
+    "Protocol details may evolve after later user comments; v1 must be sane, bounded, and testable rather than final.",
+    "Payloads remain dummy/test-only until an application payload spec is approved."
+  ],
+  "relevantFiles": [
+    "RF_MESH_LANE_BRIEF.md",
+    "research_rf_mesh_execution_pass.md",
+    "microbit/README.md",
+    "microbit/CMakeLists.txt",
+    "microbit/app/CMakeLists.txt",
+    "microbit/app/drivers/ble_radio.c",
+    "microbit/app/drivers/ble_radio.h",
+    "microbit/app/ble_beacon/src/main.c",
+    "microbit/app/ble_observer/src/main.c",
+    "microbit/flash.sh",
+    "microbit/scripts/common.sh",
+    "microbit/libs/mtkernel_3",
+    "microbit/docs/rf_mesh_protocol.md",
+    "microbit/app/rf_mesh_core/rf_mesh_packet.h",
+    "microbit/app/rf_mesh_core/rf_mesh_packet.c",
+    "microbit/app/rf_mesh_core/rf_mesh_core.h",
+    "microbit/app/rf_mesh_core/rf_mesh_core.c",
+    "microbit/tests/rf_mesh_core/test_rf_mesh_core.c",
+    "microbit/app/drivers/rf_radio.h",
+    "microbit/app/drivers/rf_radio.c",
+    "microbit/app/rf_mesh_node/CMakeLists.txt",
+    "microbit/app/rf_mesh_node/config/config.h",
+    "microbit/app/rf_mesh_node/config/rf_mesh_config.h",
+    "microbit/app/rf_mesh_node/src/main.c"
+  ],
+  "planFile": ".opencode/workplan/rf-mesh-aodv-root-plan.md",
+  "specFiles": [
+    "RF_MESH_LANE_BRIEF.md",
+    "research_rf_mesh_execution_pass.md",
+    "microbit/docs/rf_mesh_protocol.md"
+  ],
+  "phases": [
+    {
+      "id": "phase-0-readiness-guardrails",
+      "title": "Readiness and guardrails",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-record-schema-authority",
+          "title": "Record schema authority and stop schema hunting",
+          "target": "planning context",
+          "action": "Carry forward the prior finding that no concrete local schema/spec/protocol file was visible after a narrow checkout search. Use the user-approved conceptual schema plus established research conclusions as the current authority.",
+          "validation": "Plan and future prompts do not reopen schema discovery unless the user explicitly asks.",
+          "status": "completed"
+        },
+        {
+          "id": "step-init-pinned-submodule",
+          "title": "Initialize pinned μT-Kernel submodule for buildability",
+          "target": "microbit/libs/mtkernel_3",
+          "action": "Initialize the existing git submodule to the repo-pinned commit only. Do not update the submodule pointer, vendor contents, or dependency versions.",
+          "validation": "`git submodule status` shows the pinned commit checked out; no dependency pointer drift is present.",
+          "status": "completed"
+        },
+        {
+          "id": "step-baseline-build-only",
+          "title": "Baseline build existing firmware targets only",
+          "target": "microbit/{test_firmware,ble_beacon,ble_observer}",
+          "action": "After the pinned submodule exists, build existing targets to establish compile baseline. Do not run flash scripts or hardware commands.",
+          "validation": "Build logs show success or clear software/toolchain failures; no pyOCD/hardware command was run.",
+          "status": "completed"
+        },
+        {
+          "id": "step-enforce-no-hardware",
+          "title": "Enforce strict no-hardware boundary",
+          "target": "microbit/flash.sh and workflow policy",
+          "action": "Record that this workflow performs no `flash.sh`, no pyOCD, no probe listing, no reset, no erase, no load, and no hardware runtime claims. Flag current `flash.sh` mass erase behavior as a future safety issue before any hardware plan.",
+          "validation": "Execution plan contains an explicit no-flash-until-code-checker-and-Hermes gate and no hardware step in scope.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-1-protocol-radio-abi",
+      "title": "Implementation-facing protocol and radio ABI design",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-write-protocol-design",
+          "title": "Create provisional RF mesh protocol design note",
+          "target": "planned: microbit/docs/rf_mesh_protocol.md or equivalent",
+          "action": "Write a concise but implementation-facing design note for v1 RF mesh. It must state that protocol details may evolve, payloads are dummy, and project-owned proprietary RF is the default.",
+          "validation": "Design note includes exact v1 assumptions and is sufficient for independent packet/core/radio/app work without ambiguous field ownership.",
+          "status": "completed"
+        },
+        {
+          "id": "step-freeze-packet-layout",
+          "title": "Freeze v1 packet byte layout and field semantics",
+          "target": "planned: rf_mesh_packet.h design section",
+          "action": "Define exact packet byte layout, endianness, field widths, max packet size, version, message type, flags, network/root id, source id, destination/broadcast marker, sequence/request id, TTL/hop count, route metric, payload length, dummy payload bytes, and any reserved checksum/auth bytes. Specify whether checksum/auth is reserved-only or active in v1.",
+          "validation": "Packet ABI can be implemented and tested for valid, max-length, malformed, and truncated packets.",
+          "status": "completed"
+        },
+        {
+          "id": "step-freeze-radio-mapping",
+          "title": "Freeze nRF RADIO proprietary-mode mapping",
+          "target": "planned: rf_radio.h design section",
+          "action": "Define v1 radio parameters: channel/frequency, 1M/2M choice, TX power default, base/prefix/network address mapping, group/network filtering approach, RADIO packet config including S0/LENGTH/S1 use, CRC, whitening, max on-air payload, and RSSI behavior if supported.",
+          "validation": "RF driver implementation has concrete register-level targets without touching BLE driver behavior.",
+          "status": "completed"
+        },
+        {
+          "id": "step-freeze-routing-rules",
+          "title": "Freeze AODV-style/root-aware routing rules",
+          "target": "planned: rf_mesh_core.h design section",
+          "action": "Define message types and rules: HELLO/root beacon, RREQ, RREP, DATA with dummy payload, optional/deferred ACK. Define root configuration/election assumptions, route freshness, tie-breaking, route expiry, reverse-route handling, flood forwarding, broadcast DATA dedup, and drop behavior.",
+          "validation": "Core routing can be implemented deterministically and unit-tested without radio hardware.",
+          "status": "completed"
+        },
+        {
+          "id": "step-freeze-single-radio-scheduler",
+          "title": "Freeze minimal single-radio scheduler/MAC rules",
+          "target": "planned: rf_mesh_scheduler design section",
+          "action": "Define RX-first state machine, max blocking TX/RX operations, jitter/backoff timing source, deterministic fallback if no randomness exists, bounded TX queue behavior, relay priority/drop policy, ACK/retry v1 decision, and guarantee BLE/RF drivers are not active in the same target.",
+          "validation": "App and driver work can interleave TX/RX safely without assuming simultaneous operation.",
+          "status": "completed"
+        },
+        {
+          "id": "step-freeze-public-interfaces",
+          "title": "Freeze public interfaces before parallel work",
+          "target": "planned headers: rf_mesh_packet.h, rf_mesh_core.h, rf_radio.h, config header/CMake defines",
+          "action": "Define stable function prototypes, config constants, and ownership boundaries for packet/core, radio driver, and app target. Reserve CMake integration ownership for the serial integration step to avoid parallel conflicts.",
+          "validation": "Parallel code-writer tasks can proceed with non-overlapping file ownership and no interface drift.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-protocol-core",
+      "title": "Hardware-independent packet/routing/dedup/backoff core",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-core-packet-code",
+          "title": "Implement packet constants and pack/unpack helpers",
+          "target": "planned: microbit/app/rf_mesh_core/rf_mesh_packet.{c,h}",
+          "action": "Implement v1 packet ABI from Phase 1 with explicit bounds checks, endianness helpers, and malformed/truncated packet rejection.",
+          "validation": "Host/non-hardware tests cover valid packets, max-length packets, malformed lengths, truncated buffers, unsupported versions/types, and dummy payload boundaries.",
+          "status": "completed"
+        },
+        {
+          "id": "step-core-dedup-ttl",
+          "title": "Implement duplicate suppression and TTL/drop rules",
+          "target": "planned: microbit/app/rf_mesh_core/rf_mesh_dedup.{c,h}",
+          "action": "Implement bounded duplicate cache keyed by source id, sequence/request id, and message type as specified. Implement TTL decrement/drop behavior and expiry.",
+          "validation": "Tests cover first-seen vs duplicate, wrap behavior if specified, expiry, TTL decrement, TTL zero drop, and broadcast DATA dedup.",
+          "status": "completed"
+        },
+        {
+          "id": "step-core-routing",
+          "title": "Implement root-aware/AODV-style route table",
+          "target": "planned: microbit/app/rf_mesh_core/rf_mesh_route.{c,h}",
+          "action": "Implement fixed-size route table for destination/root id, next hop, metric/hop count, sequence freshness, last seen, expiry, tie-breaking, HELLO/RREQ/RREP update rules, and no-route behavior.",
+          "validation": "Tests cover route insert/update/reject, better/worse metric tie-breaks, stale route expiry, root preference, and discovery trigger decisions.",
+          "status": "completed"
+        },
+        {
+          "id": "step-core-backoff-queue",
+          "title": "Implement backoff scheduler and bounded TX queue policy",
+          "target": "planned: microbit/app/rf_mesh_core/rf_mesh_queue.{c,h}",
+          "action": "Implement jitter/backoff scheduling, deterministic fallback, bounded TX queue, priority/drop rules, and counters for drops/relays/duplicates.",
+          "validation": "Tests cover jitter bounds, queue full policy, relay priority handling, deterministic fallback, and counter increments.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-rf-radio-driver",
+      "title": "Proprietary RF radio driver",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-rf-radio-driver",
+          "title": "Implement RF radio driver separate from BLE driver",
+          "target": "microbit/app/drivers/rf_radio.{c,h}",
+          "action": "Add a new direct-register nRF52833 proprietary radio driver with `rf_radio_init`, `rf_radio_listen`, `rf_radio_poll`, `rf_radio_send`, and optional RSSI support. Do not modify `ble_radio.c/.h` except for later reviewed non-invasive shared helpers if clearly justified.",
+          "validation": "Driver compiles, public API matches frozen Phase 1 interface, and code review confirms no BLE mesh assumptions and no simultaneous TX/RX assumptions.",
+          "status": "completed"
+        },
+        {
+          "id": "step-rf-radio-safety-review",
+          "title": "Review radio register configuration assumptions",
+          "target": "microbit/app/drivers/rf_radio.c",
+          "action": "Manually and with code-checker review the register configuration for mode, packet config, CRC, whitening, frequency, TX power, and state transitions. Keep operations bounded and return to RX promptly after TX.",
+          "validation": "Code-checker has no open critical/major findings on radio register safety, packet bounds, or state-machine assumptions before any hardware plan.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-rf-mesh-app-target",
+      "title": "RF mesh node firmware target",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-app-target-skeleton",
+          "title": "Add rf_mesh_node app target",
+          "target": "microbit/app/rf_mesh_node/",
+          "action": "Create a new firmware target using nearest existing app patterns. Include config, CMake, and main task structure. Payloads are dummy/test-only. LED/serial output is diagnostic only.",
+          "validation": "Target appears in CMake build graph and can compile once core/driver integration is complete.",
+          "status": "completed"
+        },
+        {
+          "id": "step-app-config",
+          "title": "Define v1 node/root/network/channel configuration mechanism",
+          "target": "microbit/app/rf_mesh_node/config and/or CMake defines",
+          "action": "Use a concrete v1 mechanism such as compile-time config constants with optional FICR-derived node id fallback. Define root/non-root role, network id, root id, RF channel, TX power, and dummy payload interval.",
+          "validation": "Different node/root roles can be selected at build/config time without editing core protocol logic.",
+          "status": "completed"
+        },
+        {
+          "id": "step-app-event-loop",
+          "title": "Implement RX-first mesh event loop",
+          "target": "microbit/app/rf_mesh_node/src/main.c",
+          "action": "Boot radio, initialize observability, poll RX, validate/decode, update dedup/routes, enqueue relay/local dummy delivery, process bounded TX queue respecting jitter windows, then return to listen.",
+          "validation": "Build-only and static review confirm no full-duplex assumption, no unbounded loops beyond intended polling, and no hardware claims.",
+          "status": "completed"
+        },
+        {
+          "id": "step-app-observability",
+          "title": "Add serial counters and LED diagnostics",
+          "target": "microbit/app/rf_mesh_node/src/main.c",
+          "action": "Expose tx/rx/drop/dup/relay/route-update/current-root-metric counters over serial logs and simple LED status. Keep display diagnostic only.",
+          "validation": "Code review verifies counters are non-blocking enough for v1 and payload semantics remain dummy.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-parallel-slices-integration-validation",
+      "title": "Parallel slices, integration, and software validation",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-parallel-slice-a-core",
+          "title": "Parallel code-writer Slice A: protocol core",
+          "target": "microbit/app/rf_mesh_core/ and host/non-hardware tests",
+          "action": "After Phase 1 interfaces are frozen and baseline build works, a code-writer owns packet/routing/dedup/backoff core and tests. It must not touch RF driver internals or app target CMake integration.",
+          "validation": "Core tests pass; code-checker reviews packet bounds, route correctness, TTL/dedup, and queue/backoff behavior.",
+          "status": "completed"
+        },
+        {
+          "id": "step-parallel-slice-b-radio",
+          "title": "Parallel code-writer Slice B: RF radio driver",
+          "target": "microbit/app/drivers/rf_radio.{c,h}",
+          "action": "After Phase 1 interfaces are frozen, a code-writer owns RF radio driver implementation. It must not touch routing core or app target logic.",
+          "validation": "Firmware build compiles driver when integrated; code-checker reviews register config, state transitions, and hardware safety assumptions.",
+          "status": "completed"
+        },
+        {
+          "id": "step-parallel-slice-c-app",
+          "title": "Parallel code-writer Slice C: app skeleton",
+          "target": "microbit/app/rf_mesh_node/",
+          "action": "After Phase 1 interfaces are frozen, a code-writer owns app target skeleton, config, and diagnostic main loop using frozen interfaces or stubs. It must not change core internals or RF driver internals.",
+          "validation": "App skeleton compiles after serial integration; code-checker reviews scheduler assumptions and config clarity.",
+          "status": "completed"
+        },
+        {
+          "id": "step-serial-integration",
+          "title": "Serial integration of core, driver, app, and CMake",
+          "target": "microbit/app/rf_mesh_node/CMakeLists.txt and build graph",
+          "action": "One integrator merges slices, resolves API mismatches, owns CMake source inclusion, removes stubs, and performs build-only verification.",
+          "validation": "Existing baseline targets still build, `rf_mesh_node` builds, and no unexpected file ownership conflicts remain.",
+          "status": "completed"
+        },
+        {
+          "id": "step-code-checker-gates",
+          "title": "Run code-checker gates after each meaningful slice and final integration",
+          "target": "whole RF mesh diff",
+          "action": "Use code-checker after Slice A, Slice B, Slice C/integration, and before any future hardware proposal. Reviews must include correctness, spec alignment, packet safety, timing assumptions, hardware safety, hard-brick risk, wrong-target/wrong-probe risk, and flash-script assumptions.",
+          "validation": "No unresolved critical/major findings before moving to any hardware-gated follow-up.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-6-future-hardware-gate",
+      "title": "Future hardware gate outside this workflow",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-no-flash-until-hermes",
+          "title": "No flash until separate code-checker + Hermes gate",
+          "target": "future hardware plan only",
+          "action": "Do not run hardware. A future flash/run phase must be separately approved, include code-checker hardware-safety review, Hermes review of exact command/target, no concurrent flashing, probe UID targeting, and explicit handling of `flash.sh` mass erase behavior.",
+          "validation": "This plan contains no hardware execution step and future hardware cannot proceed without explicit user/Hermes approval.",
+          "status": "completed"
+        },
+        {
+          "id": "step-future-test-plan",
+          "title": "Prepare future narrow hardware test plan only after software gates",
+          "target": "future document/log plan",
+          "action": "After all software gates pass, propose a narrow hardware test matrix: root plus one/two non-root nodes, dummy heartbeat/DATA, serial counter collection, route formation observation, and no claims beyond measured logs.",
+          "validation": "Future test plan remains proposal-only until Hermes approves actual commands and targets.",
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [
+    {
+      "severity": "major",
+      "title": "Slice A dedup cache evicts unexpired entries",
+      "detail": "Resolved. Full unexpired dedup cache now rejects/drops new packets without evicting existing keys; tests cover this behavior. Slice A code-checker gate passes.",
+      "source": "microbit/app/rf_mesh_core/rf_mesh_core.c",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Slice B RF RX single-buffer race under END_START",
+      "detail": "Resolved. RX now uses END_DISABLE stable handoff and restarts after rf_radio_poll handles a completed packet. Slice B code-checker gate passes.",
+      "source": "microbit/app/drivers/rf_radio.c",
+      "status": "resolved"
+    }
+  ],
+  "notes": [
+    "External grounding docs already read in the continuing session: `../admin-canonical/research_microbit_v2.md`, `../admin-canonical/research_takeaways_for_planning.md`, and `../admin-canonical/FLASH_GATING_POLICY.md`. They are outside this worktree so they are not listed as workplan spec files.",
+    "Plan-checker reviewed the durable workplan and returned APPROVED: dependency ordering is safe, hardware gates are explicit, parallel slices are non-overlapping, and the plan respects the approved conceptual schema/no-further-hunting instruction.",
+    "Execution approved by user. Non-hardware workflow only: no flash, no pyOCD/probe/reset/erase/load, no MAINTENANCE, and no hardware claims. Phase 0 started with prior schema authority recorded.",
+    "Pinned `microbit/libs/mtkernel_3` submodule initialized successfully at commit 5606cfba1625350901ad2eb521572b0a3f7735cb.",
+    "Build-only baseline succeeded for existing targets: `test_firmware`, `ble_beacon`, and `ble_observer`. No flash/hardware commands were run.",
+    "Phase 1 protocol/radio ABI frozen in `microbit/docs/rf_mesh_protocol.md`. Parallel execution begins with disjoint Slice A (protocol core/tests) and Slice B (RF radio driver). App target waits for these interfaces.",
+    "Slice A and Slice B implementation completed. Host core tests passed with `cc -std=c11 -Wall -Wextra -Werror ... && ./build/rf_mesh_core_test`. RF radio driver build-only object compile passed with `arm-none-eabi-gcc ... -c app/drivers/rf_radio.c`. No hardware/flash commands were run.",
+    "Code-checker Slice A and Slice B gates did not pass. Major findings will be fixed before continuing to app/integration.",
+    "Slice A and Slice B code-checker gates passed after fix loops. Remaining comments were low-severity only and do not block the gate. Proceeding to app target/integration.",
+    "Protocol/core ABI evolved within the approved provisional scope: bytes 14-15 now carry `previous_hop_id` instead of reserved auth/checksum bytes so relayed broadcast route learning has a next-hop identity. Host tests pass and code-checker found no blocker/critical/major issues after this ABI update.",
+    "Slice C app target implemented. Non-hardware validation passed: host core tests pass and `./build.sh rf_mesh_node` builds successfully. No flash/hardware commands were run.",
+    "Final non-hardware validation passed: host RF mesh core tests passed; build-only targets `test_firmware`, `ble_beacon`, `ble_observer`, and `rf_mesh_node` all built successfully. Final code-checker gate reported no blocker/critical/major findings. No hardware, flash, pyOCD, probe/reset/erase/load, serial monitor, or MAINTENANCE actions were run. Hermes flash gate remains required for any future hardware step."
+  ],
+  "status": "completed",
+  "createdAt": "2026-07-03T10:22:58.785Z",
+  "updatedAt": "2026-07-03T13:37:14.104Z"
+}
