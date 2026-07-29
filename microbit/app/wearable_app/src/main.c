@@ -44,6 +44,19 @@ static struct {
 static void lock(void)   { tk_loc_mtx(g_mtx, TMO_FEVR); }
 static void unlock(void) { tk_unl_mtx(g_mtx); }
 
+/* Monotonic millisecond clock for fusion's coincidence window. The low 32 bits
+ * of the kernel's operating time are enough: fusion only ever takes unsigned
+ * differences, which stay correct across the wrap. */
+static UW now_ms(void)
+{
+    SYSTIM t;
+
+    if (tk_get_otm(&t) != E_OK) {
+        return 0;
+    }
+    return (UW)t.lo;
+}
+
 /* ---- sensor_task: accel sampling + fall state machine ------------------- */
 LOCAL void sensor_task(INT stacd, void *exinf)
 {
@@ -119,7 +132,9 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         asvm = (fe != FALL_EVT_NONE) ? peak : cur;
         mlvl = (se != SOUND_EVT_NONE) ? mlvl : 0;
 
-        fusion_update(fe, se, asvm, mlvl, &inc);
+        if (!fusion_update(fe, se, asvm, mlvl, now_ms(), &inc)) {
+            continue;           /* latch updated, nothing new to advertise */
+        }
 
         lock();
         g.incident = inc;

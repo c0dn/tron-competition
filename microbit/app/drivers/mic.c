@@ -36,16 +36,32 @@
 #define RESOLUTION_12BIT    2
 #define SAMPLERATE_MODE_TIMER (1UL << 12)   /* internal timer drives sampling */
 
-/* CONFIG: gain 1/6, internal 0.6V ref, TACQ 40us, single-ended.
- * Gain stays low because the mic signal carries a DC bias (single-ended,
- * so absolute) - higher gain would rail the ADC on the bias. Longer
- * acquisition (40us) settles better against the mic's source impedance. */
-#define CH_CONFIG           0x00050000
+/* CONFIG: gain 4, internal 0.6V ref, TACQ 40us, single-ended.
+ *
+ * Gain was previously 1/6 (3.6 V full scale) on the assumption that the mic's
+ * DC bias would rail the input. Measured on hardware, the bias is only ~19/1023
+ * counts = ~67 mV, so that setting wasted 98% of the ADC range: ambient read 4
+ * counts peak-to-peak and a shout barely reached 13.
+ *
+ * Because the bias sits 67 mV above ground, the negative half-cycle clips at
+ * 0 V, capping the undistorted swing at 2 x 67 = ~133 mV whatever the gain. The
+ * best gain maps that swing onto full scale: 0.6 V / 0.133 V ~= 4, giving a
+ * 150 mV full scale (~0.146 mV/count) and a bias near 45% of range. That is a
+ * 24x resolution gain over 1/6 with headroom to spare.
+ *
+ * GAIN field (CONFIG bits 8-10): 0=1/6 1=1/5 2=1/4 3=1/3 4=1/2 5=1 6=2 7=4.
+ * Longer acquisition (TACQ 40us) settles better against the mic's source
+ * impedance and is required at high gain. */
+#define CH_CONFIG           0x00050700
 
 #define PIN_MIC_ENABLE      PIN(0, 20)
 
 #define MIC_SAMPLES         128
 static H sample_buf[MIC_SAMPLES] __attribute__((aligned(4)));
+
+/* Absolute bounds of the most recent mic_level() window (diagnostic). */
+static H last_min;
+static H last_max;
 
 void mic_init(void)
 {
@@ -98,8 +114,13 @@ UINT mic_level(void)
         if (s < mn) mn = s;
         if (s > mx) mx = s;
     }
+    last_min = mn;
+    last_max = mx;
     return (UINT)(mx - mn);
 }
+
+H mic_last_min(void) { return last_min; }
+H mic_last_max(void) { return last_max; }
 
 void mic_capture(H *buf, UINT n)
 {

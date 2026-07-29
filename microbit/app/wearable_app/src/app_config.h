@@ -30,18 +30,57 @@
 #define FALL_OBSERVE_MS         3000    /* if never still by here => POSSIBLE  */
 
 /* --- Shout detector (Plan 01 4.3.1) -------------------------------------- */
-#define SHOUT_GATE_INTERVAL_MS  150     /* Stage A loudness-gate cadence      */
-#define SHOUT_GATE_LEVEL        120     /* mic_level (p2p, 10-bit) gate       */
+/* Set to 1 to dump per-window mic features over serial for threshold tuning.
+ * Off in committed builds: the dump fires every gate interval while loud. */
+#define SHOUT_DEBUG             0
+/* Gate cadence. mic_capture() blocks ~32 ms per window, so at the old 150 ms
+ * the detector listened only ~20% of the time and a 300 ms shout produced at
+ * most 1-2 windows - never the 3 the old sustain demanded. At 60 ms the cycle
+ * is ~95 ms (32 ms capture + delay + DSP), ~34% duty, so the same shout yields
+ * 3+ windows. sound_task sits at priority 5, below sensor_task at 4, so the
+ * busy-wait capture cannot disturb the 25 Hz accel cadence. */
+#define SHOUT_GATE_INTERVAL_MS  60      /* Stage A loudness-gate cadence      */
+/* Stage A gate is adaptive, not a fixed count. mic_level() is a 10-bit SAADC
+ * peak-to-peak reading (0..1023) at gain 1/6 against the 0.6 V reference, i.e.
+ * ~3.5 mV/count - an absolute threshold depends on room noise, per-unit mic
+ * bias and gain, so it does not travel between venues.
+ *
+ * gate = max(SHOUT_GATE_MIN, median(last N levels) * SHOUT_GATE_MULT_PCT/100)
+ *
+ * The median is used rather than the mean because a shout occupies only a few
+ * of the N windows, so it barely moves the baseline it is being measured
+ * against - no need to freeze adaptation during an event. SHOUT_GATE_MIN is the
+ * floor that stops a near-silent room producing a hair-trigger gate. */
+#define SHOUT_BASELINE_N        32      /* ~4.8 s of history @ 150 ms/window  */
+#define SHOUT_GATE_MULT_PCT     500     /* fire at 5x the ambient median      */
+#define SHOUT_GATE_MIN          25      /* absolute floor, counts (provisional)*/
 #define SHOUT_WIN_SAMPLES       256     /* Stage B capture (~32 ms @ 8 kHz)   */
-#define SHOUT_RMS_MIN           150     /* min RMS energy of the window       */
+/* Thresholds set from a measured session (gain-4 mic, quiet room). Observed:
+ *   strong shout  rms 206 / zcr 108 / bright 1130   then rms 149 / bright 55
+ *   quick yap     rms  81 / zcr  46 / bright 3478
+ *   fall impact   rms 259 / zcr  72 / bright   18   <- rejected on brightness
+ * RMS 150 and brightness 0.6 clipped the tail of a genuine shout by ~1%, so
+ * both are relaxed. Brightness stays the primary voice-vs-impact discriminator:
+ * the impact measured bright=18 against 1130+ for voice. */
+#define SHOUT_RMS_MIN           100     /* min RMS energy of the window       */
 #define SHOUT_ZCR_MIN           20      /* zero-crossings/window, low bound   */
 #define SHOUT_ZCR_MAX           180     /* zero-crossings/window, high bound  */
-#define SHOUT_BRIGHT_RATIO      0.6f    /* high-band / low-band power min     */
-#define SHOUT_SUSTAIN_MS        350     /* candidate must hold this long      */
+#define SHOUT_BRIGHT_RATIO      0.4f    /* high-band / low-band power min     */
+/* Two consecutive windows (~190 ms at the 60 ms cadence). One window would fire
+ * on the fall's own impact crack; three was unreachable. */
+#define SHOUT_SUSTAIN_MS        120     /* candidate must hold this long      */
 #define SHOUT_REFRACTORY_MS     2000    /* suppress re-fire after a shout     */
 /* Goertzel coefficients 2*cos(2*pi*f/8000): low=500 Hz, high=1800 Hz. */
 #define SHOUT_G_LOW_COEFF       1.8478f
 #define SHOUT_G_HIGH_COEFF      0.3129f
+
+/* --- Fusion (fall + shout coincidence) ----------------------------------- */
+/* A fall and a shout fuse into MIND_EVT_FALL_AND_SHOUT when they land within
+ * this window, in either order. Sized off FALL_OBSERVE_MS: a fall event is
+ * reported 1500-3000 ms after the impact (the immobility observation), while a
+ * shout confirms ~350 ms after it starts, so the shout normally arrives first
+ * and must still be "live" when the fall resolves. */
+#define FUSION_COINCIDENCE_MS   3000
 
 /* --- Advertising cadence (Plan 01 5) ------------------------------------- */
 #define HEARTBEAT_INTERVAL_MS   1500    /* slow alive beacon                  */

@@ -19,6 +19,13 @@ void mic_init(void);
    louder). Units are raw 10-bit ADC counts. */
 UINT mic_level(void);
 
+/* Absolute min/max of the window mic_level() last sampled, in raw counts
+   (0..1023). Their midpoint is the mic's DC bias, which decides how much SAADC
+   gain the signal can take before it rails - a bias near mid-scale leaves
+   headroom, one near a rail does not. Diagnostic use. */
+H mic_last_min(void);
+H mic_last_max(void);
+
 /* Sample rate of mic_capture(), in Hz (SAADC internal timer). */
 #define MIC_CAPTURE_RATE    8000
 
