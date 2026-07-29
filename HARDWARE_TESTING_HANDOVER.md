@@ -94,7 +94,8 @@ cc -std=c11 -Wall -Wextra -Werror \
 Expected:
 
 - `rf_mesh_core tests passed`.
-- `build/firmware/rf_mesh_node/rf_mesh_node.elf` is produced.
+- `build/firmware/rf_mesh_node/rf_mesh_node.elf` is produced for the generic compile check.
+- Role images for flashing must be produced with `build-rf-role.sh`, not reused from the generic build cache.
 
 ## BLE hardware test
 
@@ -157,49 +158,26 @@ mesh counters rx_ok=... tx_ok=... decode_error=... duplicate_drop=... ttl_drop=.
 
 ### Build role-specific images
 
-Use separate build directories so root/node CMake cache values cannot contaminate each other. Keep the default network ID `0x5452`, channel `7` (2407 MHz), and TX power `0x00` (0 dBm) for the first test.
+Use the checked role builder. It creates a fresh temporary build directory for
+every image, rejects ambiguous role/node-ID combinations, and emits a
+role/node-labelled ELF plus a configuration manifest. Keep the default network
+ID `0x5452`, channel `7` (2407 MHz), and TX power `0x00` (0 dBm) for the first test.
 
 ```bash
 git switch exp/rf-mesh
 cd microbit
 
-cmake -S . -B build-root -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake \
-  -DRF_MESH_NODE_ID=0x0001 \
-  -DRF_MESH_IS_ROOT=1 \
-  -DRF_MESH_ROOT_ID=0x0001 \
-  -DRF_MESH_NETWORK_ID=0x5452 \
-  -DRF_MESH_RF_CHANNEL=7 \
-  -DRF_MESH_RF_TXPOWER=0x00
-cmake --build build-root --target rf_mesh_node --parallel
-
-cmake -S . -B build-node-a -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake \
-  -DRF_MESH_NODE_ID=0x1001 \
-  -DRF_MESH_IS_ROOT=0 \
-  -DRF_MESH_ROOT_ID=0x0001 \
-  -DRF_MESH_NETWORK_ID=0x5452 \
-  -DRF_MESH_RF_CHANNEL=7 \
-  -DRF_MESH_RF_TXPOWER=0x00
-cmake --build build-node-a --target rf_mesh_node --parallel
-
-cmake -S . -B build-node-b -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake \
-  -DRF_MESH_NODE_ID=0x1002 \
-  -DRF_MESH_IS_ROOT=0 \
-  -DRF_MESH_ROOT_ID=0x0001 \
-  -DRF_MESH_NETWORK_ID=0x5452 \
-  -DRF_MESH_RF_CHANNEL=7 \
-  -DRF_MESH_RF_TXPOWER=0x00
-cmake --build build-node-b --target rf_mesh_node --parallel
+./build-rf-role.sh --role root --node-id 0x0001
+./build-rf-role.sh --role node --node-id 0x1001
+./build-rf-role.sh --role node --node-id 0x1002
 ```
 
 Role-specific ELFs:
 
 ```text
-build-root/firmware/rf_mesh_node/rf_mesh_node.elf
-build-node-a/firmware/rf_mesh_node/rf_mesh_node.elf
-build-node-b/firmware/rf_mesh_node/rf_mesh_node.elf
+artifacts/rf_mesh_node-root-0x0001.elf
+artifacts/rf_mesh_node-node-0x1001.elf
+artifacts/rf_mesh_node-node-0x1002.elf
 ```
 
 ### Flash role-specific images
@@ -208,15 +186,15 @@ Because `flash.sh` rebuilds from the shared default build directory, use pyOCD d
 
 ```bash
 pyocd erase --mass --uid <ROOT_PROBE_UID>
-pyocd load build-root/firmware/rf_mesh_node/rf_mesh_node.elf --uid <ROOT_PROBE_UID>
+pyocd load artifacts/rf_mesh_node-root-0x0001.elf --uid <ROOT_PROBE_UID>
 pyocd reset --uid <ROOT_PROBE_UID>
 
 pyocd erase --mass --uid <NODE_A_PROBE_UID>
-pyocd load build-node-a/firmware/rf_mesh_node/rf_mesh_node.elf --uid <NODE_A_PROBE_UID>
+pyocd load artifacts/rf_mesh_node-node-0x1001.elf --uid <NODE_A_PROBE_UID>
 pyocd reset --uid <NODE_A_PROBE_UID>
 
 pyocd erase --mass --uid <NODE_B_PROBE_UID>
-pyocd load build-node-b/firmware/rf_mesh_node/rf_mesh_node.elf --uid <NODE_B_PROBE_UID>
+pyocd load artifacts/rf_mesh_node-node-0x1002.elf --uid <NODE_B_PROBE_UID>
 pyocd reset --uid <NODE_B_PROBE_UID>
 ```
 
@@ -236,7 +214,7 @@ mesh id=0x.... root=... q=... rx=... tx_attempt=... dup=... drop=... relay_attem
 2. **Two-node stress test, 5 minutes**
    - Capture full logs and final counters.
    - Verify the route remains live and delivery continues for the full interval.
-   - Record drops/duplicates; do not equate `tx_attempt` with confirmed delivery because v1 has no ACK/retry.
+   - Record drops/duplicates; do not equate `tx_attempt` with confirmed delivery because v2 has no ACK/retry.
 3. **Three-node relay test**
    - Root A, relay B, edge C; isolate A↔C direct RF as far as practical.
    - C should learn a route whose next hop is B.
