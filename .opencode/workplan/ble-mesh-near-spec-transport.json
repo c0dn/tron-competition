@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 2,
+  "id": "ble-mesh-near-spec-transport",
+  "kind": "software-engineering",
+  "title": "BLE mesh-like near-spec transport on micro:bit v2 raw RADIO",
+  "goal": "Plan an execution-ready BLE advertising mesh-like transport for micro:bit v2/nRF52833 using the existing uT-Kernel raw-radio primitives, keeping Bluetooth Mesh spec-shape where practical while explicitly avoiding claims of full Bluetooth Mesh compliance.",
+  "scope": [
+    "Define a durable implementation contract for an experimental BLE legacy-advertising mesh-like packet format",
+    "Plan packet encode/decode helpers for dummy payloads using Manufacturer Specific Data AdvData",
+    "Plan a passive-listen-first RX/TX scheduler that interleaves bounded TX windows on one radio",
+    "Plan a combined ble_mesh_node target after packet and scheduler slices are reviewed",
+    "Plan no-flash verification, code-checker gates, and future Hermes flash gate"
+  ],
+  "nonGoals": [
+    "No Bluetooth Mesh compliance claim in this slice",
+    "No SoftDevice, Zephyr/NCS, GATT, PB-GATT, provisioning, mesh security, IV index, SAR, or standard mesh models",
+    "No hardware execution, no flash commands, no MAINTENANCE mode",
+    "No persistence/NVM writes for sequence numbers or provisioning data"
+  ],
+  "constraints": [
+    "Platform is micro:bit v2 / nRF52833",
+    "Use existing raw-radio BLE advertising/scanning primitives in microbit/app/drivers/ble_radio.{c,h}",
+    "One radio only: no true simultaneous TX/RX; behavior must be passive listening with controlled interleaved TX windows",
+    "If no concrete schema/spec file exists locally, use the approved conceptual schema in this workplan as protocol authority",
+    "Build baseline was validated externally for test_firmware, ble_beacon, and ble_observer; after changes, rebuild affected targets and new ble_mesh_node from microbit/",
+    "Future flash requires code-checker and Hermes gate; no flash during planning or initial implementation"
+  ],
+  "relevantFiles": [
+    "BLE_MESH_LANE_BRIEF.md",
+    "microbit/README.md",
+    "microbit/app/drivers/ble_radio.h",
+    "microbit/app/drivers/ble_radio.c",
+    "microbit/app/ble_beacon/src/main.c",
+    "microbit/app/ble_observer/src/main.c",
+    "microbit/app/CMakeLists.txt",
+    "microbit/build.sh",
+    "microbit/flash.sh",
+    "research_ble_mesh_execution_pass.md",
+    "microbit/app/ble_beacon/CMakeLists.txt",
+    "microbit/app/ble_observer/CMakeLists.txt",
+    "microbit/scripts/common.sh",
+    "microbit/app/protocol/tron_mesh_packet.h",
+    "microbit/app/protocol/ble_mesh_scheduler.h",
+    "microbit/app/protocol/README.md",
+    "microbit/tests/protocol/README.md",
+    "microbit/app/protocol/tron_mesh_packet.c",
+    "microbit/tests/protocol/test_tron_mesh_packet.c",
+    "microbit/tests/protocol/run_tron_mesh_packet_tests.sh",
+    "microbit/app/protocol/ble_mesh_scheduler.c",
+    "microbit/tests/protocol/test_ble_mesh_scheduler.c",
+    "microbit/tests/protocol/run_ble_mesh_scheduler_tests.sh",
+    "microbit/app/ble_mesh_node/CMakeLists.txt",
+    "microbit/app/ble_mesh_node/config/config.h",
+    "microbit/app/ble_mesh_node/src/main.c"
+  ],
+  "planFile": ".opencode/workplan/ble-mesh-near-spec-transport.md",
+  "specFiles": [
+    "BLE_MESH_LANE_BRIEF.md",
+    "research_ble_mesh_execution_pass.md"
+  ],
+  "phases": [
+    {
+      "id": "phase-0-contract-freeze",
+      "title": "Phase 0: API and packet/spec freeze",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-0a-freeze-packet-layout",
+          "title": "Freeze experimental AdvData packet layout",
+          "target": "microbit/app/protocol/tron_mesh_packet.{h,c} contract / README or header comment",
+          "action": "Document and encode the lab-only Manufacturer Specific Data schema: Flags AD [0x02,0x01,0x06]; Manufacturer AD type 0xFF; company 0xFFFF LE; magic 'T','M'; version 0x01; msg_type u8; net_id u8; ttl u8 max 3; src u16 LE; seq24 LE; payload_len u8; payload 0..12. Manufacturer length byte is 0x0F + payload_len and max 0x1B; total AdvData length is 19 + payload_len and max 31.",
+          "validation": "Schema is documented before code-writer parallel work; explicitly states not Bluetooth Mesh compliant and does not use Mesh Message AD type 0x2A.",
+          "status": "completed"
+        },
+        {
+          "id": "step-0b-freeze-packet-api",
+          "title": "Freeze packet helper API",
+          "target": "microbit/app/protocol/tron_mesh_packet.h",
+          "action": "Define constants, packet struct, and encode/decode result enum. Helpers operate on BLE AdvData bytes only and fail on overflow instead of relying on ble_radio_advertise truncation. Keep FICR node-ID derivation and RAM sequence counter ownership out of the pure packet module; those belong to node/platform code.",
+          "validation": "API covers OK, length error, missing AD, missing flags, company mismatch, magic/version mismatch, payload overflow/mismatch, TTL invalid, and remains host-testable without hardware registers.",
+          "status": "completed"
+        },
+        {
+          "id": "step-0c-freeze-scheduler-api",
+          "title": "Freeze scheduler state machine and API",
+          "target": "microbit/app/protocol/ble_mesh_scheduler.{h,c} or microbit/app/drivers/ble_radio_scheduler.{h,c}",
+          "action": "Define polling-first single-owner scheduler around ble_radio: RX_LISTEN(channel) -> RX_DISABLE/IDLE -> TX_ADV_WINDOW(channel_mask) -> RX_RESTORE(channel). Include dwell 50ms default, TX queue capacity 4, queue drop policy, counters, and explicit ble_radio_idle()/stop() approach if needed.",
+          "validation": "Contract says scheduler owns ble_radio_listen(), ble_radio_poll(), and radio idle/stop calls; no simultaneous TX/RX claim.",
+          "status": "completed"
+        },
+        {
+          "id": "step-0d-freeze-build-test-integration",
+          "title": "Freeze CMake and host-test integration ownership",
+          "target": "microbit/app/protocol/, microbit/tests/protocol/, app CMake target wiring",
+          "action": "Define shared-module integration before parallel implementation: protocol sources live in microbit/app/protocol; firmware apps include them directly in each target CMake unless a small object/static library is deliberately introduced in Phase 0. Define a host-native packet test harness separate from the cross firmware CMake, e.g. microbit/tests/protocol/CMakeLists.txt plus microbit/tests/protocol/run_tron_mesh_packet_tests.sh, so packet behavior can execute without flashing.",
+          "validation": "Contract lists exact host packet test command: from microbit/, ./tests/protocol/run_tron_mesh_packet_tests.sh. If a scheduler simulation harness is added, use ./tests/protocol/run_ble_mesh_scheduler_tests.sh. Packet slice owns protocol/test CMake and host packet harness; scheduler slice owns scheduler simulation harness if introduced; ble_mesh_node firmware CMake ownership remains in integration slice.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-1-packet-layer",
+      "title": "Phase 1: Packet-layer implementation slice",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-1a-implement-packet-module",
+          "title": "Implement packet encode/decode module",
+          "target": "microbit/app/protocol/tron_mesh_packet.{h,c}",
+          "action": "Code-writer A implements the frozen packet API, documentation, and host-native packet test harness only; no radio state access and no hardware register access. Host tests compile the pure packet module with the host compiler, not the arm-none-eabi firmware toolchain.",
+          "validation": "Host tests must cover encode/decode round trip, zero-length payload, max payload 12, exact 31-byte packet, payload overflow reject, payload length mismatch reject, invalid AD length reject, missing Flags AD reject, missing manufacturer AD reject, wrong magic reject, wrong version reject, wrong company reject, TTL > 3 reject, 24-bit sequence little-endian, and multiple AD structures.",
+          "status": "completed"
+        },
+        {
+          "id": "step-1b-code-checker-packet",
+          "title": "Code-checker gate for packet slice",
+          "target": "packet module and tests",
+          "action": "Run code-checker adversarial review after packet slice.",
+          "validation": "No handoff to integration until blocker/major packet findings are resolved.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-scheduler",
+      "title": "Phase 2: RX/TX scheduler and radio ownership slice",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-2a-implement-scheduler",
+          "title": "Implement passive-listen-first scheduler wrapper",
+          "target": "microbit/app/protocol/ble_mesh_scheduler.{h,c} and minimal ble_radio idle hook if required",
+          "action": "Code-writer B implements scheduler in parallel with Phase 1 after Phase 0. Scope excludes packet module. Preserve existing ble_beacon/ble_observer source compatibility unless a reviewed API adjustment is required. The scheduler/driver contract must include safe RX snapshotting before decode, such as disable-before-copy, double buffering, or another reviewed driver API, so continuous RX cannot overwrite the packet being processed.",
+          "validation": "No-hardware scheduler tests/simulation cover RX default, enqueue TX, disable RX before TX, restore RX channel, queue full/drop policy, relay-priority drops, rate limiting, channel dwell/hop behavior, and safe RX snapshot ownership.",
+          "status": "completed"
+        },
+        {
+          "id": "step-2b-code-checker-scheduler",
+          "title": "Code-checker gate for scheduler slice",
+          "target": "scheduler module and ble_radio changes",
+          "action": "Run code-checker adversarial review focused on radio ownership, state transitions, edge cases, and existing target preservation.",
+          "validation": "No handoff to integration until blocker/major scheduler findings are resolved.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-node-integration",
+      "title": "Phase 3: Combined detector/mesh-node integration slice",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-3a-create-ble-mesh-node-target",
+          "title": "Create ble_mesh_node firmware target",
+          "target": "microbit/app/ble_mesh_node/",
+          "action": "Serialize after packet and scheduler code-checker gates. Add target that listens passively by default, decodes packets, logs dummy payloads/counters, sends own dummy/status packets at >=1000ms interval, and schedules bounded relays.",
+          "validation": "Build target exists without breaking test_firmware, ble_beacon, or ble_observer.",
+          "status": "completed"
+        },
+        {
+          "id": "step-3b-implement-relay-bounds",
+          "title": "Implement bounded dedupe and relay behavior",
+          "target": "microbit/app/ble_mesh_node/src/main.c or local node module",
+          "action": "Drop duplicate packets before local log/delivery and relay scheduling. Deliver/log non-duplicates locally regardless of TTL. Relay only if TTL > 0, packet is not from self, and duplicate cache permits; decrement TTL by 1; dedupe cache at least 16 entries with ~10s expiry; random relay backoff 20-120ms; relay rate limit max 5 relay TX events/sec; TX queue capacity 4 drops relay packets first. Define ttl_drop as relay suppression because TTL == 0, not local delivery suppression.",
+          "validation": "Counters exposed with clear semantics: rx_ok, tx_ok, decode_error, duplicate_drop, ttl_drop meaning relay suppressed at TTL 0, queue_drop, relay_scheduled, relay_rate_limited.",
+          "status": "completed"
+        },
+        {
+          "id": "step-3c-code-checker-integration",
+          "title": "Code-checker gate for integrated node",
+          "target": "ble_mesh_node and shared modules",
+          "action": "Run final implementation code-checker review before any hardware-related plan.",
+          "validation": "No hardware-gated step proposed until blocker/major integration findings are resolved.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-no-flash-verification",
+      "title": "Phase 4: No-flash verification and future hardware gate",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-4a-run-no-flash-checks",
+          "title": "Run no-flash tests and builds",
+          "target": "microbit/",
+          "action": "From /home/lucas/Workspace/tron-worktrees/ble-mesh/microbit, run the host-native packet test harness added in Phase 1 (./tests/protocol/run_tron_mesh_packet_tests.sh), run scheduler simulation if added (./tests/protocol/run_ble_mesh_scheduler_tests.sh), then build test_firmware, ble_beacon, ble_observer, and ble_mesh_node. Do not treat firmware-integrated tests as executed unless flashed; packet behavior tests must be host-native or explicitly downgraded to compile-only in a separate reviewed plan revision.",
+          "validation": "Host packet tests execute without hardware; scheduler simulation executes without hardware if present; ./build.sh test_firmware; ./build.sh ble_beacon; ./build.sh ble_observer; ./build.sh ble_mesh_node. No flash commands.",
+          "status": "completed"
+        },
+        {
+          "id": "step-4b-hardware-flash-gate",
+          "title": "Gate any future flash/hardware step",
+          "target": "future execution only",
+          "action": "Before any future flash, run code-checker focused on hardware safety, hard-brick risk, wrong target/probe risk, and flash-script assumptions. Current microbit/flash.sh performs pyocd erase --mass and must not be used casually. Hermes must approve exact command/target and ensure no concurrent flashing. Prefer UID-targeted normal target flashing only.",
+          "validation": "No MAINTENANCE mode, no ambiguous device path, no hardware claims unless actually performed; no use of mass erase flow without explicit Hermes approval.",
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [
+    {
+      "severity": "note",
+      "title": "Prior plan-checker review found no blockers after packet/API freeze clarifications",
+      "detail": "Minor clarifications incorporated during planning.",
+      "source": "plan-checker session ses_0d88a6a20ffek3mG90SLGceYem",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "No-flash packet test path needed executable host harness",
+      "detail": "Resolved by host-native packet tests under microbit/tests/protocol with exact no-hardware command.",
+      "source": "plan-checker durable review ses_0d87c582cffeeJL943zB8iihQe",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "RX buffering/radio ownership hazard under-specified",
+      "detail": "Resolved by scheduler-owned one-shot RX and snapshot tests.",
+      "source": "plan-checker durable review ses_0d87c582cffeeJL943zB8iihQe",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "CMake/shared-module ownership needed concrete pattern",
+      "detail": "Resolved by Phase 0 build/test integration freeze and direct-source firmware inclusion plan.",
+      "source": "plan-checker durable review ses_0d87c582cffeeJL943zB8iihQe",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Packet module purity conflicted with node identity",
+      "detail": "Resolved by keeping packet module pure and moving FICR node-ID/sequence ownership to node/platform code.",
+      "source": "plan-checker durable review ses_0d87c582cffeeJL943zB8iihQe",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Scheduler validation too weak",
+      "detail": "Resolved by host scheduler/radio simulation tests.",
+      "source": "plan-checker durable review ses_0d87c582cffeeJL943zB8iihQe",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Packet seq24 high bits are silently masked",
+      "detail": "Resolved by documenting that only low 24 bits of seq24 are encoded on air.",
+      "source": "code-checker packet review ses_0d844b394ffeKHHU46L5pdjE4A",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Scheduled TX can hang after RX/idle because TX shortcuts are not restored",
+      "detail": "Resolved by configuring TX shortcuts before every TXEN and covering idle/RX shortcut transitions in host radio tests.",
+      "source": "code-checker scheduler review ses_0d844b37effePKS0Rnl2R3iWUQ",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "RX snapshot not safe enough with continuous RX SHORT_END_START",
+      "detail": "Resolved by adding ble_radio_listen_once with END_DISABLE and using it for scheduler-owned RX.",
+      "source": "code-checker scheduler review ses_0d844b37effePKS0Rnl2R3iWUQ",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "RX restore resets dwell timing and can prevent channel hopping under traffic",
+      "detail": "Resolved by separating restore from fresh dwell start and hopping on expired dwell.",
+      "source": "code-checker scheduler review ses_0d844b37effePKS0Rnl2R3iWUQ",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "radio_disable can hard hang during one-shot END_DISABLE race",
+      "detail": "Resolved by making radio_disable wait on RADIO_STATE rather than relying on a fresh EVENTS_DISABLED event; host regression covers lost DISABLED event behavior.",
+      "source": "code-checker scheduler re-review ses_0d82ac863ffeeYHMGF6o4BSvk3",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "scheduler_poll with NULL event counts valid RX as rx_crc_or_empty",
+      "detail": "Resolved by validating RX PDU shape independently and counting valid NULL-event snapshots as rx_ok; malformed snapshots still count as rx_crc_or_empty.",
+      "source": "code-checker scheduler re-review ses_0d82ac863ffeeYHMGF6o4BSvk3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "ble_mesh_node queue_drop log misses scheduler-internal drops",
+      "detail": "Resolved by exposing max(node-observed queue drops, scheduler queue_drop), which includes scheduler-internal relay replacement drops without double-counting normal failed enqueues.",
+      "source": "code-checker integration review ses_0d80732edffe2LK3WCycmE57R4",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Own packet actual TX spacing may be less than 1000ms under backlog",
+      "detail": "Accepted for this slice as enqueue interval semantics; strict on-air spacing can be a future improvement if required.",
+      "source": "code-checker integration reviews ses_0d80732edffe2LK3WCycmE57R4 / ses_0d7fdd650ffexnGArQfX8Ww9IH",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "No host-level tests for integrated node policy",
+      "detail": "Accepted for this slice; packet and scheduler behavior are host-tested and node policy is build/code-checker validated. Future extraction/harness recommended if policy grows.",
+      "source": "code-checker integration reviews ses_0d80732edffe2LK3WCycmE57R4 / ses_0d7fdd650ffexnGArQfX8Ww9IH",
+      "status": "resolved"
+    },
+    {
+      "severity": "note",
+      "title": "Integrated node slice accepted for final no-flash validation",
+      "detail": "Latest code-checker found no blocker/critical/major findings after queue_drop fix.",
+      "source": "code-checker integration acceptance ses_0d7fdd650ffexnGArQfX8Ww9IH",
+      "status": "resolved"
+    }
+  ],
+  "notes": [
+    "External grounding also used from ../admin-canonical/research_microbit_v2.md, ../admin-canonical/research_takeaways_for_planning.md, and ../admin-canonical/FLASH_GATING_POLICY.md; workplan spec file validation requires specFiles to stay inside this workspace root, so those are recorded here as notes rather than specFiles.",
+    "Targeted local schema/spec search found no concrete protocol file; this workplan freezes the approved conceptual schema for the implementation slice.",
+    "Existing code has raw-radio BLE advertising and passive scan primitives, but no full Bluetooth Mesh stack.",
+    "Use lab-only Manufacturer Specific Data rather than official Mesh Message AD type 0x2A to avoid emitting fake Bluetooth Mesh traffic.",
+    "research_ble_mesh_execution_pass.md is retained as execution-pass context, but its earlier build-baseline note may reflect a prior submodule state; this durable workplan is authoritative for current execution assumptions.",
+    "Execution started in non-hardware mode only. No flash, hardware, MAINTENANCE, or hardware claims are in scope.",
+    "Phase 0 contract freeze completed with protocol headers and README documentation. Packet module remains pure; scheduler header documents single-radio passive-listen/interleaved-TX contract.",
+    "Packet and scheduler implementation slices completed by code-writer lanes. Main-agent no-hardware validation passed: ./tests/protocol/run_tron_mesh_packet_tests.sh and ./tests/protocol/run_ble_mesh_scheduler_tests.sh.",
+    "Code-checker packet gate accepted for integration with one minor documentation/semantics note. Code-checker scheduler gate found one blocker and two major findings requiring a fix pass before integration.",
+    "Scheduler re-review resolved prior shortcut/RX/dwell issues but found a major radio_disable END_DISABLE race requiring another narrow fix pass.",
+    "Packet and scheduler code-checker gates are complete. All blocker/major findings were resolved. Main-agent no-hardware tests passed after final cleanup: packet tests, radio driver host tests, scheduler tests.",
+    "Phase 3 ble_mesh_node integration implemented. Main-agent no-hardware validation passed: packet tests, scheduler/radio host tests, and ./build.sh ble_mesh_node.",
+    "Integration code-checker found one major counter exposure mismatch in ble_mesh_node queue_drop semantics requiring a narrow fix pass.",
+    "Phase 3 code-checker gate is complete. The queue_drop major was fixed and the integrated node slice is accepted for final no-flash validation. Minor findings about strict own-TX on-air spacing and node policy host tests are deferred recommendations, not blockers for this approved slice.",
+    "Final no-flash validation completed successfully from microbit/: packet host tests, scheduler/radio host tests, and builds for test_firmware, ble_beacon, ble_observer, and ble_mesh_node. No flash commands or hardware actions were executed. Hardware/flash remains gated by future code-checker + Hermes approval."
+  ],
+  "status": "completed",
+  "createdAt": "2026-07-03T10:25:25.732Z",
+  "updatedAt": "2026-07-03T12:52:37.109Z"
+}
