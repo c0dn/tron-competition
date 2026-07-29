@@ -5,6 +5,12 @@
  * for the BLE access address, CRC-24, per-channel data whitening, and
  * GFSK 1 Mbit. Each advertising event transmits the same PDU on the three
  * advertising channels in turn.
+ *
+ * TX and RX use incompatible SHORTS wiring, so every mode switch sets its own
+ * and passes through DISABLED on the way. Getting this wrong is not a
+ * performance detail: transmitting with the receiver's SHORTS in place wedges
+ * the busy-wait below forever. See the SHORTS note on radio_tx_one(), and
+ * app/mesh_echo for the regression test that catches it.
  */
 
 #include "ble_radio.h"
@@ -64,6 +70,39 @@ static const UB adv_white[3] = { 37, 38, 39 };
    PACKETPTR. payload = AdvA(6) + AdvData. */
 static UB pkt[2 + 6 + BLE_ADV_MAX_DATA] __attribute__((aligned(4)));
 
+/* Receive landing buffer. SHORT_END_START restarts RX into this same buffer, so
+   a packet arriving before the next poll overwrites its predecessor silently.
+   EVENTS_END is a single flag and cannot record that it happened. Counting the
+   loss needs hardware help (PPI routing EVENTS_END to a counter) rather than a
+   software ring, which would not stop the overwrite - deferred with the
+   hardware-timer work rather than faked here. */
+static UB rx_pkt[BLE_RX_MAX] __attribute__((aligned(4)));
+
+/* Radio ownership. Advertising and relaying run on different tasks, so every
+   entry point that touches the peripheral serialises here. TA_INHERIT keeps a
+   low-priority relay from blocking the detector's own advert; the critical
+   sections are short (a 3-channel burst is ~1.2 ms). */
+static ID   radio_mtx = 0;
+
+/* Receive state, so a transmit can put the receiver back exactly as it was.
+   Without this a node goes deaf the first time it transmits. */
+static UINT rx_ch = 37;
+static BOOL rx_active = FALSE;
+
+static void radio_lock(void)
+{
+    if (radio_mtx > 0) {
+        tk_loc_mtx(radio_mtx, TMO_FEVR);
+    }
+}
+
+static void radio_unlock(void)
+{
+    if (radio_mtx > 0) {
+        tk_unl_mtx(radio_mtx);
+    }
+}
+
 static void radio_disable(void)
 {
     if (in_w(RADIO_STATE) != 0) {       /* 0 == Disabled */
@@ -75,7 +114,14 @@ static void radio_disable(void)
 
 void ble_radio_init(void)
 {
+    T_CMTX cmtx = { .exinf = NULL, .mtxatr = TA_INHERIT, .ceilpri = 0 };
+
+    if (radio_mtx <= 0) {
+        radio_mtx = tk_cre_mtx(&cmtx);  /* <=0: single-task caller, run unlocked */
+    }
+
     radio_disable();
+    rx_active = FALSE;
 
     out_w(RADIO_MODE, 3);               /* Ble_1Mbit */
     out_w(RADIO_TXPOWER, 0);            /* 0 dBm */
@@ -99,8 +145,22 @@ void ble_radio_init(void)
     out_w(RADIO_SHORTS, SHORT_READY_START | SHORT_END_DISABLE);
 }
 
-static void tx_on_channel(INT ch)
+/* Transmit the staged packet on one advertising channel.
+ *
+ * SHORTS and radio_disable() here are load-bearing, not defensive tidiness.
+ * ble_radio_listen() leaves SHORTS = READY_START | ADDRESS_RSSISTART |
+ * END_START and the peripheral in RX. Inheriting that state would sequence a
+ * transmit TXEN -> READY -> START -> END -> START -> ... so EVENTS_DISABLED is
+ * never raised and the wait below never returns; keying TASKS_TXEN out of RX is
+ * invalid regardless, since the state machine has to pass through DISABLED.
+ * Setting both unconditionally makes a transmit independent of whatever ran
+ * before it. app/mesh_echo exists to catch a regression here.
+ */
+static void radio_tx_one(INT ch)
 {
+    radio_disable();
+    out_w(RADIO_SHORTS, SHORT_READY_START | SHORT_END_DISABLE);
+
     out_w(RADIO_FREQUENCY, adv_freq[ch]);
     out_w(RADIO_DATAWHITEIV, adv_white[ch]);
     out_w(RADIO_PACKETPTR, (UW)pkt);
@@ -112,7 +172,39 @@ static void tx_on_channel(INT ch)
     while (in_w(RADIO_EVENTS_DISABLED) == 0) {}   /* shorts: ready->start->end->disable */
 }
 
-void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
+/* Reconfigure for continuous receive. Caller must hold the radio lock. */
+static void listen_locked(UINT channel)
+{
+    UB freq = (channel == 37) ? 2 : (channel == 39) ? 80 : 26;
+
+    radio_disable();
+    out_w(RADIO_FREQUENCY, freq);
+    out_w(RADIO_DATAWHITEIV, channel);
+    out_w(RADIO_PACKETPTR, (UW)rx_pkt);
+    /* ready->start, sample RSSI on address match, auto-restart after each
+       packet to stay in continuous receive */
+    out_w(RADIO_SHORTS,
+          SHORT_READY_START | SHORT_ADDRESS_RSSISTART | SHORT_END_START);
+
+    out_w(RADIO_EVENTS_END, 0);
+    out_w(RADIO_TASKS_RXEN, 1);
+
+    rx_ch = channel;
+    rx_active = TRUE;
+}
+
+void ble_radio_set_txpower(INT dbm)
+{
+    /* nRF52833 accepts a fixed set: +8..+2, 0, -4, -8, -12, -16, -20, -30, -40.
+       The register is two's complement dBm, so the cast covers all of them.
+       Useful for shrinking a node's range on the bench to force a multi-hop
+       topology onto a desk instead of a corridor. */
+    radio_lock();
+    out_w(RADIO_TXPOWER, (UW)(dbm & 0xFF));
+    radio_unlock();
+}
+
+void ble_radio_tx(const UB *adv, UINT adv_len, const UB *addr6, UB chan_mask)
 {
     UINT i;
     INT ch;
@@ -120,6 +212,8 @@ void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
     if (adv_len > BLE_ADV_MAX_DATA) {
         adv_len = BLE_ADV_MAX_DATA;
     }
+
+    radio_lock();
 
     pkt[0] = PDU_TYPE_ADV_NONCONN_IND | PDU_TXADD_RANDOM;   /* S0: header */
     pkt[1] = (UB)(6 + adv_len);                             /* LENGTH: AdvA + data */
@@ -145,44 +239,52 @@ void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
     }
 
     for (ch = 0; ch < 3; ch++) {
-        tx_on_channel(ch);
+        if (chan_mask & (1U << ch)) {
+            radio_tx_one(ch);
+        }
     }
+
+    /* Hand the radio back to the receiver if it was listening before. A relay
+       transmits constantly; without this it hears exactly one packet ever. */
+    if (rx_active) {
+        listen_locked(rx_ch);
+    }
+
+    radio_unlock();
+}
+
+void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
+{
+    ble_radio_tx(adv, adv_len, addr6, BLE_CHAN_MASK_ALL);
 }
 
 /* --- Observer (passive scan) side --- */
 
-static UB rx_pkt[BLE_RX_MAX] __attribute__((aligned(4)));
-
 void ble_radio_listen(UINT channel)
 {
-    UB freq = (channel == 37) ? 2 : (channel == 39) ? 80 : 26;
-
-    radio_disable();
-    out_w(RADIO_FREQUENCY, freq);
-    out_w(RADIO_DATAWHITEIV, channel);
-    out_w(RADIO_PACKETPTR, (UW)rx_pkt);
-    /* ready->start, sample RSSI on address match, auto-restart after each
-       packet to stay in continuous receive */
-    out_w(RADIO_SHORTS,
-          SHORT_READY_START | SHORT_ADDRESS_RSSISTART | SHORT_END_START);
-
-    out_w(RADIO_EVENTS_END, 0);
-    out_w(RADIO_TASKS_RXEN, 1);
+    radio_lock();
+    listen_locked(channel);
+    radio_unlock();
 }
 
-int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
+int ble_radio_poll_ex(ble_rx_t *out)
 {
     UINT n, i;
+    SYSTIM t;
+
+    radio_lock();
 
     if (in_w(RADIO_EVENTS_END) == 0) {
+        radio_unlock();
         return 0;                        /* nothing received yet */
     }
     out_w(RADIO_EVENTS_END, 0);
 
     /* RSSISAMPLE is positive; actual power = -RSSISAMPLE dBm */
-    *rssi_dbm = in_w(RADIO_RSSISAMPLE) & 0x7F;
+    out->rssi_dbm = in_w(RADIO_RSSISAMPLE) & 0x7F;
 
     if ((in_w(RADIO_CRCSTATUS) & 1) == 0) {
+        radio_unlock();
         return 0;                        /* CRC error - drop */
     }
 
@@ -191,8 +293,31 @@ int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
         n = BLE_RX_MAX;
     }
     for (i = 0; i < n; i++) {
-        buf[i] = rx_pkt[i];
+        out->pdu[i] = rx_pkt[i];
     }
-    *len = n;
+    out->len = n;
+    out->ch = (UB)rx_ch;
+
+    radio_unlock();
+
+    /* Millisecond stamp for cache aging. Sub-tick relay backoff needs better
+       than this and will come from a hardware timer, not the kernel clock. */
+    out->t_ms = (tk_get_otm(&t) == E_OK) ? (UW)t.lo : 0;
+    return 1;
+}
+
+int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
+{
+    ble_rx_t rx;
+    UINT i;
+
+    if (!ble_radio_poll_ex(&rx)) {
+        return 0;
+    }
+    for (i = 0; i < rx.len; i++) {
+        buf[i] = rx.pdu[i];
+    }
+    *len = rx.len;
+    *rssi_dbm = rx.rssi_dbm;
     return 1;
 }

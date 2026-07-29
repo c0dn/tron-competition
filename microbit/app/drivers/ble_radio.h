@@ -16,6 +16,12 @@
 
 #define BLE_ADV_MAX_DATA    31      /* max AD-structure bytes in a legacy ADV */
 
+/* Channel-mask bits for ble_radio_tx(): bit 0 = ch37, 1 = ch38, 2 = ch39. */
+#define BLE_CHAN_37         0x01
+#define BLE_CHAN_38         0x02
+#define BLE_CHAN_39         0x04
+#define BLE_CHAN_MASK_ALL   0x07
+
 /* Configure the RADIO for BLE 1M advertising. The kernel already starts the
    HFXO crystal the radio needs. Call once at boot. */
 void ble_radio_init(void);
@@ -26,15 +32,43 @@ void ble_radio_init(void);
    pass NULL to use the chip's FICR-derived random static address. */
 void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6);
 
+/* As ble_radio_advertise(), but transmits only on the channels selected by
+   'chan_mask'. Relaying on one channel costs a third of the airtime of three,
+   which is worth having once several nodes rebroadcast - but only if every node
+   camps on that same channel, since ble_radio_listen() covers one at a time.
+   Safe when transmitting and receiving are always symmetric. */
+void ble_radio_tx(const UB *adv, UINT adv_len, const UB *addr6, UB chan_mask);
+
+/* Set transmit power in dBm. The nRF52833 accepts +8..+2, 0, -4, -8, -12, -16,
+   -20, -30 and -40; other values are undefined. Turning a node down is the
+   practical way to force a relay topology on a bench, where every node would
+   otherwise hear every other one directly. */
+void ble_radio_set_txpower(INT dbm);
+
 /* --- Observer (passive scan) side --- */
 
 /* Largest received PDU: 2 (header+length) + 6 (AdvA) + 31 (AdvData). */
 #define BLE_RX_MAX          39
 
+/* A received packet plus the metadata a relay needs: RSSI for link quality,
+   arrival time for duplicate-cache aging, channel for diagnostics. */
+typedef struct {
+    UB   pdu[BLE_RX_MAX];   /* [S0][LENGTH][AdvA(6)][AdvData...]        */
+    UINT len;               /* total bytes in pdu (>= 8)                */
+    UINT rssi_dbm;          /* positive; actual power = -rssi_dbm dBm   */
+    UW   t_ms;              /* kernel millisecond stamp at poll         */
+    UB   ch;                /* advertising channel it was heard on      */
+} ble_rx_t;
+
 /* Put the radio into continuous receive on one primary advertising channel
    (37, 38, or 39). The beacon transmits on all three each event, so camping
-   on one channel still catches it. Call once before polling. */
+   on one channel still catches it. Call once before polling.
+   The channel is remembered: any later transmit restores this receive state
+   when it finishes, so a relay does not go deaf after its first rebroadcast. */
 void ble_radio_listen(UINT channel);
+
+/* As ble_radio_poll(), with the extra metadata described by ble_rx_t. */
+int ble_radio_poll_ex(ble_rx_t *out);
 
 /* Non-blocking poll for a received advertising packet. On a CRC-valid
    packet returns 1 with the raw PDU copied to 'buf' as
