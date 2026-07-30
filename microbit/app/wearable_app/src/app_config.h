@@ -87,4 +87,31 @@
 #define BURST_INTERVAL_MS       120     /* fast re-broadcast on an event      */
 #define BURST_COUNT             50      /* ~6 s of burst per event            */
 
+/* --- Flood mesh ----------------------------------------------------------
+ * 1 makes this wearable relay other wearables' messages as well as its own,
+ * extending range past what one hop to the ESP32-C3 can cover. 0 removes the
+ * relay task and the transport header, so the firmware is byte-identical ON AIR
+ * to the pre-mesh build - the fallback if mesh behaviour is ever suspect during
+ * a demo, and the reference when measuring what the mesh costs.
+ *
+ * 0 is not a flash saving: without --gc-sections the mesh objects are linked
+ * regardless, and the measured difference is 52 bytes. See CMakeLists.txt.
+ *
+ * Everything else the mesh needs (hop budget, backoff window, cache size) is
+ * in app/mesh/src/mesh_config.h with its reasoning; override here only if this
+ * unit needs to differ from the rest of the deployment.
+ *
+ * Cost when enabled: one extra task at priority 13 that spins on the radio
+ * (so it must stay the lowest-priority task in this app), one at 11 that
+ * serves relay backoff, and roughly 400 bytes of state. */
+#define MESH_ENABLE             1
+
+/* Relay backoff task. Must outrank the spinning receive task below, and must
+   sit under the detection tasks (3..6) so relaying never delays a sample. */
+#define MESH_TX_TASK_PRI        11
+
+/* Receive/relay task. Lowest priority in this app by construction: it does not
+   sleep, so anything at or below it would be starved. */
+#define MESH_RX_TASK_PRI        13
+
 #endif /* APP_CONFIG_H */

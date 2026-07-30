@@ -24,6 +24,9 @@
 #include "fusion.h"
 #include "ble_emit.h"
 #include "imu.h"        /* LSM303AGR_WHOAMI */
+#if MESH_ENABLE
+#  include "mesh_flood.h"
+#endif
 
 #define FLG_FALL    (0x01U)
 #define FLG_SOUND   (0x02U)
@@ -147,6 +150,20 @@ LOCAL void fusion_task(INT stacd, void *exinf)
     }
 }
 
+#if MESH_ENABLE
+/* ---- mesh_relay_task: carry other nodes' traffic ------------------------ *
+ * Lowest priority in the app, and deliberately so: it spins on the radio
+ * rather than sleeping, because sleeping between polls loses packets (the
+ * receiver lands every advert in one buffer). Everything above it here is
+ * timer-driven and preempts it, so it only consumes what is left over.
+ * The random backoff does NOT happen here - mesh_init() runs that on its own
+ * task, so relaying never blocks receiving. */
+LOCAL void mesh_relay_task(INT stacd, void *exinf)
+{
+    mesh_task();
+}
+#endif
+
 /* ---- advertise_task: adaptive cadence, schema-v1 emit ------------------- */
 LOCAL void advertise_task(INT stacd, void *exinf)
 {
@@ -221,12 +238,20 @@ EXPORT INT usermain(void)
                   g_mtx, g_flg);
     }
 
-    tm_printf((UB *)"wearable_app: detection running (zero-ML)\n");
+#if MESH_ENABLE
+    tm_printf((UB *)"wearable_app: detection running (zero-ML), mesh ON id=0x%02x\n",
+              DEVICE_ID);
+#else
+    tm_printf((UB *)"wearable_app: detection running (zero-ML), mesh off\n");
+#endif
 
     make_task((FP)fusion_task,    3);
     make_task((FP)sensor_task,    4);
     make_task((FP)sound_task,     5);
     make_task((FP)advertise_task, 6);
+#if MESH_ENABLE
+    make_task((FP)mesh_relay_task, MESH_RX_TASK_PRI);
+#endif
 
     tk_slp_tsk(TMO_FEVR);
     return 0;
