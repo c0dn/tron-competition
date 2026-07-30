@@ -57,17 +57,17 @@ def hop_verdict(seen: dict[int, int], peer: str | None) -> str:
     if peer is None:
         return ""
     if not seen:
-        return f"from {peer}: nothing heard yet"
+        return f"{peer} not heard yet"
 
     direct = seen.get(TTL_MAX, 0)
     relayed = sum(count for ttl, count in seen.items() if ttl < TTL_MAX)
-    spread = " ".join(f"ttl={t}x{seen[t]}" for t in sorted(seen, reverse=True))
+    spread = ",".join(f"ttl{t}x{seen[t]}" for t in sorted(seen, reverse=True))
 
     if direct == 0 and relayed > 0:
-        return f"from {peer}: RELAYED ONLY [{spread}] direct=0"
+        return f"{peer} RELAYED ONLY {spread} direct=0"
     if direct > 0:
-        return f"from {peer}: HEARD DIRECT [{spread}] <- not a 2-hop path"
-    return f"from {peer}: [{spread}]"
+        return f"{peer} HEARD DIRECT {spread} <- NOT 2-hop"
+    return f"{peer} {spread}"
 
 
 def render(args: argparse.Namespace,
@@ -83,32 +83,32 @@ def render(args: argparse.Namespace,
 
     if args.role == "relay":
         detail = (
-            f"hears BOTH endpoints direct (ttl={TTL_MAX}) | "
-            f"FORWARDED={relayed}{change} | dup_suppressed={dupes}"
+            f"both endpoints DIRECT ttl={TTL_MAX} | "
+            f"fwd={relayed}{change} dup={dupes}"
         )
     else:
         detail = (
             f"{hop_verdict(seen, args.peer)} | "
-            f"direct_blocked={blocked} | FORWARDED={relayed}{change}"
+            f"blocked={blocked} fwd={relayed}{change}"
         )
 
     colour = COLORS[args.role]
-    return f"{colour}{args.label:<7} {node_id}{RESET} | {detail}"
+    return f"{colour}{args.label:<6} {node_id}{RESET} | {detail}"
 
 
 def print_header(args: argparse.Namespace) -> None:
     colour = COLORS[args.role]
     if args.role == "relay":
-        blurb = ("Normal node, blocks nobody. Hears both endpoints at full TTL, "
-                 "so it is the only path between them.")
+        blurb = "Blocks nobody. Hears both endpoints at full TTL,"
+        blurb2 = "so it is the only path between them."
     else:
-        blurb = (f"Normal node. Direct (full-TTL) frames from {args.peer} are dropped, "
-                 f"so anything it hears from {args.peer} arrived through the relay.")
-    print(f"{colour}=== {args.label} - BLE FLOOD MESH ==={RESET}")
+        blurb = f"Drops direct (full-TTL) frames from {args.peer}, so"
+        blurb2 = f"anything heard from {args.peer} came via the relay."
+    print(f"{colour}=== {args.label} {args.device} - BLE FLOOD MESH ==={RESET}")
     print(blurb)
-    print(f"{DIM}TTL {TTL_MAX} = straight from originator. Lower = someone rebroadcast it.{RESET}")
-    print(f"Serial: {args.device}")
-    print("-" * 96, flush=True)
+    print(blurb2)
+    print(f"{DIM}ttl{TTL_MAX}=direct from originator. Lower=rebroadcast.{RESET}")
+    print("-" * 78, flush=True)
 
 
 def main() -> int:

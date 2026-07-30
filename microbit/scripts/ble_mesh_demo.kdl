@@ -7,6 +7,15 @@
 // Use -n (--new-session-with-layout), not -l/--layout: with -s, -l means
 // "add these panes as a tab to an existing session" and fails if none exists.
 //
+// If you start this detached (e.g. wrapped in `script` so it gets a pty),
+// kill that bootstrap client once the panes are up:
+//
+//   pkill -f ble_mesh_demo.kdl
+//
+// Zellij sizes panes to the SMALLEST attached client, so an 80x24 bootstrap
+// pty left running will pin the whole session to 80x24 no matter how large
+// the window you later attach with.
+//
 // Topology (forced in firmware, see --block-direct-peer):
 //
 //   NODE-A 0x0001  <-- ignores direct frames from 0x0003
