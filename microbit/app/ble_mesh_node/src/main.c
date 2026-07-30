@@ -14,6 +14,7 @@
 
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
+#include "tron_mesh_dedupe.h"
 #include "tron_mesh_packet.h"
 
 #define FICR_DEVICEADDR0          0x100000A4UL
@@ -22,20 +23,9 @@
 #define TRON_NODE_OWN_TTL         TRON_MESH_TTL_MAX
 #define TRON_NODE_OWN_INTERVAL_MS 1000u
 #define TRON_NODE_STATS_MS        5000u
-#define TRON_NODE_DEDUPE_SIZE     16u
-#define TRON_NODE_DEDUPE_TTL_MS   10000u
 #define TRON_NODE_RELAY_MIN_MS    20u
 #define TRON_NODE_RELAY_MAX_MS    120u
 #define TRON_NODE_LOOP_DELAY_MS   2u
-
-typedef struct tron_node_dedupe_entry {
-    uint8_t valid;
-    uint8_t net_id;
-    uint8_t msg_type;
-    uint16_t src;
-    uint32_t seq24;
-    uint32_t expires_at_ms;
-} tron_node_dedupe_entry_t;
 
 typedef struct tron_node_counters {
     uint32_t rx_ok;
@@ -46,7 +36,7 @@ typedef struct tron_node_counters {
     uint32_t relay_scheduled;
 } tron_node_counters_t;
 
-static tron_node_dedupe_entry_t dedupe_cache[TRON_NODE_DEDUPE_SIZE];
+static tron_mesh_dedupe_t dedupe_cache;
 static tron_node_counters_t node_counters;
 static uint32_t next_seq24;
 static uint32_t prng_state;
@@ -66,11 +56,6 @@ static void clear_memory(void *ptr, size_t len)
         *p++ = 0u;
         len--;
     }
-}
-
-static int time_reached(uint32_t now, uint32_t deadline)
-{
-    return (uint32_t)(now - deadline) < 0x80000000UL;
 }
 
 static uint16_t node_id(void)
@@ -98,54 +83,9 @@ static uint32_t relay_backoff_ms(const tron_mesh_packet_t *packet, uint32_t now)
     return TRON_NODE_RELAY_MIN_MS + (next_prng() % span);
 }
 
-static int same_packet(const tron_node_dedupe_entry_t *entry,
-                       const tron_mesh_packet_t *packet)
-{
-    return entry->valid != 0u &&
-           entry->net_id == packet->net_id &&
-           entry->msg_type == packet->msg_type &&
-           entry->src == packet->src &&
-           entry->seq24 == (packet->seq24 & TRON_MESH_SEQ24_MAX);
-}
-
 static int dedupe_seen_or_insert(const tron_mesh_packet_t *packet, uint32_t now)
 {
-    int insert = -1;
-    uint32_t oldest_expiry = 0u;
-    UINT i;
-
-    for (i = 0u; i < TRON_NODE_DEDUPE_SIZE; i++) {
-        tron_node_dedupe_entry_t *entry = &dedupe_cache[i];
-
-        if (entry->valid != 0u && time_reached(now, entry->expires_at_ms)) {
-            entry->valid = 0u;
-        }
-
-        if (same_packet(entry, packet)) {
-            return 1;
-        }
-
-        if (insert < 0 && entry->valid == 0u) {
-            insert = (int)i;
-            oldest_expiry = entry->expires_at_ms;
-        } else if (entry->valid != 0u &&
-                   (insert < 0 || time_reached(oldest_expiry, entry->expires_at_ms))) {
-            insert = (int)i;
-            oldest_expiry = entry->expires_at_ms;
-        }
-    }
-
-    if (insert < 0) {
-        insert = 0;
-    }
-
-    dedupe_cache[insert].valid = 1u;
-    dedupe_cache[insert].net_id = packet->net_id;
-    dedupe_cache[insert].msg_type = packet->msg_type;
-    dedupe_cache[insert].src = packet->src;
-    dedupe_cache[insert].seq24 = packet->seq24 & TRON_MESH_SEQ24_MAX;
-    dedupe_cache[insert].expires_at_ms = now + TRON_NODE_DEDUPE_TTL_MS;
-    return 0;
+    return tron_mesh_dedupe_seen_or_insert(&dedupe_cache, packet, now);
 }
 
 static const UB *payload_hex(const tron_mesh_packet_t *packet)
@@ -344,7 +284,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     (void)stacd;
     (void)exinf;
 
-    clear_memory(dedupe_cache, sizeof(dedupe_cache));
+    tron_mesh_dedupe_reset(&dedupe_cache);
     clear_memory(&node_counters, sizeof(node_counters));
     next_seq24 = 0u;
     prng_state = ((uint32_t)self << 16) | 1u;
@@ -361,7 +301,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     while (1) {
         t = now_ms();
 
-        if (time_reached(t, next_own_at)) {
+        if (tron_mesh_time_reached(t, next_own_at)) {
             schedule_own_packet(&sched, self, t);
             next_own_at = t + TRON_NODE_OWN_INTERVAL_MS;
         }
@@ -371,7 +311,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
             handle_packet(&sched, &event, self, t);
         }
 
-        if (time_reached(t, next_stats_at)) {
+        if (tron_mesh_time_reached(t, next_stats_at)) {
             log_counters(&sched);
             next_stats_at = t + TRON_NODE_STATS_MS;
         }
