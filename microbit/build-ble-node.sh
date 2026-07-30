@@ -11,6 +11,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")" && pwd)"
 toolchain="$repo_root/cmake/arm-none-eabi-gcc.cmake"
 node_id=""
+block_direct_peer="0x0000"
 out_dir="$repo_root/artifacts"
 
 usage() {
@@ -18,14 +19,17 @@ usage() {
 Usage: ./build-ble-node.sh --node-id 0xNNNN [options]
 
 Options:
-  --node-id 0xNNNN   Pinned node id. 0 derives the id from FICR.
-  --out DIR          Artifact directory (default: microbit/artifacts)
+  --node-id 0xNNNN         Pinned node id. 0 derives the id from FICR.
+  --block-direct-peer ID   Test-only originator whose direct (full-TTL) frames
+                           are ignored, forcing a relayed path. 0 disables.
+  --out DIR                Artifact directory (default: microbit/artifacts)
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --node-id) node_id="${2:?Missing value for --node-id}"; shift 2 ;;
+        --block-direct-peer) block_direct_peer="${2:?Missing value for --block-direct-peer}"; shift 2 ;;
         --out) out_dir="${2:?Missing value for --out}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -37,8 +41,9 @@ if [[ -z "$node_id" ]]; then
     usage >&2
     exit 2
 fi
-if [[ ! "$node_id" =~ ^0[xX][0-9A-Fa-f]{1,4}$ ]]; then
-    printf '%s\n' '--node-id must be a hexadecimal value fitting 16 bits' >&2
+if [[ ! "$node_id" =~ ^0[xX][0-9A-Fa-f]{1,4}$ ]] ||
+   [[ ! "$block_direct_peer" =~ ^0[xX][0-9A-Fa-f]{1,4}$ ]]; then
+    printf '%s\n' 'node and blocked peer ids must be hexadecimal values fitting 16 bits' >&2
     exit 2
 fi
 
@@ -49,6 +54,11 @@ if (( node_value == 65535 )); then
 fi
 
 canonical_node_id=$(printf '0x%04x' "$node_value")
+canonical_block_direct_peer=$(printf '0x%04x' "$((block_direct_peer))")
+if [[ "$canonical_block_direct_peer" != "0x0000" && "$canonical_block_direct_peer" == "$canonical_node_id" ]]; then
+    printf '%s\n' '--block-direct-peer must not equal --node-id' >&2
+    exit 2
+fi
 artifact_base="ble_mesh_node-${canonical_node_id}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tron-ble-node.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
@@ -56,7 +66,8 @@ mkdir -p "$out_dir"
 
 cmake -S "$repo_root" -B "$build_dir" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
-    -DTRON_NODE_ID="$canonical_node_id"
+    -DTRON_NODE_ID="$canonical_node_id" \
+    -DTRON_NODE_BLOCK_DIRECT_PEER_ID="$canonical_block_direct_peer"
 cmake --build "$build_dir" --target ble_mesh_node --parallel
 
 source_elf="$build_dir/firmware/ble_mesh_node/ble_mesh_node.elf"
@@ -65,6 +76,7 @@ install -m 0644 "$source_elf" "$out_dir/${artifact_base}.elf"
 
 cat >"$out_dir/${artifact_base}.manifest" <<EOF
 node_id=$canonical_node_id
+block_direct_peer=$canonical_block_direct_peer
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
 source_dirty=$(git -C "$repo_root" status --porcelain --untracked-files=no | grep -q . && printf yes || printf no)
 artifact=${artifact_base}.elf

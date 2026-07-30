@@ -25,6 +25,13 @@
 #define TRON_NODE_ID              0
 #endif
 
+/* Test-only. Emulates being out of radio range of one specific peer so a
+   multi-hop path can be forced on a desk where every board hears every other.
+   0 disables. See the drop rule in handle_packet() for why this keys on TTL. */
+#ifndef TRON_NODE_BLOCK_DIRECT_PEER_ID
+#define TRON_NODE_BLOCK_DIRECT_PEER_ID 0
+#endif
+
 #define TRON_NODE_NET_ID          0x01u
 #define TRON_NODE_OWN_TTL         TRON_MESH_TTL_MAX
 #define TRON_NODE_OWN_INTERVAL_MS 1000u
@@ -40,6 +47,7 @@ typedef struct tron_node_counters {
     uint32_t ttl_drop;
     uint32_t queue_drop;
     uint32_t relay_scheduled;
+    uint32_t blocked_direct;
 } tron_node_counters_t;
 
 static tron_mesh_dedupe_t dedupe_cache;
@@ -128,7 +136,8 @@ static void log_counters(const ble_mesh_scheduler_t *sched)
         relay_rate_limited = sched_counters->relay_rate_limited;
     }
 
-    tm_printf((UB *)"mesh counters rx_ok=%lu tx_ok=%lu decode_error=%lu duplicate_drop=%lu ttl_drop=%lu queue_drop=%lu relay_scheduled=%lu relay_rate_limited=%lu\n",
+    tm_printf((UB *)"mesh counters id=0x%04x rx_ok=%lu tx_ok=%lu decode_error=%lu duplicate_drop=%lu ttl_drop=%lu queue_drop=%lu relay_scheduled=%lu relay_rate_limited=%lu blocked_direct=%lu\n",
+              node_id(),
               (UW)node_counters.rx_ok,
               (UW)tx_ok,
               (UW)node_counters.decode_error,
@@ -136,7 +145,8 @@ static void log_counters(const ble_mesh_scheduler_t *sched)
               (UW)node_counters.ttl_drop,
               (UW)queue_drop,
               (UW)node_counters.relay_scheduled,
-              (UW)relay_rate_limited);
+              (UW)relay_rate_limited,
+              (UW)node_counters.blocked_direct);
 }
 
 static void fill_dummy_payload(tron_mesh_packet_t *packet)
@@ -252,6 +262,21 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
 
     if (!tron_mesh_packet_is_for_network(&packet, TRON_NODE_NET_ID)) {
         node_counters.decode_error++;
+        return;
+    }
+
+    /* Test-only range emulation. This format carries no relayer id, so a
+       relayed copy is indistinguishable from a direct one except by hop count:
+       only a packet still at full TTL can have come straight from its
+       originator. Dropping exactly those, and nothing else, makes this peer
+       unreachable directly while leaving its relayed copies intact - which is
+       what forces a real multi-hop path between boards sitting on one desk.
+       Note this is weaker than a link-layer block: the radio still hears the
+       frame, so it proves routing behaviour, not range. */
+    if ((uint16_t)TRON_NODE_BLOCK_DIRECT_PEER_ID != 0u &&
+        packet.src == (uint16_t)TRON_NODE_BLOCK_DIRECT_PEER_ID &&
+        packet.ttl == TRON_MESH_TTL_MAX) {
+        node_counters.blocked_direct++;
         return;
     }
 
