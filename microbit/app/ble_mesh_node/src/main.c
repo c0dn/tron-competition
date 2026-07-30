@@ -19,6 +19,12 @@
 
 #define FICR_DEVICEADDR0          0x100000A4UL
 
+/* Defined by CMake; 0 means "derive the id from FICR". Kept here so the file
+   still compiles if it is built outside the project's CMake setup. */
+#ifndef TRON_NODE_ID
+#define TRON_NODE_ID              0
+#endif
+
 #define TRON_NODE_NET_ID          0x01u
 #define TRON_NODE_OWN_TTL         TRON_MESH_TTL_MAX
 #define TRON_NODE_OWN_INTERVAL_MS 1000u
@@ -60,11 +66,13 @@ static void clear_memory(void *ptr, size_t len)
 
 static uint16_t node_id(void)
 {
-#ifdef TRON_NODE_ID
-    return (uint16_t)((uint32_t)TRON_NODE_ID & 0xFFFFu);
-#else
+    /* 0 keeps the FICR-derived identity, which is unique per board but opaque.
+       Any other value pins a readable id so a bench topology can be labelled
+       in logs without hand-mapping device addresses. */
+    if ((uint16_t)((uint32_t)TRON_NODE_ID & 0xFFFFu) != 0u) {
+        return (uint16_t)((uint32_t)TRON_NODE_ID & 0xFFFFu);
+    }
     return (uint16_t)(in_w(FICR_DEVICEADDR0) & 0xFFFFu);
-#endif
 }
 
 static uint32_t next_prng(void)

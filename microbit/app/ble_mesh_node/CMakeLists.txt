@@ -1,3 +1,5 @@
+set(TRON_NODE_ID "0" CACHE STRING "ble_mesh_node explicit node id; 0 derives the id from FICR")
+
 mtkernel_add_microbit_firmware(
   TARGET ble_mesh_node
   CONFIG_DIR
@@ -8,6 +10,10 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_packet.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_dedupe.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/ble_mesh_scheduler.c
+)
+
+target_compile_definitions(ble_mesh_node PRIVATE
+  TRON_NODE_ID=${TRON_NODE_ID}
 )
 
 target_include_directories(ble_mesh_node PRIVATE
