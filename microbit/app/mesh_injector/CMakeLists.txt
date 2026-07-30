@@ -16,17 +16,15 @@ function(add_mesh_injector_variant name mode devid txpower)
       ${CMAKE_CURRENT_SOURCE_DIR}/config
     APP_SOURCES
       ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/../mesh/src/mesh_flood.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/hw_timer.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/display.c
   )
 
   target_include_directories(${name} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../mesh/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../../shared   # shared BLE beacon contract (schema.h)
+  )
+
+  target_link_libraries(${name} PRIVATE
+    microbit_mesh
+    microbit_driver_display
   )
 
   target_compile_definitions(${name} PRIVATE

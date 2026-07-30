@@ -98,7 +98,7 @@
  * regardless, and the measured difference is 52 bytes. See CMakeLists.txt.
  *
  * Everything else the mesh needs (hop budget, backoff window, cache size) is
- * in app/mesh/src/mesh_config.h with its reasoning; override here only if this
+ * in lib/mesh/mesh_config.h with its reasoning; override here only if this
  * unit needs to differ from the rest of the deployment.
  *
  * Cost when enabled: one extra task at priority 13 that spins on the radio
