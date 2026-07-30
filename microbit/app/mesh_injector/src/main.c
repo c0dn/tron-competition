@@ -24,24 +24,10 @@
  * and watch the relay's serial output, or point the ESP32-C3 ble_sniffer at
  * the pair to see what actually leaves the mesh.
  *
- * READING THE STATS LINE
- * ----------------------
- *   rx=      CRC-valid adverts seen, including everyone else's
- *   mesh=    of those, well-formed messages from this mesh
- *   relay=   distinct messages rebroadcast
- *   dup=     suppressed as already seen - this is the flood TERMINATING,
- *            and a healthy relay under burst traffic shows far more of these
- *            than relays. dup=0 while mesh= climbs means suppression is broken
- *            and the mesh is a broadcast storm waiting for a second relay.
- *   ttl=     dropped with the hop budget exhausted
- *   own=     our own message handed back to us by a neighbour
- *   bad=     parsed as ours but malformed or wrong transport version
- *   qdrop=   relay backlog overflowed - messages arriving faster than the
- *            backoff can drain them. Non-zero means MESH_RELAY_QUEUE is too
- *            small for the offered load, or the jitter window is too wide.
- *   rdrop=   packets the RADIO counted that the poll loop never serviced
- *            (ble_radio_stats) - not a mesh decision, a measurement of what
- *            never reached the mesh at all. Quote delivery figures with this.
+ * The serial output is role-specific and written as a demo narrative rather
+ * than a raw struct dump. On the relay, accepted/tx_copies increasing proves
+ * that packets are being received and retransmitted; the ESP32-C3 supplies the
+ * independent proof by printing RELAYED, the relay id, hops and decremented TTL.
  */
 
 #include <tk/tkernel.h>
@@ -53,6 +39,14 @@
 #include "hw_timer.h"
 #include "display.h"
 #include "schema.h"
+
+/* Injector traffic bypasses mesh_originate() so it can impersonate several
+   originators. Keep explicit source counters instead of showing the mesh
+   library's originated/tx fields as zero, which was correct but confusing in
+   a demo. Reads and writes are naturally aligned 32-bit accesses on Cortex-M4. */
+static volatile UW generated_messages = 0;
+static volatile UW generated_rounds = 0;
+static volatile UW generated_probe_sets = 0;
 
 /* Advertising address for an arbitrary originator id (schema.h MIND_ADVA). */
 static void adva_for(UB id, UB *out)
@@ -98,6 +92,7 @@ static void emit_as(UB orig, UB relay, UB ttl, UB hops, UB evt, UB seq, UH svm)
     adva_for(orig, addr);
     len = mesh_build_adv(adv, payload, MIND_PAYLOAD_SIZE, orig, relay, ttl, hops);
     ble_radio_tx(adv, len, addr, BLE_CHAN_MASK_ALL);
+    generated_messages++;
 }
 
 /* --- LED: role and liveness ---------------------------------------------- *
@@ -127,7 +122,7 @@ LOCAL void inject_task(INT stacd, void *exinf)
     UW round = 0;
     UB seq = 0;
 
-    tm_printf((UB *)"inject: %d virtual sources 0x%02x..0x%02x every %d ms\n",
+    tm_printf((UB *)"[SOURCE] generating %d virtual devices (0x%02x..0x%02x) every %d ms\n",
               INJ_VIRTUAL_SRC, INJ_SRC_BASE_ID,
               INJ_SRC_BASE_ID + INJ_VIRTUAL_SRC - 1, INJ_INTERVAL_MS);
 
@@ -161,12 +156,15 @@ LOCAL void inject_task(INT stacd, void *exinf)
             emit_as(INJ_TEST_ID, INJ_TEST_ID, 0, 5,
                     MIND_EVT_MOTION, (UB)(seq + 1), (UH)round);
 
-            tm_printf((UB *)"inject: probes sent (aged/dup/expired) seq=%u\n", seq);
+            generated_probe_sets++;
+            tm_printf((UB *)"[SOURCE TEST] seq=%u sent: ttl=1 + duplicate + ttl=0 probes\n",
+                      seq);
         }
 #endif
 
         round++;
         seq++;
+        generated_rounds = round;
         tk_dly_tsk(INJ_INTERVAL_MS);
     }
 }
@@ -187,18 +185,48 @@ LOCAL void stats_task(INT stacd, void *exinf)
 {
     UB sourcing = (INJ_MODE != INJ_MODE_RELAY);
     UB relaying = (INJ_MODE != INJ_MODE_SOURCE);
+#if INJ_MODE == INJ_MODE_RELAY
+    mesh_stats_t prev = { 0 };
+#endif
 
     while (1) {
         mesh_stats_t s;
 
         mesh_stats(&s);
-        tm_printf((UB *)"mesh: rx=%u mesh=%u orig=%u relay=%u tx=%u | "
-                        "dup=%u ttl=%u own=%u bad=%u qdrop=%u rdrop=%u\n",
-                  s.rx_total, s.rx_mesh, s.originated, s.relayed, s.tx_bursts,
-                  s.dup_dropped, s.ttl_dropped, s.own_dropped, s.malformed,
-                  s.queue_dropped, s.radio_dropped);
+
+#if INJ_MODE == INJ_MODE_SOURCE
+        tm_printf((UB *)"[SOURCE 0x%02x] rounds=%u generated=%u probe_sets=%u | "
+                        "relay_copies_seen=%u duplicates_blocked=%u\n",
+                  INJ_DEVICE_ID, generated_rounds, generated_messages,
+                  generated_probe_sets, s.rx_mesh, s.dup_dropped);
+        tm_printf((UB *)"[SOURCE HEALTH] ttl_expired=%u malformed=%u radio_drops=%u\n",
+                  s.ttl_dropped, s.malformed, s.radio_dropped);
+#elif INJ_MODE == INJ_MODE_RELAY
+        tm_printf((UB *)"[RELAY 0x%02x] mesh_rx=%u (+%u) accepted=%u (+%u) "
+                        "tx_copies=%u (+%u)\n",
+                  INJ_DEVICE_ID,
+                  s.rx_mesh, s.rx_mesh - prev.rx_mesh,
+                  s.relayed, s.relayed - prev.relayed,
+                  s.tx_bursts, s.tx_bursts - prev.tx_bursts);
+        tm_printf((UB *)"[RELAY FILTER] duplicates=%u ttl_expired=%u queue_drops=%u "
+                        "malformed=%u radio_drops=%u\n",
+                  s.dup_dropped, s.ttl_dropped, s.queue_dropped,
+                  s.malformed, s.radio_dropped);
+#else
+        tm_printf((UB *)"[BOTH 0x%02x] rounds=%u generated=%u mesh_rx=%u "
+                        "accepted=%u tx_copies=%u\n",
+                  INJ_DEVICE_ID, generated_rounds, generated_messages,
+                  s.rx_mesh, s.relayed, s.tx_bursts);
+        tm_printf((UB *)"[MESH HEALTH] duplicates=%u ttl_expired=%u queue_drops=%u "
+                        "malformed=%u radio_drops=%u\n",
+                  s.dup_dropped, s.ttl_dropped, s.queue_dropped,
+                  s.malformed, s.radio_dropped);
+#endif
 
         led_update(sourcing, relaying, s.tx_bursts + s.rx_mesh);
+#if INJ_MODE == INJ_MODE_RELAY
+        prev = s;
+#endif
         tk_dly_tsk(INJ_STATS_MS);
     }
 }
@@ -245,10 +273,20 @@ EXPORT INT usermain(void)
     tm_printf((UB *)"txpower: %d dBm\n", INJ_TXPOWER_DBM);
 #endif
 
-    tm_printf((UB *)"mesh_injector: id=0x%02x role=%s ttl=%d jitter<=%u us "
-                    "repeats=%d ch=%d\n",
-              INJ_DEVICE_ID, rolename[INJ_MODE], cfg.ttl, cfg.jitter_max_us,
-              cfg.relay_repeats, cfg.listen_ch);
+    tm_printf((UB *)"\n=== MIND FLOOD MESH DEMO ===\n");
+    tm_printf((UB *)"[NODE] id=0x%02x role=%s listen_ch=%d ttl=%d repeats=%d "
+                    "jitter=0..%u us\n",
+              INJ_DEVICE_ID, rolename[INJ_MODE], cfg.listen_ch, cfg.ttl,
+              cfg.relay_repeats, cfg.jitter_max_us);
+#if INJ_MODE == INJ_MODE_RELAY
+    tm_printf((UB *)"[VERIFY] accepted and tx_copies must rise; C3 should print "
+                    "RELAYED via=0x%02x hops=1 ttl=%d\n",
+              INJ_DEVICE_ID, cfg.ttl - 1);
+#elif INJ_MODE == INJ_MODE_SOURCE
+    tm_printf((UB *)"[VERIFY] generated must rise; relay should show accepted/tx_copies\n");
+#else
+    tm_printf((UB *)"[VERIFY] generated, accepted and tx_copies should rise\n");
+#endif
 
     /* Priorities: display refresh runs at 8, so the spinning relay must sit
        below it or the matrix stops scanning. */

@@ -176,7 +176,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     uint8_t dev;
     uint32_t prev_repeats = 0;
     char raw[3 * 31 + 1];
-    char path[48];
 
     if (event->type != BLE_GAP_EVENT_DISC) {
         return 0;
@@ -237,20 +236,33 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     if (mesh != NULL && mesh->hops > 0) {
         /* Relayed. The RSSI below belongs to the last hop, NOT to the
            originating device - see mesh_wire.h. */
-        snprintf(path, sizeof(path), " via=0x%02x hops=%u ttl=%u [rssi=relay]",
-                 mesh->relay_id, mesh->hops, mesh->ttl);
+        ESP_LOGI(TAG,
+                 "RELAYED origin=%u via=0x%02x hops=%u ttl=%u seq=%u "
+                 "event=%s relay_rssi=%d dBm",
+                 dev, mesh->relay_id, mesh->hops, mesh->ttl, p->seq,
+                 event_name(p->event_type), d->rssi);
     } else if (mesh != NULL) {
-        snprintf(path, sizeof(path), " direct ttl=%u", mesh->ttl);
+        ESP_LOGI(TAG,
+                 "DIRECT  origin=%u seq=%u event=%s ttl=%u rssi=%d dBm",
+                 dev, p->seq, event_name(p->event_type), mesh->ttl, d->rssi);
     } else {
-        path[0] = '\0';                 /* pre-mesh firmware */
+        ESP_LOGI(TAG,
+                 "LEGACY  origin=%u seq=%u event=%s rssi=%d dBm (no mesh header)",
+                 dev, p->seq, event_name(p->event_type), d->rssi);
+    }
+
+    /* Keep sensor details visible for real incidents without turning every
+       heartbeat in the demo into a wrapped multi-line record. */
+    if (p->event_type != MIND_EVT_HEARTBEAT) {
+        ESP_LOGI(TAG, "        payload confidence=%u svm=%u mg mic=%u",
+                 p->confidence, p->accel_svm, p->mic_level);
     }
 
     hex_str(d->data, d->length_data, raw, sizeof(raw));
-    ESP_LOGI(TAG,
-             "obs dev=%u rssi=%d ver=%u evt=%u(%s) conf=%u svm=%u mic=%u seq=%u prev_rx=%" PRIu32 "%s",
-             dev, d->rssi, p->schema_version, p->event_type,
-             event_name(p->event_type), p->confidence, p->accel_svm,
-             p->mic_level, p->seq, prev_repeats, path);
+    ESP_LOGD(TAG,
+             "        schema=%u event_id=%u conf=%u svm=%u mic=%u previous_record_copies=%" PRIu32,
+             p->schema_version, p->event_type, p->confidence, p->accel_svm,
+             p->mic_level, prev_repeats);
     ESP_LOGD(TAG, "     raw[%u]: %s", d->length_data, raw);
     return 0;
 }
@@ -274,6 +286,7 @@ static void start_scan(void)
                  SCAN_WIN_UNITS, SCAN_ITVL_UNITS);
         ESP_LOGI(TAG, "waiting for wearable beacons - AdvA xx:..:C0, company 0x%04X",
                  MIND_COMPANY_ID);
+        ESP_LOGI(TAG, "VERIFY: RELAYED origin=<source> via=<relay> hops=1 ttl=5 proves one-hop forwarding");
     }
 }
 
