@@ -550,9 +550,10 @@
     "2026-08-04 user correction: AODV is not a separate plugin. The TAVRN router's base is AODV; FULL_TAVRN adds modules around the same route engine. At most two behavioral branches exist: legacy BLE flood and TAVRN routed.",
     "The current TAVRN reference repository is GPL-2.0-only. Execution should conceptually reimplement from the normative profile unless licensing is deliberately aligned; do not copy large source bodies casually.",
     "Plan-checker re-review found one remaining major: Phase 1 incorrectly called a link-only harness AODV_ONLY. Corrected so Phase 1 uses a dedicated non-routing test harness; AODV_ONLY is introduced only with the real AODV engine in Phase 2.",
-    "Final plan-checker gate had no other blocker/major findings. JSON/Markdown mismatch for the Phase 1 validation was patched directly and revalidated."
+    "Final plan-checker gate had no other blocker/major findings. JSON/Markdown mismatch for the Phase 1 validation was patched directly and revalidated.",
+    "Parallel execution policy: each layer remains a serial acceptance gate, but non-overlapping codecs, pure state machines, test harnesses, and tooling fan out into dedicated slice worktrees from one immutable base. Each lane receives a focused checker; one integration writer owns shared headers/CMake/orchestration; one whole-slice checker gates the candidate commit. Builds and serial capture may run in parallel, but UID flashing remains serial."
   ],
   "status": "review",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-04T16:25:16.888Z"
+  "updatedAt": "2026-08-04T16:29:19.112Z"
 }

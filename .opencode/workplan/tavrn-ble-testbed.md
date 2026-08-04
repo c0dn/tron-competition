@@ -70,6 +70,70 @@ and FULL_TAVRN share routed-v2. TAVRN-only control types and fields are ignored
 or rejected predictably when the AODV-only level is built; they do not create a
 second routed protocol implementation.
 
+## Parallel execution topology
+
+Layer acceptance remains serial: link-v2 must pass before AODV, mandatory
+three-board AODV must pass before TAVRN augmentation, and each later TAVRN layer
+must pass before the next is merged. Within a layer, use isolated fanout:
+
+```text
+immutable phase base
+  +-> code-writer lane A -> lane checker --+
+  +-> code-writer lane B -> lane checker --+-> integration writer
+  +-> code-writer lane C -> lane checker --+        |
+                                                   v
+                                         whole-slice checker
+                                                   |
+                                                   v
+                                      immutable candidate commit
+```
+
+Each writer receives a detached or dedicated `slice/tavrn-*` worktree at the
+same immutable phase base. Writers never share a Git index or edit overlapping
+files. The integration writer alone owns cross-module headers, top-level CMake,
+firmware orchestration, and cherry-pick/conflict resolution. Lane commits are
+not hardware candidates; only the accepted integration commit is flashed.
+
+Safe fanout by phase:
+
+| Phase | Parallel lanes | Serialized integration |
+| --- | --- | --- |
+| Foundation | normative spec/source audit; wire/byte-budget+ACK contract; identity/sequence contract; provenance/manifest contract | sole profile authority, architecture and test matrix |
+| Link-v2 | frame codec+golden vectors; custody/retry virtual-time FSM; queue/flood policy; build-manifest tooling | scheduler/radio hooks and link test firmware |
+| AODV base | control codec; route table+serial arithmetic; deterministic network simulator; role/build tooling | `tavrn_router` orchestration over link-v2 |
+| GTT/Smart TTL | passive GTT; Smart-TTL policy; application query/metrics | AODV observation and discovery hooks |
+| ESC/mentorship | fixed-k identity+codec; mentorship FSM; pagination/golden vectors | bootstrap orchestration around the same GTT/AODV core |
+| Maintenance | HELLO/timer policy; metadata codec; TC-UPDATE/dedupe; bounded verification | feedback-loop/rate-limit orchestration |
+| Local repair | repair red-test scenarios; bounded-buffer FSM; four-node simulator | failed-DATA ownership and existing AODV/GTT integration |
+| Patient | AdvA-preserving RX event; schema/classifier; measurement/log parser | event bridge, priority and sink policy |
+| Scale/handoff | profile builds; log analysis; conformance evidence indexing; runbook drafting | final claims, checker and history audit |
+
+TDD fanout rules:
+
+1. Test-author lanes may run in parallel when their requirement IDs and files do
+   not overlap.
+2. Each lane records assertion-level red evidence while all lower-level suites
+   remain green.
+3. Implementation starts only after the relevant red tests and interfaces are
+   frozen.
+4. Every lane gets a focused checker; integration gets a separate adversarial
+   checker over the complete slice.
+5. Later-phase research and test design may proceed read-only while hardware is
+   running, but later-phase implementation may not merge before the mandatory
+   current-layer hardware gate.
+
+Hardware fanout rules:
+
+- Compile independent role/profile images in parallel from the same clean
+  candidate commit.
+- Flash one exact pyOCD UID at a time; flashing is never parallel.
+- Capture all node serial streams concurrently through stable `/dev/serial/by-id`
+  links.
+- Parse/count independent logs in parallel after capture, then perform one
+  integrated topology/result assessment.
+- Finite soak tests can overlap read-only documentation and next-phase test
+  design, but not unproven implementation merges.
+
 ## Scope
 - Freeze a versioned TAVRN-BLE subset profile from TAVRN_v2.md, actual ns-3 behavior, the paper, and BLE constraints
 - Preserve the existing controlled-flood BLE node as the simple fallback while sharing safe radio/scheduler primitives
