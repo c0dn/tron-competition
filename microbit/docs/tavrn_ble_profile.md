@@ -1,0 +1,305 @@
+# TAVRN-BLE proof-of-concept profile
+
+Status: Phase 0 normative candidate for checker acceptance
+
+Profile version: `TAVRN-BLE-PoC-0.1`
+
+Frozen: 2026-08-05
+
+This document and its companion deviation and test-matrix documents define the
+executable TAVRN subset for the micro:bit BLE proving ground. Only statements in
+rows with stable requirement IDs are normative. Later wire and architecture
+contracts derive details from these requirements; they may not silently change
+the behavior.
+
+## Authority and provenance
+
+The audited TAVRN repository was read at commit
+`fc5f25662aa3bb63d65cb24a41461f19ed42ea4e` (tree
+`5e19217296ccfe03a8be1c429864fe92968cbae4`). Its tracked working-tree changes
+were limited to `TAVRN_v2.md` and comments in `tavrn-packet.h`; no executable
+source differed from the commit. The packet-header comment change documents
+3-bit address modes, while the implementation remains fixed at one-byte suffixes.
+
+Audited inputs:
+
+| Input | Role and observed state |
+| --- | --- |
+| `TAVRN_v2.md` | Design baseline. Current dirty-file SHA-256: `0078084d41f3c670e69c62114b0e7d5013fd4612aa7dbb94abe73a8fd0fbcc26`. |
+| ns-3 source at `fc5f256` | Evidence of evaluated behavior. Not firmware source. Relevant blobs: routing `af25d91e...`, packet implementation `39c12305...`, GTT `84e1b4ae...`, route table `ddfe5b55...`. |
+| `IMPLEMENTATION.md` | Explanatory implementation guide; SHA-256 `2ffd7bd53584caa8468b81a977eea33e44a8f58c9d93cc855402158e11be5a7c`. |
+| `LOCAL-REPAIR-SPEC.md` | Separate v2.3 proposal; SHA-256 `9938ba6a4f7104544819e8a117a0acfa8efc13c78af2b20568a8509d580ef827`. |
+| `REPORT-AUDIT.md` | Guard against unsupported empirical claims; SHA-256 `e05e6d462ecc304c9b153860549f047d6e32cd31a8bb7d419576cc67e0b9b042`. |
+| `CSC2106_ TAVRN.pdf` | Background only; SHA-256 `4b49608d2c694bd1d3f720dc88598bc913fb0f3647c0e257e645e75d23026ac6`. No paper result is an acceptance criterion here. |
+| BLE foundation | Clean source commit `bf17bce301cae10df0819b3b6fe7a8c19256bdde`; evidence commit `f0cda9d`; five-minute best-effort baseline `98/150`, with no reliability claim. |
+
+| ID | Normative requirement |
+| --- | --- |
+| **AUTH-01** | After Phase 0 checker acceptance, this profile and its deviations/matrix are the sole top-level behavioral authority for TAVRN firmware. Accepted wire-v2, ACK, identity, and architecture documents are binding derived contracts within their declared representation/ownership scopes and remain subordinate to this profile. External TAVRN prose and ns-3 source are provenance, not alternate firmware specifications. |
+| **AUTH-02** | A conflict is resolved in this order: this profile; an accepted derived wire/architecture contract; then audited TAVRN v2.2 intent; then actual ns-3 behavior. Every intentional difference from the latter two appears in the deviation register. |
+| **AUTH-03** | Firmware is a clean conceptual reimplementation from these requirements. GPL-2.0-only ns-3 source bodies must not be copied unless the firmware project's licensing is deliberately made compatible and recorded. |
+
+## Scope and implementation shape
+
+| ID | Normative requirement |
+| --- | --- |
+| **SCOPE-01** | All artifacts and claims identify this as a medium-correctness proof of concept. Bluetooth Mesh compliance, production readiness, security, certification, clinical readiness, and clinical efficacy are out of scope. |
+| **SCOPE-02** | The profile implements neither Bluetooth Mesh provisioning/security/models nor official Mesh Message AD type `0x2A`. Cryptography, replay protection, persistent sequence state, and adversarial routing defenses are absent and must not be implied. |
+| **MODE-01** | There are exactly two node behaviors above shared BLE primitives: `LEGACY_FLOOD` using golden wire-v1, and `TAVRN_ROUTED` using wire-v2. `TAVRN_ROUTED` has feature levels `AODV_ONLY` and `FULL_TAVRN`; a link-only harness is not a third behavior or feature level. |
+| **MODE-02** | `AODV_ONLY` and `FULL_TAVRN` use the same AODV route engine, route table, routed link, and DATA path. `FULL_TAVRN` only adds GTT, Smart TTL, fixed-k ESC, mentorship, maintenance, metadata, and optional local repair around that engine. |
+
+## BLE bearer
+
+| ID | Normative requirement |
+| --- | --- |
+| **BEARER-01** | The bearer is legacy `ADV_NONCONN_IND` on primary advertising channels 37/38/39 with the lab Manufacturer Specific Data envelope (`0xFF`, company ID `0xFFFF`). Routed wire-v2 is isolated by custom prefix `54 52 02` (ASCII `TR`, version 2); legacy wire-v1 remains `54 4d 01` (`TM`, version 1). Routed logical unicast remains physically observable advertising. |
+| **BEARER-02** | A wire-v2 custom PDU is at most 24 bytes. The public by-value DATA application buffer and wire semantic maximum are 10 bytes because SID8 opaque DATA admits 10; SID16 admits at most 7 in a frame. Only patient `app_kind=01` has a fixed application length, exactly 7 bytes. Every type/mode has a compile-time size guard and exact-length decoder; oversize input is rejected before advertising, never truncated, fragmented, or silently stripped. |
+| **BEARER-03** | The single nRF52833 radio is passive-RX by default and interleaves bounded TX windows with RX. Every mesh-radio wait—initialization, idle/disable, listen, RX restore, snapshot, TX pre-disable, and each selected-channel TX wait—is bounded by `timer.radio_state_timeout_ms` and surfaces a typed scheduler-visible radio fault. For advertising, zero completed selected channels emits `TX_FAILED` and is no attempt; one or more completed channels emits `TX_DONE`, counts one attempt, and starts the HACK deadline even if a later channel/restore wait faults. Every TX result/log records requested and completed channel masks plus fault. Firmware/tests must not claim simultaneous TX/RX or an unbounded radio call. |
+| **BEARER-04** | Version, network, message type, exact length, address context, and logical receiver admission occur before dedupe or state mutation. Every receive event preserves outer `AdvA[0..5]` by value as the full immediate-transmitter identity, not merely SID16/SID8, and rejects malformed, foreign-network, self-invalid, or ambiguous frames without partial effects. |
+
+## Identity and serial arithmetic
+
+| ID | Normative requirement |
+| --- | --- |
+| **IDENT-01** | Canonical physical identity is the full six-byte BLE AdvA/FICR random-static address in raw radio-buffer/on-air array order, least-significant octet first. Logs, direct-neighbor mappings, collision diagnostics, mentorship ownership, radio transmission, AdvA overrides, and reboot handling use the same six bytes. Derived SID16/SID8 values never replace canonical AdvA for physical-peer equality. |
+| **IDENT-02** | `AODV_ONLY` derives <code>SID16 = AdvA[0] &#124; (AdvA[1] &lt;&lt; 8)</code>, encoded little-endian and restricted to `0001..fffe`. SID16 is nevertheless a standalone logical route namespace: remote route/origin/destination keys require no remote full-identity or GTT mapping. Every controlled-fleet inventory and artifact manifest proves all derived SID16 values unique and nonreserved. `FULL_TAVRN` fixed `k=1` uses `SID8=AdvA[0]`, restricted to `01..fe`, only with full-identity mentorship/GTT context. |
+| **IDENT-03** | A direct peer derives SID16 from observed outer AdvA and retains both values in one binding so HACK correlation names the exact physical next hop. Full identity is mandatory for SID8 lookup, bootstrap HELLO, SYNC_OFFER, SYNC_PULL, every SYNC_DATA membership record, and TC_UPDATE; an unknown SID8 is never inferred from SID16 or first observation. |
+| **IDENT-04** | If two direct outer AdvAs derive the same SID16, AODV_ONLY fails that direct binding closed, invalidates routes through it, and diagnoses both AdvAs/SID16; remote uniqueness remains a controlled-fleet inventory precondition. Any reserved/colliding SID8 enters `IDENTITY_CONFLICT`, blocks affected compressed routing/DATA/mentorship, invalidates affected routes, and admits only full-identity bootstrap/diagnostic traffic. Dynamic entropy recovery and arbitrary winners are forbidden. |
+| **SERIAL-01** | Route destination sequences, origin sequences, RREQ IDs, GTT sequences, TC origin sequences, routed transaction serials, and boot nonce are unsigned 16-bit wire values. TC uniqueness is `{full origin identity, 16-bit TC serial}`; boot nonce is a nonzero incarnation discriminator, not a freshness sequence. |
+| **SERIAL-02** | Route and GTT high-water freshness use modulo-`2^16` half-range arithmetic: `a` is newer than `b` iff `0 < uint16_t(a-b) < 0x8000`. Equality is equal, not newer; ordinary integer `<`/`>` comparisons are forbidden for route/GTT serial freshness. |
+| **SERIAL-03** | A route/GTT serial difference of exactly `0x8000` is unordered and cannot replace high-water state. Dedupe caches do not use half-range ordering: they are bounded equality-key caches whose exact tuple, retention, and deterministic replacement policy are independently defined. |
+| **SERIAL-04** | On every routed boot, `tavrn_router` generates a nonzero 16-bit `boot_nonce`, clears local volatile protocol state, enters `REJOINING`, and emits one-hop full-AdvA `HELLO(N=1, node_sequence=boot_nonce)` in both AODV_ONLY and FULL_TAVRN. The first directly received new tuple `{outer AdvA,boot_nonce}` bypasses ordinary HELLO equality dedupe once, invalidates pending HACK/dedupe state and every route through that neighbor, and propagates normal precursor RERR; repeats of the same tuple are idempotent. No routed DATA is originated or forwarded until the level-specific `BOOT-06` establishment rule completes. |
+| **SERIAL-05** | Firmware deadlines use unsigned 32-bit monotonic milliseconds and wrap-safe signed-difference checks. Every configured duration is strictly below `2^31` ms; expiry and retry tests cross the timer wrap boundary. |
+
+## Routed link and acknowledgment semantics
+
+| ID | Normative requirement |
+| --- | --- |
+| **LINK-01** | Legacy advertising supplies no delivery acknowledgment. Wire-v2 therefore defines a TAVRN link `HACK` as a new logical, per-hop acknowledgment for logically unicast DATA only; HACK, FLOOD, E_RREQ/E_RREP/E_RERR/E_RREP_ACK, HELLO, SYNC_*, and TC_UPDATE are never HACKable. HACK is not a Bluetooth controller ACK and not `E_RREP_ACK`. |
+| **LINK-02** | A new inbound DATA candidate is returned and resolved synchronously as ACCEPTED/BUSY/REJECTED before its router/application dispatch returns. Defensive `timer.link_candidate_resolve_ms=10` expiry auto-resolves an invariant-violating outstanding candidate as BUSY and releases provisional state. Candidate presence cannot stop clock/timer advancement, control admission, scheduler TX, or HACK processing. ACCEPTED establishes exactly-once custody and HACK; DUPLICATE confirms prior custody without second acceptance and is re-HACKed once per retry reception. |
+| **LINK-03** | `HACK(busy)` and `HACK(rejected)` do not transfer custody, refresh route/GTT state, or declare a neighbor dead. BUSY defers by `timer.link_busy_backoff_ms` and is bounded by `timer.link_busy_max_responses` plus `timer.link_data_deadline_ms`; REJECTED terminates unchanged retransmission as `CUSTODY_REJECTED`. Neither outcome is a link break. BALANCED examples are 500 ms, three responses, and 5000 ms respectively; the timer table remains authoritative. |
+| **LINK-04** | Four custody slots may hold DATA transactions, but link-v2 promotes exactly one initial/retry attempt into the physical scheduler and marks it eligible at a time; other slots remain link-owned, not eligible, and are bounded by `timer.link_data_deadline_ms`. An eligible attempt may be bypassed by at most `timer.scheduler_custody_bypass_max` completed best-effort events and reaches valid `TX_DONE` within `timer.link_tx_scheduler_attempt_bound_ms` or terminates `LOCAL_TX_NOT_ATTEMPTED`. A no-response episode uses `timer.link_max_attempts` and `timer.link_hack_timeout_ms`, with total `timer.link_response_window_sum_ms` and wall `timer.link_no_response_wall_bound_ms`; its all-profile 840 ms table value starts at first eligibility and is never submit-to-terminal latency. Only final no-response expiry produces peer-link break `RETRY_EXHAUSTED`. A latched global radio/service fault instead drains every remaining occupied slot exactly once as non-link-break `RADIO_FAULT_TERMINAL` or `SERVICE_FAULT_TERMINAL`, preserving real attempt/channel evidence and transferring custody. Every terminal event contains full failed immediate-next-hop AdvA plus logical origin/final IDs only—no duplicated remote full identities. In SID8 FULL mode, the router must synchronously resolve unique full origin/destination context through GTT before accepting event custody. |
+| **LINK-05** | `E_RREP_ACK` is retained solely to acknowledge an `E_RREP` that requested one-hop return-path confirmation. It can cancel or expire the corresponding AODV unidirectional-link probe, but never transfers DATA custody or completes an application transaction. |
+| **LINK-06** | A directed advertisement is accepted only by its logical next hop. Flooded control is explicitly marked and uses controlled admission/dedupe; no valid-route application DATA falls back to broadcast flooding. |
+
+## AODV base route engine
+
+| ID | Normative requirement |
+| --- | --- |
+| **AODV-01** | The fixed-capacity route table stores logical destination, next hop, hop count, serial validity/value, lifetime, state (`VALID`, `INVALID`, `IN_SEARCH`), and bounded precursors. It answers reachability only and is independent of GTT membership; AODV_ONLY keys routes by AdvA-derived SID16, while FULL_TAVRN keys fixed-k routes by SID8 backed by full-identity GTT context. |
+| **AODV-02** | Every expanding-ring RREQ transmission allocates a fresh request ID and deduplicates `{selected logical origin namespace, request ID}`. Local discovery state correlates all ring IDs for one destination off-wire and accepts a matching RREP against any still-active ring. Receive processing establishes a reverse route, rejects immediate next-hop loops, increments hop count once, and forwards only within the request TTL and controlled-flood policy. |
+| **AODV-03** | RREP processing installs or replaces a route only for a newer destination serial, or for equal serial with an invalid route or strictly shorter path. It establishes forward routes and forwards toward the recorded reverse route without changing the destination serial incorrectly. |
+| **AODV-04** | Unknown destinations use expanding-ring TTL `1,3,5,7`, then `timer.aodv_net_diameter`; each transmission uses the fresh request ID required by `AODV-02`. RREQ/RERR origination obey `timer.aodv_rreq_rate`/`timer.aodv_rerr_rate`. All profiles currently use diameter 15 and rate 10/s as table values. A fresh GTT estimate may replace only the first ring under `GTT-06`; later fallback remains locally correlated. |
+| **AODV-05** | Locally originated DATA without a route enters the bounded pending queue and triggers one route search per destination. Queue full/expiry has explicit failure evidence; DATA is neither leaked to another destination nor delivered through legacy flood. |
+| **AODV-06** | Route break processing invalidates all routes using the failed next hop, increments/retains destination serials with half-range rules, and sends bounded RERR to precursors. Unreachable entries are sorted by logical destination (numeric SID16 in AODV_ONLY; resolved canonical identity in FULL_TAVRN), segmented to at most three SID16 or four SID8 entries per wire frame, and consume at most eight pending AODV actions. External overflow backpressures before mutation; timer/link-driven overflow remains explicitly due and emits a counter/event, never truncates silently. For DATA-link evidence, only `RETRY_EXHAUSTED` invokes this path. |
+| **AODV-07** | Intermediate RREP generation may request `E_RREP_ACK` for the AODV unidirectional-link condition. The exact correlation tuple includes network, expected outer AdvA, identity width/receiver, route destination, **destination sequence**, RREQ origin, and request ID; wait and blacklist use `timer.aodv_rrep_ack_wait_ms` and `timer.aodv_blacklist_ms`. Missing ACK blacklists only that return neighbor and alone emits neither RERR, TC LEAVE, DATA `RETRY_EXHAUSTED`, nor local repair. |
+| **AODV-08** | The single `aodv_core` exposes a typed deferred-RERR command for optional local repair. Begin immediately invalidates routes through the failed next hop and records one bounded repair token while withholding only the affected precursor RERR; success cancels that deferred destination, while timeout, disabled repair, capacity failure, or explicit release resumes normal segmented RERR. Repair calls this public command/action seam and never edits a route table, stores a second route, or creates another discovery engine. |
+
+## Passive GTT and Smart TTL
+
+| ID | Normative requirement |
+| --- | --- |
+| **GTT-01** | GTT is a passive, fixed-capacity membership store owned by the router. It schedules no timer, transmits no frame, and never substitutes for the AODV route table. |
+| **GTT-02** | GTT includes canonical identity, latest serial, last evidence/deadlines, hop estimate, and departed state. At capacity it replaces the oldest departed entry, then the oldest stale entry, but never self or fresher active state; if no legal victim exists it rejects the new member with a counter. |
+| **GTT-03** | Valid passive evidence refreshes only identities actually evidenced by frame role: full immediate transmitter/previous hop, semantically admitted origin/destination fields, and accepted topology records. Malformed, ambiguous, rejected, or merely overheard addressed DATA is not liveness evidence for its payload identities. |
+| **GTT-04** | GTT merges use `SERIAL-02`/`SERIAL-03`; equal serial may refresh evidence but cannot worsen a known hop estimate without explicit departure/rejoin. Departed entries remain tombstones through `timer.gtt_departed_ms`, derived as `2 * timer.gtt_hard_expiry_ms`, and can be resurrected only by valid fresh evidence or the reboot rule. |
+| **GTT-05** | Applications can enumerate active canonical identities and inspect freshness/hop estimates. Membership means “known to exist,” not “has a valid route,” and route expiry does not erase membership. |
+| **GTT-06** | Smart TTL is used only for a non-departed, non-hard-expired GTT entry with positive hop estimate: initial RREQ scope is `min(hop+2, net diameter)`. Failure falls back to full-diameter discovery; GTT never suppresses that fallback. |
+
+## Fixed-k ESC and mentorship
+
+| ID | Normative requirement |
+| --- | --- |
+| **ESC-01** | `FULL_TAVRN` implements ESC at fixed `k=1` only, enabled after successful mentorship/self-bootstrap and only after the AODV_ONLY hardware gate. Dynamic entropy, sticky decay, multi-byte suffix modes, and ambiguity-RERR recovery are roadmap-only. |
+| **ESC-02** | Fixed-k decompression uses the local GTT as context and succeeds only on one canonical-identity match. Unknown and multiple matches are failures; neither can create route, GTT, custody, or application state. |
+| **ESC-03** | Full canonical identities are used for bootstrap/collision checks; one-byte IDs are used only after context establishment. A node losing valid context returns to full-identity bootstrap instead of guessing or widening `k` dynamically. |
+
+| ID | Normative requirement |
+| --- | --- |
+| **BOOT-01** | Every routed node sends full-identity `HELLO(N=1)` with the nonzero boot nonce from `SERIAL-04` in the HELLO node-sequence field. Mentor and mentee fields in offers and membership identity in sync pages remain full identity throughout FULL_TAVRN bootstrap. |
+| **BOOT-02** | Bootstrapped neighbors interpolate offer delay from `timer.mentor_rssi_weak_magnitude_db`/`timer.mentor_rssi_weak_delay_ms` to `timer.mentor_rssi_strong_magnitude_db`/`timer.mentor_rssi_strong_delay_ms`, then add `timer.mentor_jitter_min_ms..timer.mentor_jitter_max_ms`. Overheard valid offers cancel pending offers for that mentee; duplicate offers use `timer.mentor_offer_suppression_ms`. BALANCED examples are -90 dBm→500 ms, -30 dBm→10 ms, 0..50 ms jitter, and 10 s suppression only. |
+| **BOOT-03** | The mentee collects offers for `timer.mentor_offer_window_ms`, then chooses largest advertised GTT, strongest observed RSSI, and lexicographically lowest full mentor identity. BALANCED uses 2 s; FAST_TEST/SOAK use their table values. This total order removes source iteration-order dependence. |
+| **BOOT-04** | The selected mentor creates one immutable, canonical-identity-sorted snapshot of at most `TAVRN_MAX_NODES` entries for the session. Join/leave mutation during paging applies after the snapshot and never changes page indices or total count. |
+| **BOOT-05** | Each nonempty BLE SYNC_DATA page carries exactly one complete snapshot record with full AdvA, 16-bit serial, active/departed TTL bucket, and four-bit mentor hop estimate; an empty snapshot has one explicit empty final page. `lastSeen` is not transferred: receipt time becomes local evidence. Pull index/count and the SYNC_OFFER snapshot total are bounds checked; the mentee stores `min(15, mentor_hop+1)`. |
+| **BOOT-06** | `tavrn_router` owns routed-common incarnation establishment. AODV_ONLY repeats its reboot announcement during `timer.router_reboot_announce_ms`, then self-establishes without GTT/mentorship. FULL_TAVRN continues mentorship; each pull uses `timer.mentor_page_timeout_ms` and at most `timer.mentor_page_attempts`, then clears mentor state and restarts HELLO. With no usable offer by `timer.mentor_self_bootstrap_ms`, FULL self-bootstraps with self only and originates JOIN. |
+
+## Maintenance, topology metadata, and local repair
+
+| ID | Normative requirement |
+| --- | --- |
+| **MAINT-01** | GTT soft/hard expiry and maintenance use `timer.gtt_soft_expiry_ms`, `timer.gtt_hard_expiry_ms`, and `timer.gtt_maintenance_ms`; departed retention uses `timer.gtt_departed_ms`. BALANCED examples are 150/300 s soft/hard with 25 s maintenance and 600 s departed retention only. FAST_TEST/SOAK remain table-authoritative. |
+| **MAINT-02** | Periodic HELLO adapts from `timer.hello_change_ms` to `timer.hello_stable_ms` using `timer.hello_alpha` and `timer.hello_snap_ratio`, resets to change cadence on one-hop gain/loss, and suppresses/defers after recent broadcast. BALANCED examples are 24/120 s and alpha 0.8 only. Neighbor liveness uses `max(3 * current HELLO interval, decaying hysteresis floor)`. |
+| **MAINT-03** | The timer registry below is the exact key-and-value authority: every row has one unique manifest key and owning module, and its key set must equal the architecture registry set exactly; aliases, architecture-only keys, profile-only keys, missing keys, and duplicates are checker/configure errors. Active-route and maintenance values use `timer.aodv_active_route_ms` and `timer.gtt_maintenance_ms`; all traversal, GTT, verification, mentorship, repair, scheduler, and link-wall relationships are derived below. |
+| **MAINT-04** | Hard-expired membership is actively verified only when demand exists: queued local/transit DATA, a valid route or precursor dependency, active local repair, or explicit application verification. Merely occupying a GTT slot is not demand. |
+| **MAINT-05** | A hard-expired entry with no demand is marked departed locally without verification transmission or TC-UPDATE flood. Later valid evidence may resurrect it under `GTT-04`. |
+| **MAINT-06** | Demanded verification tries one route-assisted unicast HELLO with exactly one freshness request when a valid route exists, then bounded RREQ using Smart TTL and full-flood fallback. RREQ permits two retries (three RREQ attempts total); any valid liveness evidence cancels the FSM. |
+| **MAINT-07** | New/active verification FSM limits are `timer.verification_new_cap` and `timer.verification_active_cap`. Existing progress is not a new start, all probes obey `timer.aodv_rreq_rate`, and deferred entries remain queued. All profiles currently use four/four as table values. |
+| **MAINT-08** | Confirmed JOIN/LEAVE uses TTL-decremented TC-UPDATE gossip with UUID `{full origin identity, 16-bit serial}` retained by `timer.tc_uuid_ms` and subject key `{full subject identity,event}` retained by `timer.tc_subject_ms`. BALANCED examples are 30 s and 1 s only. Forwarding is implicit gossip acknowledgment; busy/rejected/enqueue/expiry never originates LEAVE. |
+
+### Timer registry
+
+All values below are generated build inputs and manifest fields. Durations are
+milliseconds unless marked count, rate, or ratio. `FAST_TEST` is for deterministic
+host/bench gates, `BALANCED` is the normal PoC profile, and `SOAK` extends idle
+membership/logging while retaining BALANCED traversal behavior. Every configured
+duration is below the 32-bit half range.
+
+| Meaning | Manifest key | Owner | FAST_TEST | BALANCED | SOAK |
+| --- | --- | --- | ---: | ---: | ---: |
+| Scheduler channel dwell | `timer.scheduler_dwell_ms` | shared scheduler | 50 | 50 | 50 |
+| Scheduler relay spacing | `timer.scheduler_relay_spacing_ms` | shared scheduler | 200 | 200 | 200 |
+| Scheduler custody bypass maximum (count) | `timer.scheduler_custody_bypass_max` | shared scheduler | 2 | 2 | 2 |
+| Dedicated mesh scheduler poll maximum | `timer.scheduler_poll_max_ms` | scheduler/mesh loop | 2 | 2 | 2 |
+| Radio state wait timeout | `timer.radio_state_timeout_ms` | radio driver/scheduler | 2 | 2 | 2 |
+| Radio TX event bound (derived) | `timer.radio_tx_event_bound_ms` | radio driver/scheduler | 8 | 8 | 8 |
+| Legacy relay jitter minimum | `timer.legacy_relay_min_ms` | legacy flood | 20 | 20 | 20 |
+| Legacy relay jitter maximum | `timer.legacy_relay_max_ms` | legacy flood | 120 | 120 | 120 |
+| Legacy dedupe retention | `timer.legacy_dedupe_ms` | legacy flood | 10000 | 10000 | 10000 |
+| Legacy PING interval | `timer.legacy_ping_interval_ms` | legacy ping/pong | 2000 | 2000 | 2000 |
+| Legacy PING timeout | `timer.legacy_ping_timeout_ms` | legacy ping/pong | 1500 | 1500 | 1500 |
+| HACK response deadline | `timer.link_hack_timeout_ms` | routed link-v2 | 250 | 250 | 250 |
+| HACK maximum attempts (count) | `timer.link_max_attempts` | routed link-v2 | 3 | 3 | 3 |
+| HACK retry backoff | `timer.link_retry_backoff_ms` | routed link-v2 | 0 | 0 | 0 |
+| Eligibility-to-TX_DONE attempt bound (derived) | `timer.link_tx_scheduler_attempt_bound_ms` | scheduler/link-v2 | 30 | 30 | 30 |
+| HACK response-window sum (derived) | `timer.link_response_window_sum_ms` | routed link-v2 | 750 | 750 | 750 |
+| No-response wall bound (derived) | `timer.link_no_response_wall_bound_ms` | routed link-v2 | 840 | 840 | 840 |
+| RX candidate defensive resolution | `timer.link_candidate_resolve_ms` | routed link-v2/router | 10 | 10 | 10 |
+| BUSY backoff | `timer.link_busy_backoff_ms` | routed link-v2 | 500 | 500 | 500 |
+| BUSY maximum responses (count) | `timer.link_busy_max_responses` | routed link-v2 | 3 | 3 | 3 |
+| Selected-next-hop DATA deadline | `timer.link_data_deadline_ms` | routed link-v2 | 5000 | 5000 | 5000 |
+| DATA equality-dedupe retention minimum | `timer.link_data_dedupe_ms` | routed link-v2 | 10000 | 10000 | 10000 |
+| FLOOD equality-dedupe retention | `timer.link_flood_dedupe_ms` | routed link-v2 | 10000 | 10000 | 10000 |
+| Routed flood jitter minimum | `timer.link_flood_jitter_min_ms` | routed link-v2 | 20 | 20 | 20 |
+| Routed flood jitter maximum | `timer.link_flood_jitter_max_ms` | routed link-v2 | 120 | 120 | 120 |
+| AODV node traversal | `timer.aodv_node_traversal_ms` | AODV core | 10 | 40 | 40 |
+| AODV net diameter (count) | `timer.aodv_net_diameter` | AODV core | 15 | 15 | 15 |
+| AODV net traversal (derived) | `timer.aodv_net_traversal_ms` | AODV core | 300 | 1200 | 1200 |
+| AODV path/RREQ response window (derived) | `timer.aodv_path_discovery_ms` | AODV core | 600 | 2400 | 2400 |
+| RREQ equality-dedupe retention | `timer.aodv_rreq_seen_ms` | AODV core | 10000 | 10000 | 10000 |
+| AODV RREQ retries (count) | `timer.aodv_rreq_retries` | AODV core | 2 | 2 | 2 |
+| AODV RREQ origin rate (per second) | `timer.aodv_rreq_rate` | AODV core | 10 | 10 | 10 |
+| AODV RERR origin rate (per second) | `timer.aodv_rerr_rate` | AODV core | 10 | 10 | 10 |
+| AODV active route | `timer.aodv_active_route_ms` | AODV core | 36000 | 360000 | 720000 |
+| AODV pending DATA | `timer.aodv_pending_data_ms` | AODV core | 5000 | 30000 | 60000 |
+| AODV unidirectional blacklist (derived) | `timer.aodv_blacklist_ms` | AODV core | 600 | 2400 | 2400 |
+| E_RREP equality-dedupe retention | `timer.aodv_rrep_dedupe_ms` | AODV core | 10000 | 10000 | 10000 |
+| E_RERR equality-dedupe retention | `timer.aodv_rerr_dedupe_ms` | AODV core | 10000 | 10000 | 10000 |
+| E_RREP_ACK wait | `timer.aodv_rrep_ack_wait_ms` | AODV core | 250 | 250 | 250 |
+| GTT soft expiry | `timer.gtt_soft_expiry_ms` | GTT/maintenance | 15000 | 150000 | 300000 |
+| GTT hard expiry | `timer.gtt_hard_expiry_ms` | GTT/maintenance | 30000 | 300000 | 600000 |
+| GTT departed retention | `timer.gtt_departed_ms` | GTT/maintenance | 60000 | 600000 | 1200000 |
+| GTT maintenance interval | `timer.gtt_maintenance_ms` | GTT/maintenance | 2500 | 25000 | 50000 |
+| HELLO change interval | `timer.hello_change_ms` | router/maintenance | 2400 | 24000 | 60000 |
+| HELLO stable interval | `timer.hello_stable_ms` | router/maintenance | 12000 | 120000 | 300000 |
+| HELLO EMA alpha (ratio) | `timer.hello_alpha` | router/maintenance | 0.8 | 0.8 | 0.8 |
+| HELLO snap ratio | `timer.hello_snap_ratio` | router/maintenance | 0.95 | 0.95 | 0.95 |
+| HELLO equality-dedupe retention | `timer.hello_dedupe_ms` | routed router | 10000 | 10000 | 10000 |
+| Routed reboot-announcement window | `timer.router_reboot_announce_ms` | routed router | 1000 | 3000 | 3000 |
+| Verification total bound (derived) | `timer.verification_window_ms` | maintenance | 2100 | 8400 | 8400 |
+| Verification new-start cap (count) | `timer.verification_new_cap` | maintenance | 4 | 4 | 4 |
+| Verification active cap (count) | `timer.verification_active_cap` | maintenance | 4 | 4 | 4 |
+| Mentor offer-collection window | `timer.mentor_offer_window_ms` | mentorship | 500 | 2000 | 2000 |
+| Mentor page timeout (derived) | `timer.mentor_page_timeout_ms` | mentorship | 600 | 2400 | 2400 |
+| Mentor page attempts (count) | `timer.mentor_page_attempts` | mentorship | 3 | 3 | 3 |
+| Mentor no-offer self-bootstrap | `timer.mentor_self_bootstrap_ms` | mentorship | 1000 | 3000 | 3000 |
+| SYNC equality-dedupe post-completion retention | `timer.mentor_sync_dedupe_ms` | mentorship | 10000 | 10000 | 10000 |
+| Mentor weak-RSSI magnitude endpoint (dB) | `timer.mentor_rssi_weak_magnitude_db` | mentorship | 90 | 90 | 90 |
+| Mentor strong-RSSI magnitude endpoint (dB) | `timer.mentor_rssi_strong_magnitude_db` | mentorship | 30 | 30 | 30 |
+| Mentor weak-RSSI delay endpoint | `timer.mentor_rssi_weak_delay_ms` | mentorship | 500 | 500 | 500 |
+| Mentor strong-RSSI delay endpoint | `timer.mentor_rssi_strong_delay_ms` | mentorship | 10 | 10 | 10 |
+| Mentor offer jitter minimum | `timer.mentor_jitter_min_ms` | mentorship | 0 | 0 | 0 |
+| Mentor offer jitter maximum | `timer.mentor_jitter_max_ms` | mentorship | 50 | 50 | 50 |
+| Mentor duplicate-offer suppression | `timer.mentor_offer_suppression_ms` | mentorship | 10000 | 10000 | 10000 |
+| Topology metadata cooldown | `timer.metadata_cooldown_ms` | metadata/maintenance | 1000 | 5000 | 10000 |
+| TC UUID dedupe | `timer.tc_uuid_ms` | topology maintenance | 5000 | 30000 | 60000 |
+| TC subject dedupe | `timer.tc_subject_ms` | topology maintenance | 1000 | 1000 | 1000 |
+| Local repair total timeout (derived) | `timer.repair_timeout_ms` | optional repair | 1700 | 5300 | 5300 |
+| Local repair cooldown | `timer.repair_cooldown_ms` | optional repair | 1000 | 1000 | 1000 |
+| Statistics interval | `timer.stats_ms` | firmware loop | 1000 | 5000 | 30000 |
+| Firmware loop delay | `timer.loop_delay_ms` | firmware loop | 2 | 2 | 2 |
+
+Derived relationships are normative: net traversal is
+`2 * 15 * node_traversal`; path discovery is `2 * net_traversal`; blacklist is
+`2 * net_traversal`; active route is `1.2 * GTT hard expiry`; departed retention
+is `2 * GTT hard expiry`; maintenance interval is
+`max(1000, GTT hard expiry / 12)`. Verification total is one net traversal plus
+three path-discovery windows. Mentor page timeout is `2 * net_traversal`. Local
+repair timeout is `2 * path_discovery + 500`. The RREQ equality cache is retained
+for `max(path_discovery, 10000)`, so its actual manifest value is 10000 in all
+three profiles even though the path/RREQ response window is 600/2400 ms. DATA
+dedupe remains live beyond its 10000 ms minimum while custody is held; SYNC
+dedupe remains live through the active session plus the listed post-completion
+retention. Radio TX event bound is
+`(1 pre-disable + 3 selected-channel waits) * radio_state_timeout = 8`.
+Eligibility-to-TX_DONE bound is
+`(scheduler_custody_bypass_max + 1) * (radio_tx_event_bound + scheduler_poll_max) = 30`.
+`timer.scheduler_poll_max_ms` is the maximum from completion of one bounded
+scheduler operation to the start of the next scheduler poll in the dedicated
+mesh loop; it is not `timer.loop_delay_ms`, which remains a generic firmware-loop
+setting and is not used in this service proof.
+HACK response-window sum is `3 * 250 = 750`; no-response wall bound is
+`response_window_sum + 3 * link_tx_scheduler_attempt_bound = 840`.
+Configure-time validation recomputes every derived row, rejects min/max or
+timeout-order violations, and requires exact timer-key set equality between this
+table, architecture, generated configuration, and artifact manifest.
+
+| ID | Normative requirement |
+| --- | --- |
+| **META-01** | Metadata candidate selection is capped by the fixed four-entry capacity, prioritizes soft-expired freshness requests, uses a round-robin cursor, and applies `timer.metadata_cooldown_ms` per entry. BALANCED cooldown is 5 s only; FAST_TEST/SOAK remain table-authoritative. The four-entry cap resolves v2.2 prose value 5 versus source value 4. |
+| **META-02** | Metadata may be emitted only in fixed-k SID8 E_RREQ/E_RREP/E_RERR. Static capacities are RREQ 4, RREP 3, and RERR 4/3/1/0 for 1/2/3/4 unreachable destinations; SID16 has zero slots. Emitted count is `min(candidate count, static capacity)`; zero-slot control frames remain valid. No encoder truncates base control fields to make room. |
+| **META-03** | BLE DATA has zero topology-metadata slots. HELLO has zero general slots, except a targeted verification HELLO carries exactly one freshness request. E_RREP_ACK, SYNC_*, and TC-UPDATE carry no general metadata. |
+| **META-04** | Metadata is attributed to the explicit immediate transmitter, bounds checked before merge, and consumed by the routing layer before application delivery. Unsupported or excess metadata rejects the frame rather than partially applying entries. |
+
+| ID | Normative requirement |
+| --- | --- |
+| **REPAIR-01** | Local repair is a separately switchable TAVRN v2.3 extension of `FULL_TAVRN`, disabled for the initial full-profile proof. It adds no message type, header field, or steady-state traffic and never replaces AODV. |
+| **REPAIR-02** | Repair starts only from routed-link `RETRY_EXHAUSTED` for a transit DATA frame whose custody is held by the repairer. Locally originated DATA, control loss, busy/rejected HACK, and queue failure use existing paths and do not start repair. |
+| **REPAIR-03** | On failed next hop H toward destination D, H is the failed neighbor and D remains unknown/alive unless separately proven departed. Routes via H are invalidated; LEAVE may name H, never D solely because H failed. |
+| **REPAIR-04** | Repair state is fixed at one concurrent destination and four buffered transit DATA frames. It owns immutable DATA context; limit or buffer excess immediately returns to the normal AODV RERR/failure path without duplicate custody or silent overwrite. |
+| **REPAIR-05** | One repair transaction invokes `AODV-08`, sends at most one Smart-TTL RREQ then one full-scope RREQ, and allows no inner retry loop. Total timeout uses derived `timer.repair_timeout_ms`; table values are 1700 ms FAST_TEST and 5300 ms BALANCED/SOAK. Success installs the alternate route through the same core, cancels deferred RERR, and flushes each buffered DATA exactly once; timeout/failure releases RERR and drops buffers. |
+
+## Fixed capacities and build evidence
+
+`BUILD-01` freezes these logical capacities. A derived architecture may allocate
+more bytes for alignment, but may not introduce heap allocation or change the
+observable limits without revising this profile.
+
+| Resource | Capacity | Deterministic full policy |
+| --- | ---: | --- |
+| Raw AdvData / routed custom PDU | 31 / 24 bytes | Reject before driver truncation. |
+| Public DATA application bytes | 10 bytes | SID16 encoder admits at most 7; SID8 opaque admits at most 10; patient kind `01` requires exactly 7. |
+| Scheduler physical TX queue | 4 items | Strict-priority admission; return full or the synchronously evicted lower-priority token. |
+| Routed link custody TX | 4 DATA | `SEND_NO_SLOT`; caller retains input. |
+| Link accepted/duplicate cache | 16 keys | Purge expired, then deterministic oldest; never duplicate-deliver. |
+| AODV routes | 16 destinations | Purge expired/invalid; reject a worse/new route rather than evict active fresher state. |
+| AODV RREQ seen cache | 32 keys | Purge expired, then deterministic oldest. |
+| AODV pending application/transit DATA | 8 items | Return busy or normal RERR/repair fallback; never overwrite. |
+| AODV precursor IDs | 8 per route | Ignore duplicate; retain existing set and count truncation. |
+| Pending E_RREP_ACK waits | 4 exact tuples | Backpressure E_RREP action before setting ACK-required/sending; never transmit an untracked ACK request. |
+| AODV pending action/RERR segment queue | 8 actions total | Apply `AODV-06`: reject external input before persistent mutation; internal due work remains explicit and retries next tick. |
+| GTT membership | 16 entries | Apply `GTT-02`; never overwrite fresher active state. |
+| Active mentorship session / frozen snapshot | 1 session / 16 entries | Busy/suppress a second session; reject snapshot creation if local GTT cannot fit; never replace an active session. |
+| Mentorship competing offers | 8 | Retain the best offers under `BOOT-03`; count overflow. |
+| Maintenance TC/verification dedupe | 16 keys | Purge expired, then deterministic oldest. |
+| Active verification FSMs | 4 | Defer new work. |
+| Metadata candidates | 4 | Round-robin selection; wire capacity may emit fewer. |
+| Local repair | 1 destination, 4 DATA | Immediate normal AODV RERR/failure path for excess. |
+| Node/router application event queue | 8 events | Backpressure producer; never overwrite silently. |
+
+| ID | Normative requirement |
+| --- | --- |
+| **BUILD-01** | Radio, routed link, AODV, GTT, mentorship, metadata, dedupe, verification, and repair paths use the fixed capacities and full policies above with no heap allocation. In particular, four exact E_RREP_ACK waits, one mentorship session/snapshot, and eight total AODV action/RERR segments are compile-time guarded and cannot silently truncate, overwrite, or create untracked protocol work. |
+| **BUILD-02** | Generic/runtime-FICR builds put exact sentinel `RUNTIME_FICR` in every build-time AdvA/SID16/SID8/fleet-identity field and are ineligible for routed hardware claims. Every routed hardware candidate instead requires a board-specific `TRON_ADVA_OVERRIDE` byte-equal to that target board's independently observed FICR AdvA; its manifest records exact AdvA, derived SID16/SID8, fleet inventory/hash and uniqueness/nonreserved result, source/tool/config/timer/capacity/hook provenance, and artifact hashes. UID-bound run evidence verifies board UID plus independently observed FICR AdvA against the override/manifest before flash; mismatch fails closed. |
+| **BUILD-03** | Every feature slice keeps legacy wire-v1, routed AODV_ONLY, and applicable FULL_TAVRN builds/tests green. AODV_ONLY contains no dependency on full-TAVRN modules; repair-on and repair-off remain separately testable. |
+| **BUILD-04** | Hardware claims attach to immutable clean candidate commits. Mandatory gates are two-board routed link, two-board direct and three-board forced-relay AODV, three-to-eight-board full-profile behavior, four-board transit repair, and finite soak; the `98/150` foundation remains only a best-effort baseline. |
+
+## Derived-contract boundary
+
+Wire-v2 owns byte offsets, type codes, exact golden vectors, and the size proof
+behind `META-02`; identity owns canonical byte order and compressed lookup; ACK
+owns DATA custody timing; architecture owns source-file boundaries and fixed
+storage allocation. Those accepted contracts derive `TR/02`, AdvA, SID16/SID8,
+three-attempt/250 ms HACK, and capacity representation from this profile.
+Neither may change a requirement above; an impossible fit or ownership conflict
+returns to this profile as an explicit revision rather than an undocumented
+implementation exception.

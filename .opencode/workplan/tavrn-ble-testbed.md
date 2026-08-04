@@ -201,43 +201,50 @@ Hardware fanout rules:
 ## Spec files
 - .opencode/workplan/ble-mesh-near-spec-transport.md
 - microbit/app/protocol/README.md
+- microbit/docs/tavrn_ble_profile.md
+- microbit/docs/tavrn_ble_deviations.md
+- microbit/docs/tavrn_ble_test_matrix.md
+- microbit/docs/tavrn_ble_wire_v2.md
+- microbit/docs/tavrn_ble_ack_contract.md
+- microbit/docs/tavrn_ble_identity.md
+- microbit/docs/tavrn_ble_architecture.md
 
 ## Execution phases
 ### 1. Freeze provenance, normative profile, wire contract, and layered architecture <!-- workplan-phase-id: phase-0-contract-provenance -->
-- Status: draft
+- Status: completed
 - Id: phase-0-contract-provenance
 #### 1.1 Commit plan alone and inventory the dirty proven foundation <!-- workplan-step-id: step-0a-plan-and-foundation-inventory -->
-- Status: draft
+- Status: completed
 - Id: step-0a-plan-and-foundation-inventory
 - Target: exp/tavrn-ble branch, workplan files, current BLE PING/PONG source/tests/logs
 - Action: After planning approval, commit only the validated workplan. During execution record every dirty/untracked foundation file, mark prior hardware logs as dirty-source/provenance-limited, re-run existing host tests, then commit foundation source/tests separately without TAVRN changes.
 - Validation: Plan commit contains only workplan artifacts; foundation commit is reviewable; historical claims are not overstated; lower baseline tests pass.
 #### 1.2 Rebuild and re-prove the foundation from an immutable commit <!-- workplan-step-id: step-0b-clean-baseline-candidate -->
-- Status: draft
+- Status: completed
 - Id: step-0b-clean-baseline-candidate
 - Target: clean temporary worktree at the foundation commit
 - Action: Build labelled BLE flood/PING-PONG artifacts from a clean commit and record commit/tree/submodule/tool versions, effective constants, full AdvA, logical IDs, role/timer/test hooks, artifact SHA-256 and board UID. Re-run a two-board smoke and five-minute proof; commit evidence separately.
 - Validation: Foundation is attributable to a clean commit and exact artifacts; branch returns clean after evidence commit.
 #### 1.3 Freeze TAVRN-BLE profile and deviation authority <!-- workplan-step-id: step-0c-normative-profile -->
-- Status: draft
+- Status: completed
 - Id: step-0c-normative-profile
 - Target: microbit/docs/tavrn_ble_profile.md, tavrn_ble_deviations.md, tavrn_ble_test_matrix.md
 - Action: Code-writer audits TAVRN_v2.md, actual ns-3 source at fc5f256 plus observed dirty changes, IMPLEMENTATION.md, paper, REPORT-AUDIT.md and LOCAL-REPAIR-SPEC.md. Resolve full bootstrap identity versus one-byte implementation, verification demand/caps, E_RREP_ACK versus link custody ACK, sequence width/wrap/reboot, metadata capacity, and local repair as v2.3 extension. Assign stable requirement IDs.
 - Validation: The in-workspace profile explicitly becomes sole firmware authority; every planned test maps to requirement IDs and every intentional deviation has rationale/status.
 #### 1.4 Freeze wire-v2, custody ACK, and identity contracts <!-- workplan-step-id: step-0d-wire-ack-identity-contract -->
-- Status: draft
+- Status: completed
 - Id: step-0d-wire-ack-identity-contract
 - Target: microbit/docs/tavrn_ble_wire_v2.md, tavrn_ble_ack_contract.md, tavrn_ble_identity.md
 - Action: Freeze byte offsets/sizes for link DATA/HACK/flood, AODV RREQ/RREP/RERR/E_RREP_ACK, and TAVRN HELLO/SYNC/TC/metadata/patient DATA. Account for 31-byte AdvData and 24-byte custom PDU; define version/network/type isolation, endianness, dedupe, malformed policy, metadata/page capacities and golden vectors. Define HACK accepted/duplicate/busy/rejected, custody meaning, ACKable classes, retry/deadline/correlation, and RETRY_EXHAUSTED as the only link-break event. Define canonical AdvA identity, 16-bit pre-ESC ID, low-byte k=1 ID, reserved IDs, configured AdvA override, full bootstrap identity and fail-closed collision handling.
 - Validation: Every frame fits with compile-time guards; contracts are sufficient to author assertion-level tests without implementation guesses.
 #### 1.5 Freeze two-implementation architecture and build profiles <!-- workplan-step-id: step-0e-layer-build-contract -->
-- Status: draft
+- Status: completed
 - Id: step-0e-layer-build-contract
 - Target: microbit/docs/tavrn_ble_architecture.md plus CMake/header contract
 - Action: Define shared radio/scheduler/queue primitives; legacy flood branch; one TAVRN routed node containing AODV always and optional full modules. Define TRON_NODE_MODE, TAVRN_FEATURE_LEVEL, TRON_TIMER_PROFILE, test hooks, source ownership, callback/event boundaries, fixed capacities, effective manifest fields, and forbidden dependencies. No AODV/TAVRN stubs count as profile proof.
 - Validation: Legacy flood builds independently; routed AODV_ONLY and FULL_TAVRN share route/link code; no full-TAVRN header enters AODV-only dependency; profile rollback is explicit.
 #### 1.6 Checker gate for contracts and auditable TDD <!-- workplan-step-id: step-0f-contract-checker -->
-- Status: draft
+- Status: completed
 - Id: step-0f-contract-checker
 - Target: all Phase 0 documents, test IDs, commit/provenance process
 - Action: Code-checker reviews spec mapping, bytes, ACK/failure semantics, identity, sequence/reboot policy, layering, profiles, capacities, red/green evidence process, and hardware provenance. Code-writer fixes valid blocker/major findings; checker re-reviews fixes.
@@ -490,6 +497,13 @@ Hardware fanout rules:
 - [major] Serial-number wrap/reboot policy required(resolved)— Added to normative contract and AODV/GTT test requirements. [source: plan-checker ses_0327ea5b1ffeaqt39pUUewn0sY M4]
 - [major] Patient AdvA identity was discarded by scheduler event(resolved)— Patient phase now first preserves/tests AdvA, vendors a hash-identified schema contract, defines exact classification/dedupe/sink/heartbeat policy, and uses emitted denominators. [source: plan-checker ses_0327ea5b1ffeaqt39pUUewn0sY M5]
 - [major] Final claims were written after final checker(resolved)— Final checker moved after conformance/runbook generation and before final audit. [source: plan-checker ses_0327ea5b1ffeaqt39pUUewn0sY M8]
+- [blocker] TTL width and expanding-ring dedupe conflict(resolved)— Net diameter is 15, traversal timers were recomputed, and each ring transmission uses a fresh RREQ ID correlated only in local discovery state. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 1-2]
+- [blocker] Custody ACK occurs before router/application reservation(resolved)— Two-phase candidate admission commits dedupe/HACK only after storage reservation, with bounded BUSY cleanup and continued timer/control progress. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 finding 3]
+- [major] Pre-ESC identity and reboot/dedupe semantics conflict(resolved)— SID16 is the AdvA-derived standalone AODV_ONLY namespace; direct peers retain full AdvA, reboot uses routed-common nonce, and equality dedupe is distinct from freshness. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 4-6]
+- [major] Scheduler/link seams incomplete for AdvA and terminal outcomes(resolved)— Full AdvA/raw/RSSI seams, complete Phase-1 APIs, bounded radio/scheduler service, partial TX, and six typed ownership outcomes are frozen. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 7-9 and final rechecks]
+- [major] Timer, repair, and bounded-state registry incomplete(resolved)— Profile and architecture share 71 exact timer keys; repair/deferred RERR, segmentation, capacities, and finite scheduler/radio bounds are explicit. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 10-11,13 and rechecks]
+- [major] Golden-vector and E_RREP_ACK correlation coverage incomplete(resolved)— Maximum-capacity/rejection vectors pass byte arithmetic and E_RREP_ACK correlation includes destination sequence. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 12,14]
+- [major] Phase 0 specFiles and Markdown execution state stale(resolved)— All seven contracts are registered, JSON/Markdown status is synchronized, and validation passes. [source: code-checker ses_03223af62ffexcEZVBNT8ZC0C6 finding 15]
 
 ## Notes
 - Existing completed workplan ble-mesh-near-spec-transport is the baseline transport history and remains authoritative for the proven BLE_CORE behavior.
@@ -503,8 +517,12 @@ Hardware fanout rules:
 - All firmware logs/docs must say proof of concept and must not claim Bluetooth Mesh compliance, clinical readiness, or production-grade routing/security.
 - 2026-08-04 user correction: AODV is not a separate plugin. The TAVRN router's base is AODV; FULL_TAVRN adds modules around the same route engine. At most two behavioral branches exist: legacy BLE flood and TAVRN routed.
 - The current TAVRN reference repository is GPL-2.0-only. Execution should conceptually reimplement from the normative profile unless licensing is deliberately aligned; do not copy large source bodies casually.
+- Step 0a completed: existing BLE foundation host tests passed (17 packet, 12 dedupe, 12 PING/PONG plus compile guards, radio and scheduler), labelled root/leaf firmware built, and source/tests committed separately as bf17bce. Historical raw logs remain untracked and provenance-limited pending clean-commit re-proof.
+- Step 0b completed from clean detached commit bf17bce/tree 5f831a3: all host suites and root/leaf builds passed; exact UID/AdvA/artifact mappings recorded; 60-second result 25/30 matched and five-minute result 98/150 matched with no unmatched/queue/semantic failure or reboot.
+- Phase 0 contract lanes completed in parallel. Parent validation passed 69/69 before checker pass 1; that pass found 3 blockers and 12 majors grouped into seven actionable findings.
+- Final bounded checker `ses_03223af62ffexcEZVBNT8ZC0C6` passed with no blocker/major findings: 70/70 requirement rows, exact 71-key timer registry, 23 complete wire vectors, coherent six-outcome custody semantics, and board-bound candidate provenance. Phase 0 is closed.
 
 ## Status
-- Overall status: draft
+- Overall status: in_progress
 - Metadata file: .opencode/workplan/tavrn-ble-testbed.json
 - Detailed plan file: .opencode/workplan/tavrn-ble-testbed.md

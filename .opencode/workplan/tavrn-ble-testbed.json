@@ -67,18 +67,32 @@
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-gtt.cc",
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-rtable.cc",
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-packet.cc",
-    "microbit/hardware-results/2026-08-04-foundation-clean-bf17bce.md"
+    "microbit/hardware-results/2026-08-04-foundation-clean-bf17bce.md",
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_deviations.md",
+    "microbit/docs/tavrn_ble_test_matrix.md",
+    "microbit/docs/tavrn_ble_wire_v2.md",
+    "microbit/docs/tavrn_ble_ack_contract.md",
+    "microbit/docs/tavrn_ble_identity.md",
+    "microbit/docs/tavrn_ble_architecture.md"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
     ".opencode/workplan/ble-mesh-near-spec-transport.md",
-    "microbit/app/protocol/README.md"
+    "microbit/app/protocol/README.md",
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_deviations.md",
+    "microbit/docs/tavrn_ble_test_matrix.md",
+    "microbit/docs/tavrn_ble_wire_v2.md",
+    "microbit/docs/tavrn_ble_ack_contract.md",
+    "microbit/docs/tavrn_ble_identity.md",
+    "microbit/docs/tavrn_ble_architecture.md"
   ],
   "phases": [
     {
       "id": "phase-0-contract-provenance",
       "title": "Freeze provenance, normative profile, wire contract, and layered architecture",
-      "status": "in_progress",
+      "status": "completed",
       "steps": [
         {
           "id": "step-0a-plan-and-foundation-inventory",
@@ -102,7 +116,7 @@
           "target": "microbit/docs/tavrn_ble_profile.md, tavrn_ble_deviations.md, tavrn_ble_test_matrix.md",
           "action": "Code-writer audits TAVRN_v2.md, actual ns-3 source at fc5f256 plus observed dirty changes, IMPLEMENTATION.md, paper, REPORT-AUDIT.md and LOCAL-REPAIR-SPEC.md. Resolve full bootstrap identity versus one-byte implementation, verification demand/caps, E_RREP_ACK versus link custody ACK, sequence width/wrap/reboot, metadata capacity, and local repair as v2.3 extension. Assign stable requirement IDs.",
           "validation": "The in-workspace profile explicitly becomes sole firmware authority; every planned test maps to requirement IDs and every intentional deviation has rationale/status.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-0d-wire-ack-identity-contract",
@@ -110,7 +124,7 @@
           "target": "microbit/docs/tavrn_ble_wire_v2.md, tavrn_ble_ack_contract.md, tavrn_ble_identity.md",
           "action": "Freeze byte offsets/sizes for link DATA/HACK/flood, AODV RREQ/RREP/RERR/E_RREP_ACK, and TAVRN HELLO/SYNC/TC/metadata/patient DATA. Account for 31-byte AdvData and 24-byte custom PDU; define version/network/type isolation, endianness, dedupe, malformed policy, metadata/page capacities and golden vectors. Define HACK accepted/duplicate/busy/rejected, custody meaning, ACKable classes, retry/deadline/correlation, and RETRY_EXHAUSTED as the only link-break event. Define canonical AdvA identity, 16-bit pre-ESC ID, low-byte k=1 ID, reserved IDs, configured AdvA override, full bootstrap identity and fail-closed collision handling.",
           "validation": "Every frame fits with compile-time guards; contracts are sufficient to author assertion-level tests without implementation guesses.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-0e-layer-build-contract",
@@ -118,7 +132,7 @@
           "target": "microbit/docs/tavrn_ble_architecture.md plus CMake/header contract",
           "action": "Define shared radio/scheduler/queue primitives; legacy flood branch; one TAVRN routed node containing AODV always and optional full modules. Define TRON_NODE_MODE, TAVRN_FEATURE_LEVEL, TRON_TIMER_PROFILE, test hooks, source ownership, callback/event boundaries, fixed capacities, effective manifest fields, and forbidden dependencies. No AODV/TAVRN stubs count as profile proof.",
           "validation": "Legacy flood builds independently; routed AODV_ONLY and FULL_TAVRN share route/link code; no full-TAVRN header enters AODV-only dependency; profile rollback is explicit.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-0f-contract-checker",
@@ -126,7 +140,7 @@
           "target": "all Phase 0 documents, test IDs, commit/provenance process",
           "action": "Code-checker reviews spec mapping, bytes, ACK/failure semantics, identity, sequence/reboot policy, layering, profiles, capacities, red/green evidence process, and hardware provenance. Code-writer fixes valid blocker/major findings; checker re-reviews fixes.",
           "validation": "No open blocker/major PoC issue; Phase 0 profile/architecture/wire/deviation/test docs are added to workplan specFiles before Phase 1.",
-          "status": "draft"
+          "status": "completed"
         }
       ]
     },
@@ -536,6 +550,55 @@
       "detail": "Resolved in JSON and Markdown: Phase 1 uses a dedicated non-routing link-v2 harness; AODV_ONLY is introduced only with the real AODV engine in Phase 2.",
       "source": "plan-checker final gate ses_0327ea5b1ffeaqt39pUUewn0sY",
       "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "TTL width and expanding-ring dedupe conflict",
+      "detail": "Resolved: the PoC net diameter is 15, all traversal-derived timers were recomputed, and every expanding-ring transmission receives a fresh RREQ ID correlated only in local discovery state.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 1-2",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Custody ACK occurs before router/application reservation",
+      "detail": "Resolved: link-v2 uses synchronous two-phase candidate admission; ACCEPTED commits dedupe and HACK only after route/application storage reservation, with bounded BUSY cleanup and continued timer/control progress.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Pre-ESC identity and reboot/dedupe semantics conflict",
+      "detail": "Resolved: SID16 is the AdvA-derived standalone AODV_ONLY logical namespace, direct peers retain full AdvA, routed-common boot nonce handles incarnation, and equality dedupe is distinct from half-range freshness.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 4-6",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Scheduler/link seams incomplete for AdvA and terminal outcomes",
+      "detail": "Resolved: full AdvA/raw/RSSI seams, complete Phase-1 codec/link APIs, bounded radio and scheduler service, partial-channel accounting, and six typed ownership outcomes are frozen and checker-accepted.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 7-9 and final rechecks",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Timer, repair, and bounded-state registry incomplete",
+      "detail": "Resolved: profile and architecture share the exact 71-key registry; repair uses one Smart-TTL plus one full attempt through deferred RERR; capacities, segmentation, and finite scheduler/radio bounds are explicit.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 10-11,13 and rechecks",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Golden-vector and E_RREP_ACK correlation coverage incomplete",
+      "detail": "Resolved: maximum-capacity and rejection vectors pass byte arithmetic, and E_RREP_ACK exact correlation includes destination sequence.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 findings 12,14",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Phase 0 specFiles and Markdown execution state stale",
+      "detail": "Resolved: all seven Phase 0 contracts are registered, JSON/Markdown execution state is synchronized, and workplan validation passes.",
+      "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 finding 15",
+      "status": "resolved"
     }
   ],
   "notes": [
@@ -555,9 +618,13 @@
     "Parallel execution policy: each layer remains a serial acceptance gate, but non-overlapping codecs, pure state machines, test harnesses, and tooling fan out into dedicated slice worktrees from one immutable base. Each lane receives a focused checker; one integration writer owns shared headers/CMake/orchestration; one whole-slice checker gates the candidate commit. Builds and serial capture may run in parallel, but UID flashing remains serial.",
     "Execution approved with `use workflows to execute tavrn-ble-testbed` on 2026-08-04. Starting Phase 0 with foundation inventory/provenance; no new protocol implementation before contract freeze.",
     "Step 0a completed: existing BLE foundation host tests passed (17 packet, 12 dedupe, 12 PING/PONG plus compile guards, radio and scheduler), labelled root/leaf firmware built, and source/tests committed separately as bf17bce. Historical raw logs remain untracked and provenance-limited pending clean-commit re-proof.",
-    "Step 0b completed from clean detached commit bf17bce/tree 5f831a3: all host suites and root/leaf builds passed; exact UID/AdvA/artifact mappings recorded; 60-second result 25/30 matched and five-minute result 98/150 matched with no unmatched/queue/semantic failure or reboot. This is the immutable best-effort baseline for link-v2 improvement. Phase 0 contract lanes 0c/0d/0e now fan out in parallel."
+    "Step 0b completed from clean detached commit bf17bce/tree 5f831a3: all host suites and root/leaf builds passed; exact UID/AdvA/artifact mappings recorded; 60-second result 25/30 matched and five-minute result 98/150 matched with no unmatched/queue/semantic failure or reboot. This is the immutable best-effort baseline for link-v2 improvement. Phase 0 contract lanes 0c/0d/0e now fan out in parallel.",
+    "Phase 0 contract lanes completed in parallel. Parent reconciled full AdvA event/build/test-hook identity seams and froze exact FAST_TEST/BALANCED/SOAK timer registry. Parent validation passed: 69/69 requirement-to-matrix coverage, seven balanced Markdown documents, no stale 16-bit transmitter seam, and clean diff whitespace. Entering whole-contract checker gate.",
+    "Whole-contract checker pass 1 found 3 blockers and 12 major issues. Findings were grouped into seven actionable workplan items. Production-security/polish concerns were not accepted; contract correctness issues are entering one focused parallel fix pass.",
+    "Focused Phase 0 checker-fix pass completed across the profile, wire/ACK/identity, and architecture lanes. Requirement-to-matrix coverage is now 70/70; contracts reduce net diameter to 15, use a fresh RREQ ID per ring, implement two-phase inbound DATA admission, and freeze boot-nonce, identity, capacity, repair, and E_RREP_ACK semantics. Parent reconciliation and whole-contract re-review remain in progress.",
+    "Final bounded Phase 0 checker pass `ses_03223af62ffexcEZVBNT8ZC0C6` passed with no blocker/major findings. Accepted contracts have 70 requirements mapped 1:1 to 70 matrix rows, an exact 71-key profile/architecture timer registry, 23 validated complete wire vectors, coherent six-outcome custody semantics, and board-bound routed hardware provenance. Phase 0 is closed; Phase 1 begins with assertion-level red tests."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-04T16:45:19.403Z"
+  "updatedAt": "2026-08-04T19:47:13.289Z"
 }
