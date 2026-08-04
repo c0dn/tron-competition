@@ -66,7 +66,8 @@
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-routing-protocol.cc",
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-gtt.cc",
     "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-rtable.cc",
-    "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-packet.cc"
+    "/home/lucas/Projects/iot/TAVRN-WiFi/src/tavrn/model/tavrn-packet.cc",
+    "microbit/hardware-results/2026-08-04-foundation-clean-bf17bce.md"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
@@ -77,7 +78,7 @@
     {
       "id": "phase-0-contract-provenance",
       "title": "Freeze provenance, normative profile, wire contract, and layered architecture",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-0a-plan-and-foundation-inventory",
@@ -85,7 +86,7 @@
           "target": "exp/tavrn-ble branch, workplan files, current BLE PING/PONG source/tests/logs",
           "action": "After planning approval, commit only the validated workplan. During execution record every dirty/untracked foundation file, mark prior hardware logs as dirty-source/provenance-limited, re-run existing host tests, then commit foundation source/tests separately without TAVRN changes.",
           "validation": "Plan commit contains only workplan artifacts; foundation commit is reviewable; historical claims are not overstated; lower baseline tests pass.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-0b-clean-baseline-candidate",
@@ -93,7 +94,7 @@
           "target": "clean temporary worktree at the foundation commit",
           "action": "Build labelled BLE flood/PING-PONG artifacts from a clean commit and record commit/tree/submodule/tool versions, effective constants, full AdvA, logical IDs, role/timer/test hooks, artifact SHA-256 and board UID. Re-run a two-board smoke and five-minute proof; commit evidence separately.",
           "validation": "Foundation is attributable to a clean commit and exact artifacts; branch returns clean after evidence commit.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-0c-normative-profile",
@@ -101,7 +102,7 @@
           "target": "microbit/docs/tavrn_ble_profile.md, tavrn_ble_deviations.md, tavrn_ble_test_matrix.md",
           "action": "Code-writer audits TAVRN_v2.md, actual ns-3 source at fc5f256 plus observed dirty changes, IMPLEMENTATION.md, paper, REPORT-AUDIT.md and LOCAL-REPAIR-SPEC.md. Resolve full bootstrap identity versus one-byte implementation, verification demand/caps, E_RREP_ACK versus link custody ACK, sequence width/wrap/reboot, metadata capacity, and local repair as v2.3 extension. Assign stable requirement IDs.",
           "validation": "The in-workspace profile explicitly becomes sole firmware authority; every planned test maps to requirement IDs and every intentional deviation has rationale/status.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-0d-wire-ack-identity-contract",
@@ -109,7 +110,7 @@
           "target": "microbit/docs/tavrn_ble_wire_v2.md, tavrn_ble_ack_contract.md, tavrn_ble_identity.md",
           "action": "Freeze byte offsets/sizes for link DATA/HACK/flood, AODV RREQ/RREP/RERR/E_RREP_ACK, and TAVRN HELLO/SYNC/TC/metadata/patient DATA. Account for 31-byte AdvData and 24-byte custom PDU; define version/network/type isolation, endianness, dedupe, malformed policy, metadata/page capacities and golden vectors. Define HACK accepted/duplicate/busy/rejected, custody meaning, ACKable classes, retry/deadline/correlation, and RETRY_EXHAUSTED as the only link-break event. Define canonical AdvA identity, 16-bit pre-ESC ID, low-byte k=1 ID, reserved IDs, configured AdvA override, full bootstrap identity and fail-closed collision handling.",
           "validation": "Every frame fits with compile-time guards; contracts are sufficient to author assertion-level tests without implementation guesses.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-0e-layer-build-contract",
@@ -117,7 +118,7 @@
           "target": "microbit/docs/tavrn_ble_architecture.md plus CMake/header contract",
           "action": "Define shared radio/scheduler/queue primitives; legacy flood branch; one TAVRN routed node containing AODV always and optional full modules. Define TRON_NODE_MODE, TAVRN_FEATURE_LEVEL, TRON_TIMER_PROFILE, test hooks, source ownership, callback/event boundaries, fixed capacities, effective manifest fields, and forbidden dependencies. No AODV/TAVRN stubs count as profile proof.",
           "validation": "Legacy flood builds independently; routed AODV_ONLY and FULL_TAVRN share route/link code; no full-TAVRN header enters AODV-only dependency; profile rollback is explicit.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-0f-contract-checker",
@@ -551,9 +552,12 @@
     "The current TAVRN reference repository is GPL-2.0-only. Execution should conceptually reimplement from the normative profile unless licensing is deliberately aligned; do not copy large source bodies casually.",
     "Plan-checker re-review found one remaining major: Phase 1 incorrectly called a link-only harness AODV_ONLY. Corrected so Phase 1 uses a dedicated non-routing test harness; AODV_ONLY is introduced only with the real AODV engine in Phase 2.",
     "Final plan-checker gate had no other blocker/major findings. JSON/Markdown mismatch for the Phase 1 validation was patched directly and revalidated.",
-    "Parallel execution policy: each layer remains a serial acceptance gate, but non-overlapping codecs, pure state machines, test harnesses, and tooling fan out into dedicated slice worktrees from one immutable base. Each lane receives a focused checker; one integration writer owns shared headers/CMake/orchestration; one whole-slice checker gates the candidate commit. Builds and serial capture may run in parallel, but UID flashing remains serial."
+    "Parallel execution policy: each layer remains a serial acceptance gate, but non-overlapping codecs, pure state machines, test harnesses, and tooling fan out into dedicated slice worktrees from one immutable base. Each lane receives a focused checker; one integration writer owns shared headers/CMake/orchestration; one whole-slice checker gates the candidate commit. Builds and serial capture may run in parallel, but UID flashing remains serial.",
+    "Execution approved with `use workflows to execute tavrn-ble-testbed` on 2026-08-04. Starting Phase 0 with foundation inventory/provenance; no new protocol implementation before contract freeze.",
+    "Step 0a completed: existing BLE foundation host tests passed (17 packet, 12 dedupe, 12 PING/PONG plus compile guards, radio and scheduler), labelled root/leaf firmware built, and source/tests committed separately as bf17bce. Historical raw logs remain untracked and provenance-limited pending clean-commit re-proof.",
+    "Step 0b completed from clean detached commit bf17bce/tree 5f831a3: all host suites and root/leaf builds passed; exact UID/AdvA/artifact mappings recorded; 60-second result 25/30 matched and five-minute result 98/150 matched with no unmatched/queue/semantic failure or reboot. This is the immutable best-effort baseline for link-v2 improvement. Phase 0 contract lanes 0c/0d/0e now fan out in parallel."
   ],
-  "status": "review",
+  "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-04T16:29:19.112Z"
+  "updatedAt": "2026-08-04T16:45:19.403Z"
 }
