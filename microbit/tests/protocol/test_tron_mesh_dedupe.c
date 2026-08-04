@@ -1,4 +1,5 @@
 #include "tron_mesh_dedupe.h"
+#include "tron_mesh_pingpong.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -210,6 +211,26 @@ static int test_ttl_is_not_part_of_key(void)
     return 0;
 }
 
+static int test_ping_and_pong_echo_are_distinct_keys(void)
+{
+    tron_mesh_packet_t ping = make_packet(TRON_MESH_PINGPONG_ROOT_ID, 77u);
+    tron_mesh_packet_t pong = make_packet(TRON_MESH_PINGPONG_LEAF_ID, 77u);
+    tron_mesh_packet_t same_source_pong = ping;
+
+    ping.msg_type = TRON_MESH_MSG_TYPE_PING;
+    pong.msg_type = TRON_MESH_MSG_TYPE_PONG;
+    same_source_pong.msg_type = TRON_MESH_MSG_TYPE_PONG;
+
+    tron_mesh_dedupe_reset(&cache);
+    ASSERT_EQ_U32(0u, tron_mesh_dedupe_seen_or_insert(&cache, &ping, 1000u));
+    ASSERT_EQ_U32(0u, tron_mesh_dedupe_seen_or_insert(&cache, &pong, 1000u));
+    ASSERT_EQ_U32(0u, tron_mesh_dedupe_seen_or_insert(&cache, &same_source_pong, 1000u));
+    ASSERT_EQ_U32(3u, tron_mesh_dedupe_slots_used(&cache));
+    ASSERT_EQ_U32(1u, tron_mesh_dedupe_seen_or_insert(&cache, &ping, 1100u));
+    ASSERT_EQ_U32(1u, tron_mesh_dedupe_seen_or_insert(&cache, &pong, 1100u));
+    return 0;
+}
+
 static int test_null_arguments_are_safe(void)
 {
     tron_mesh_packet_t p = make_packet(0xf602u, 33u);
@@ -254,6 +275,7 @@ int main(void)
         { "overflow evicts oldest not newest", test_overflow_evicts_oldest_not_newest },
         { "distinct fields are distinct keys", test_distinct_fields_are_distinct_keys },
         { "TTL is not part of key", test_ttl_is_not_part_of_key },
+        { "PING/PONG echo keys keep type and source distinct", test_ping_and_pong_echo_are_distinct_keys },
         { "NULL arguments are safe", test_null_arguments_are_safe },
         { "time_reached wraps safely", test_time_reached_wraps_safely },
     };

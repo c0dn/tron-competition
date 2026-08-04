@@ -13,6 +13,10 @@ toolchain="$repo_root/cmake/arm-none-eabi-gcc.cmake"
 node_id=""
 block_direct_peer="0x0000"
 out_dir="$repo_root/artifacts"
+ping_interval_ms="2000"
+ping_timeout_ms="1500"
+ping_root_id="0x0001"
+ping_leaf_id="0x0002"
 
 usage() {
     cat <<'EOF'
@@ -62,6 +66,13 @@ fi
 artifact_base="ble_mesh_node-${canonical_node_id}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tron-ble-node.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
+
+if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+    source_dirty=yes
+else
+    source_dirty=no
+fi
+
 mkdir -p "$out_dir"
 
 cmake -S "$repo_root" -B "$build_dir" -G Ninja \
@@ -77,8 +88,12 @@ install -m 0644 "$source_elf" "$out_dir/${artifact_base}.elf"
 cat >"$out_dir/${artifact_base}.manifest" <<EOF
 node_id=$canonical_node_id
 block_direct_peer=$canonical_block_direct_peer
+ping_interval_ms=$ping_interval_ms
+ping_timeout_ms=$ping_timeout_ms
+ping_root_id=$ping_root_id
+ping_leaf_id=$ping_leaf_id
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
-source_dirty=$(git -C "$repo_root" status --porcelain --untracked-files=no | grep -q . && printf yes || printf no)
+source_dirty=$source_dirty
 artifact=${artifact_base}.elf
 EOF
 

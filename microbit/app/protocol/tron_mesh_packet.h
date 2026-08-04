@@ -29,6 +29,8 @@
 #define TRON_MESH_VERSION                 0x01u
 
 #define TRON_MESH_MSG_TYPE_DUMMY_STATUS   0x01u
+#define TRON_MESH_MSG_TYPE_PING           0x02u
+#define TRON_MESH_MSG_TYPE_PONG           0x03u
 #define TRON_MESH_TTL_MAX                 3u
 #define TRON_MESH_PAYLOAD_MAX             12u
 #define TRON_MESH_SEQ24_MAX               0xFFFFFFu

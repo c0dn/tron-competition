@@ -9,6 +9,7 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_packet.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_pingpong.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_dedupe.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/ble_mesh_scheduler.c
 )

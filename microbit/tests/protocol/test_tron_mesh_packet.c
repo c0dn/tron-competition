@@ -318,6 +318,40 @@ static int test_sequence_24_bit_little_endian(void)
     return 0;
 }
 
+static int test_ping_pong_message_types_and_exact_payload_wire_shape(void)
+{
+    tron_mesh_packet_t packet = make_packet(2u);
+    tron_mesh_packet_t decoded;
+    uint8_t adv[TRON_MESH_ADV_MAX_LEN];
+    size_t adv_len;
+
+    packet.msg_type = TRON_MESH_MSG_TYPE_PING;
+    packet.src = 0x0001u;
+    packet.payload[0] = 0x02u;
+    packet.payload[1] = 0x00u;
+    ASSERT_TRUE(encode_packet(&packet, adv, &adv_len) == 0);
+    ASSERT_EQ_U32(21u, adv_len);
+    ASSERT_EQ_U32(TRON_MESH_MSG_TYPE_PING, adv[10]);
+    ASSERT_EQ_U32(2u, adv[18]);
+    ASSERT_EQ_U32(0x02u, adv[19]);
+    ASSERT_EQ_U32(0x00u, adv[20]);
+    ASSERT_EQ_RESULT(TRON_MESH_PACKET_OK,
+                     tron_mesh_packet_decode(adv, adv_len, &decoded));
+    ASSERT_EQ_U32(TRON_MESH_MSG_TYPE_PING, decoded.msg_type);
+
+    packet.msg_type = TRON_MESH_MSG_TYPE_PONG;
+    packet.src = 0x0002u;
+    packet.payload[0] = 0x01u;
+    ASSERT_TRUE(encode_packet(&packet, adv, &adv_len) == 0);
+    ASSERT_EQ_RESULT(TRON_MESH_PACKET_OK,
+                     tron_mesh_packet_decode(adv, adv_len, &decoded));
+    ASSERT_EQ_U32(TRON_MESH_MSG_TYPE_PONG, decoded.msg_type);
+    ASSERT_EQ_U32(0x0002u, decoded.src);
+    ASSERT_EQ_U32(0x01u, decoded.payload[0]);
+    ASSERT_EQ_U32(0x00u, decoded.payload[1]);
+    return 0;
+}
+
 static int test_multiple_ad_structures(void)
 {
     tron_mesh_packet_t packet = make_packet(0u);
@@ -379,6 +413,7 @@ int main(void)
         { "wrong company reject", test_wrong_company_reject },
         { "TTL > 3 reject", test_ttl_over_max_reject },
         { "24-bit sequence little-endian", test_sequence_24_bit_little_endian },
+        { "PING/PONG types and exact payload wire shape", test_ping_pong_message_types_and_exact_payload_wire_shape },
         { "multiple AD structures", test_multiple_ad_structures },
     };
     size_t i;

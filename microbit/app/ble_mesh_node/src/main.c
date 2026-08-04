@@ -16,6 +16,7 @@
 #include "ble_radio.h"
 #include "tron_mesh_dedupe.h"
 #include "tron_mesh_packet.h"
+#include "tron_mesh_pingpong.h"
 
 #define FICR_DEVICEADDR0          0x100000A4UL
 
@@ -32,9 +33,9 @@
 #define TRON_NODE_BLOCK_DIRECT_PEER_ID 0
 #endif
 
-#define TRON_NODE_NET_ID          0x01u
+#define TRON_NODE_NET_ID          TRON_MESH_PINGPONG_NET_ID
 #define TRON_NODE_OWN_TTL         TRON_MESH_TTL_MAX
-#define TRON_NODE_OWN_INTERVAL_MS 1000u
+#define TRON_NODE_DUMMY_INTERVAL_MS 1000u
 #define TRON_NODE_STATS_MS        5000u
 #define TRON_NODE_RELAY_MIN_MS    20u
 #define TRON_NODE_RELAY_MAX_MS    120u
@@ -48,10 +49,23 @@ typedef struct tron_node_counters {
     uint32_t queue_drop;
     uint32_t relay_scheduled;
     uint32_t blocked_direct;
+    uint32_t semantic_drop;
+    uint32_t ping_queued;
+    uint32_t ping_queue_fail;
+    uint32_t ping_received;
+    uint32_t pong_queued;
+    uint32_t pong_queue_fail;
+    uint32_t pong_matched;
+    uint32_t pong_unmatched;
+    uint32_t ping_timeout;
+    uint32_t rtt_last_ms;
+    uint32_t rtt_min_ms;
+    uint32_t rtt_max_ms;
 } tron_node_counters_t;
 
 static tron_mesh_dedupe_t dedupe_cache;
 static tron_node_counters_t node_counters;
+static tron_mesh_pingpong_root_t ping_root;
 static uint32_t next_seq24;
 static uint32_t prng_state;
 
@@ -147,6 +161,20 @@ static void log_counters(const ble_mesh_scheduler_t *sched)
               (UW)node_counters.relay_scheduled,
               (UW)relay_rate_limited,
               (UW)node_counters.blocked_direct);
+    tm_printf((UB *)"bidi counters id=0x%04x sem_drop=%lu ping_q=%lu ping_qfail=%lu ping_rx=%lu pong_q=%lu pong_qfail=%lu pong_match=%lu pong_unmatch=%lu timeout=%lu rtt=%lu/%lu/%lums\n",
+              node_id(),
+              (UW)node_counters.semantic_drop,
+              (UW)node_counters.ping_queued,
+              (UW)node_counters.ping_queue_fail,
+              (UW)node_counters.ping_received,
+              (UW)node_counters.pong_queued,
+              (UW)node_counters.pong_queue_fail,
+              (UW)node_counters.pong_matched,
+              (UW)node_counters.pong_unmatched,
+              (UW)node_counters.ping_timeout,
+              (UW)node_counters.rtt_last_ms,
+              (UW)node_counters.rtt_min_ms,
+              (UW)node_counters.rtt_max_ms);
 }
 
 static void fill_dummy_payload(tron_mesh_packet_t *packet)
@@ -191,9 +219,9 @@ static int enqueue_packet(ble_mesh_scheduler_t *sched,
     return 1;
 }
 
-static void schedule_own_packet(ble_mesh_scheduler_t *sched,
-                                uint16_t self,
-                                uint32_t now)
+static void schedule_dummy_packet(ble_mesh_scheduler_t *sched,
+                                  uint16_t self,
+                                  uint32_t now)
 {
     tron_mesh_packet_t packet;
 
@@ -213,6 +241,115 @@ static void schedule_own_packet(ble_mesh_scheduler_t *sched,
                   (UW)packet.seq24,
                   (UINT)packet.ttl);
     }
+}
+
+static void maybe_schedule_ping(ble_mesh_scheduler_t *sched, uint32_t now)
+{
+    tron_mesh_packet_t ping;
+    tron_mesh_pingpong_result_t build_result;
+    tron_mesh_pingpong_attempt_result_t attempt_result;
+    uint32_t seq24;
+    int queued = 0;
+
+    if (!tron_mesh_pingpong_root_ping_due(&ping_root, now)) {
+        return;
+    }
+
+    seq24 = next_seq24 & TRON_MESH_SEQ24_MAX;
+    build_result = tron_mesh_pingpong_build_ping(&ping,
+                                                 TRON_NODE_OWN_TTL,
+                                                 seq24);
+    if (build_result == TRON_MESH_PINGPONG_OK) {
+        queued = enqueue_packet(sched, &ping, BLE_MESH_SCHED_TX_OWN, now);
+        if (!queued) {
+            node_counters.ping_queue_fail++;
+        }
+    } else {
+        tm_printf((UB *)"mesh PING build failed: %s\n",
+                  (UB *)tron_mesh_pingpong_result_name(build_result));
+    }
+
+    attempt_result = tron_mesh_pingpong_root_record_ping_attempt(&ping_root,
+                                                                  seq24,
+                                                                  now,
+                                                                  queued);
+    if (attempt_result == TRON_MESH_PINGPONG_ATTEMPT_QUEUED) {
+        next_seq24 = (next_seq24 + 1u) & TRON_MESH_SEQ24_MAX;
+        node_counters.ping_queued++;
+        (void)dedupe_seen_or_insert(&ping, now);
+        tm_printf((UB *)"mesh PING queued src=0x%04x dst=0x%04x seq=%lu timeout=%lums\n",
+                  ping.src,
+                  TRON_MESH_PINGPONG_LEAF_ID,
+                  (UW)ping.seq24,
+                  (UW)TRON_MESH_PINGPONG_TIMEOUT_MS);
+    }
+}
+
+static void respond_to_ping(ble_mesh_scheduler_t *sched,
+                            const tron_mesh_packet_t *ping,
+                            uint32_t now)
+{
+    tron_mesh_packet_t pong;
+    tron_mesh_pingpong_result_t result;
+
+    node_counters.ping_received++;
+    tm_printf((UB *)"mesh PING received src=0x%04x dst=0x%04x seq=%lu ttl=%u\n",
+              ping->src,
+              TRON_MESH_PINGPONG_LEAF_ID,
+              (UW)ping->seq24,
+              (UINT)ping->ttl);
+
+    result = tron_mesh_pingpong_build_pong(&pong, ping, TRON_NODE_OWN_TTL);
+    if (result != TRON_MESH_PINGPONG_OK) {
+        tm_printf((UB *)"mesh PONG build failed: %s\n",
+                  (UB *)tron_mesh_pingpong_result_name(result));
+        return;
+    }
+
+    if (enqueue_packet(sched, &pong, BLE_MESH_SCHED_TX_OWN, now)) {
+        node_counters.pong_queued++;
+        (void)dedupe_seen_or_insert(&pong, now);
+        tm_printf((UB *)"mesh PONG queued src=0x%04x dst=0x%04x seq=%lu\n",
+                  pong.src,
+                  TRON_MESH_PINGPONG_ROOT_ID,
+                  (UW)pong.seq24);
+    } else {
+        node_counters.pong_queue_fail++;
+    }
+}
+
+static void correlate_pong(const tron_mesh_packet_t *pong, uint32_t now)
+{
+    tron_mesh_pingpong_match_result_t match;
+    uint32_t rtt_ms = 0u;
+
+    match = tron_mesh_pingpong_root_match_pong(&ping_root, pong, now, &rtt_ms);
+    if (match == TRON_MESH_PINGPONG_PONG_MATCHED) {
+        if (node_counters.pong_matched == 0u || rtt_ms < node_counters.rtt_min_ms) {
+            node_counters.rtt_min_ms = rtt_ms;
+        }
+        if (node_counters.pong_matched == 0u || rtt_ms > node_counters.rtt_max_ms) {
+            node_counters.rtt_max_ms = rtt_ms;
+        }
+        node_counters.rtt_last_ms = rtt_ms;
+        node_counters.pong_matched++;
+        tm_printf((UB *)"mesh PONG matched src=0x%04x dst=0x%04x seq=%lu RTT=%lums\n",
+                  pong->src,
+                  TRON_MESH_PINGPONG_ROOT_ID,
+                  (UW)pong->seq24,
+                  (UW)rtt_ms);
+        return;
+    }
+
+    node_counters.pong_unmatched++;
+    if (match == TRON_MESH_PINGPONG_PONG_LATE) {
+        node_counters.ping_timeout++;
+    }
+    tm_printf((UB *)"mesh PONG unmatched src=0x%04x dst=0x%04x seq=%lu late=%u\n",
+              pong->src,
+              TRON_MESH_PINGPONG_ROOT_ID,
+              (UW)pong->seq24,
+              (UINT)(match == TRON_MESH_PINGPONG_PONG_LATE));
 }
 
 static void maybe_schedule_relay(ble_mesh_scheduler_t *sched,
@@ -253,6 +390,7 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
 {
     tron_mesh_packet_t packet;
     tron_mesh_packet_result_t result;
+    tron_mesh_pingpong_result_t semantic_result;
 
     result = tron_mesh_packet_decode(event->adv_data, event->adv_len, &packet);
     if (result != TRON_MESH_PACKET_OK) {
@@ -280,27 +418,45 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
         return;
     }
 
+    /* Preserve the transport counter contract: this counts every decoded,
+       in-network frame admitted past the test-only direct-peer block. */
     node_counters.rx_ok++;
+
+    if (tron_mesh_pingpong_is_supported_type(packet.msg_type)) {
+        semantic_result = tron_mesh_pingpong_validate(&packet);
+        if (semantic_result != TRON_MESH_PINGPONG_OK) {
+            node_counters.semantic_drop++;
+            return;
+        }
+    }
 
     if (dedupe_seen_or_insert(&packet, now)) {
         node_counters.duplicate_drop++;
         return;
     }
 
-    if (packet.msg_type != TRON_MESH_MSG_TYPE_DUMMY_STATUS) {
-        tm_printf((UB *)"mesh non-dummy msg_type=0x%02x ignored src=0x%04x seq=%lu\n",
+    if (packet.msg_type == TRON_MESH_MSG_TYPE_PING) {
+        if (self == TRON_MESH_PINGPONG_LEAF_ID) {
+            respond_to_ping(sched, &packet, now);
+        }
+    } else if (packet.msg_type == TRON_MESH_MSG_TYPE_PONG) {
+        if (self == TRON_MESH_PINGPONG_ROOT_ID) {
+            correlate_pong(&packet, now);
+        }
+    } else if (packet.msg_type == TRON_MESH_MSG_TYPE_DUMMY_STATUS) {
+        tm_printf((UB *)"mesh rx dummy src=0x%04x seq=%lu ttl=%u rssi=-%u dBm payload=%s\n",
+                  packet.src,
+                  (UW)packet.seq24,
+                  (UINT)packet.ttl,
+                  (UINT)event->rssi_dbm,
+                  payload_hex(&packet));
+    } else {
+        tm_printf((UB *)"mesh unsupported msg_type=0x%02x ignored src=0x%04x seq=%lu\n",
                   (UINT)packet.msg_type,
                   packet.src,
                   (UW)packet.seq24);
         return;
     }
-
-    tm_printf((UB *)"mesh rx dummy src=0x%04x seq=%lu ttl=%u rssi=-%u dBm payload=%s\n",
-              packet.src,
-              (UW)packet.seq24,
-              (UINT)packet.ttl,
-              (UINT)event->rssi_dbm,
-              payload_hex(&packet));
 
     maybe_schedule_relay(sched, &packet, self, now);
 }
@@ -311,7 +467,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     ble_mesh_sched_event_t event;
     uint16_t self = node_id();
     uint32_t t = now_ms();
-    uint32_t next_own_at = t + TRON_NODE_OWN_INTERVAL_MS;
+    uint32_t next_dummy_at = t + TRON_NODE_DUMMY_INTERVAL_MS;
     uint32_t next_stats_at = t + TRON_NODE_STATS_MS;
 
     (void)stacd;
@@ -319,6 +475,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
 
     tron_mesh_dedupe_reset(&dedupe_cache);
     clear_memory(&node_counters, sizeof(node_counters));
+    tron_mesh_pingpong_root_init(&ping_root, t);
     next_seq24 = 0u;
     prng_state = ((uint32_t)self << 16) | 1u;
 
@@ -327,6 +484,13 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
               self,
               (UINT)TRON_NODE_NET_ID,
               (UINT)TRON_NODE_OWN_TTL);
+    tm_printf((UB *)"mesh PING/PONG root=0x%04x leaf=0x%04x interval=%lums timeout=%lums role=%s\n",
+              TRON_MESH_PINGPONG_ROOT_ID,
+              TRON_MESH_PINGPONG_LEAF_ID,
+              (UW)TRON_MESH_PINGPONG_INTERVAL_MS,
+              (UW)TRON_MESH_PINGPONG_TIMEOUT_MS,
+              self == TRON_MESH_PINGPONG_ROOT_ID ? (UB *)"root" :
+              (self == TRON_MESH_PINGPONG_LEAF_ID ? (UB *)"leaf" : (UB *)"generic"));
 
     ble_mesh_scheduler_init(&sched, t);
     ble_mesh_scheduler_start_rx(&sched, t);
@@ -334,14 +498,27 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     while (1) {
         t = now_ms();
 
-        if (tron_mesh_time_reached(t, next_own_at)) {
-            schedule_own_packet(&sched, self, t);
-            next_own_at = t + TRON_NODE_OWN_INTERVAL_MS;
+        if (self == TRON_MESH_PINGPONG_ROOT_ID) {
+            maybe_schedule_ping(&sched, t);
+        } else if (self != TRON_MESH_PINGPONG_LEAF_ID &&
+                   tron_mesh_time_reached(t, next_dummy_at)) {
+            schedule_dummy_packet(&sched, self, t);
+            next_dummy_at = t + TRON_NODE_DUMMY_INTERVAL_MS;
         }
 
         if (ble_mesh_scheduler_poll(&sched, t, &event) &&
             event.type == BLE_MESH_SCHED_EVENT_RX_ADV) {
             handle_packet(&sched, &event, self, t);
+        }
+
+        /* Give an on-time packet captured in this scheduler poll a chance to
+           match before expiring the pending transaction at the same tick. */
+        if (self == TRON_MESH_PINGPONG_ROOT_ID &&
+            tron_mesh_pingpong_root_check_timeout(&ping_root, t)) {
+            node_counters.ping_timeout++;
+            tm_printf((UB *)"mesh PING timeout seq=%lu after=%lums\n",
+                      (UW)ping_root.pending_seq24,
+                      (UW)TRON_MESH_PINGPONG_TIMEOUT_MS);
         }
 
         if (tron_mesh_time_reached(t, next_stats_at)) {
