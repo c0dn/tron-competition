@@ -448,7 +448,7 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
                   packet.src,
                   (UW)packet.seq24,
                   (UINT)packet.ttl,
-                  (UINT)event->rssi_dbm,
+                  (UINT)event->rssi_magnitude_db,
                   payload_hex(&packet));
     } else {
         tm_printf((UB *)"mesh unsupported msg_type=0x%02x ignored src=0x%04x seq=%lu\n",
@@ -492,7 +492,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
               self == TRON_MESH_PINGPONG_ROOT_ID ? (UB *)"root" :
               (self == TRON_MESH_PINGPONG_LEAF_ID ? (UB *)"leaf" : (UB *)"generic"));
 
-    ble_mesh_scheduler_init(&sched, t);
+    ble_mesh_scheduler_init_legacy(&sched, t);
     ble_mesh_scheduler_start_rx(&sched, t);
 
     while (1) {

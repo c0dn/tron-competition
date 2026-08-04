@@ -147,7 +147,7 @@
     {
       "id": "phase-1-link-v2",
       "title": "Improve routed BLE link and prove custody/retry while preserving legacy flood",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-1a-link-red-tests",
@@ -155,7 +155,7 @@
           "target": "host codec/link virtual-time tests and golden vectors",
           "action": "Test author writes assertion-level red tests for all link requirement IDs: exact frame sizes, transmitter/receiver/origin/destination, flood admission, HACK statuses, custody, duplicate re-HACK exactly once, busy/rejected behavior, retries/deadlines/wrap, failed-DATA ownership, controlled flooding, queue bounds and RX restoration. Run exact red command; lower legacy suites must stay green; save red evidence.",
           "validation": "Failure is due to missing behavior, not compile/link breakage; red output lists requirement IDs; legacy tests/build remain green.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-1b-link-implementation",
@@ -163,7 +163,7 @@
           "target": "pure link codec/state modules and minimal shared scheduler/radio extensions",
           "action": "Code-writer implements routed wire-v2, logical next-hop filtering, custody queue, HACK, bounded retry, RETRY_EXHAUSTED event carrying failed DATA context, controlled flood API, RSSI/ACK observations, timer profiles, counters and complete manifests. Legacy flood wire-v1 remains golden-compatible.",
           "validation": "All link tests pass with -Wall -Wextra -Werror; legacy flood host tests/build pass; a dedicated link-v2 test harness/firmware builds for hardware proof. It is not an AODV_ONLY profile or third routing implementation. AODV_ONLY becomes a valid continuously tested feature level only after Phase 2 implements the real AODV core.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-1c-link-checker-candidate",
@@ -622,9 +622,11 @@
     "Phase 0 contract lanes completed in parallel. Parent reconciled full AdvA event/build/test-hook identity seams and froze exact FAST_TEST/BALANCED/SOAK timer registry. Parent validation passed: 69/69 requirement-to-matrix coverage, seven balanced Markdown documents, no stale 16-bit transmitter seam, and clean diff whitespace. Entering whole-contract checker gate.",
     "Whole-contract checker pass 1 found 3 blockers and 12 major issues. Findings were grouped into seven actionable workplan items. Production-security/polish concerns were not accepted; contract correctness issues are entering one focused parallel fix pass.",
     "Focused Phase 0 checker-fix pass completed across the profile, wire/ACK/identity, and architecture lanes. Requirement-to-matrix coverage is now 70/70; contracts reduce net diameter to 15, use a fresh RREQ ID per ring, implement two-phase inbound DATA admission, and freeze boot-nonce, identity, capacity, repair, and E_RREP_ACK semantics. Parent reconciliation and whole-contract re-review remain in progress.",
-    "Final bounded Phase 0 checker pass `ses_03223af62ffexcEZVBNT8ZC0C6` passed with no blocker/major findings. Accepted contracts have 70 requirements mapped 1:1 to 70 matrix rows, an exact 71-key profile/architecture timer registry, 23 validated complete wire vectors, coherent six-outcome custody semantics, and board-bound routed hardware provenance. Phase 0 is closed; Phase 1 begins with assertion-level red tests."
+    "Final bounded Phase 0 checker pass `ses_03223af62ffexcEZVBNT8ZC0C6` passed with no blocker/major findings. Accepted contracts have 70 requirements mapped 1:1 to 70 matrix rows, an exact 71-key profile/architecture timer registry, 23 validated complete wire vectors, coherent six-outcome custody semantics, and board-bound routed hardware provenance. Phase 0 is closed; Phase 1 begins with assertion-level red tests.",
+    "Phase 1 started after contract commit 760c65d. Step 1a is authoring assertion-level red tests against the frozen link-v2 contracts while preserving all legacy baseline suites.",
+    "Step 1a RED gate completed. Exact command `cd microbit && ./tests/protocol/run_tavrn_link_v2_tests.sh --red` compiled three binaries and exited 1 with assertion-level failures for BEARER-01..04 and LINK-01..06. Adversarial checker `ses_03192ee32ffe7TDrrn4TYEGny3` accepted the RED handoff. Legacy packet 17/17, dedupe 12/12, PING/PONG 12/12 plus guards, radio/scheduler host suites, and `./build.sh ble_mesh_node` remained green. Step 1b now implements production codec/link/queue/typed scheduler-radio behavior against these tests."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-04T19:47:13.289Z"
+  "updatedAt": "2026-08-04T21:12:10.259Z"
 }

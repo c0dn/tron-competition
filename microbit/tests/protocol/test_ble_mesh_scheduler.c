@@ -504,7 +504,7 @@ static void test_rx_default_state(void)
     ble_mesh_sched_event_t event;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     ASSERT_EQ_U(0u, sched.rx_started, "init does not claim RX before first poll");
     ASSERT_EQ_U(0u, ble_mesh_scheduler_poll(&sched, 0u, &event), "default poll has no event");
@@ -529,7 +529,7 @@ static void test_enqueue_tx_disable_and_restore(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x10u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     (void)ble_mesh_scheduler_poll(&sched, 50u, &event);
@@ -556,7 +556,7 @@ static void test_enqueue_tx_disable_and_restore(void)
     ASSERT_EQ_U(sizeof(adv), g_last_adv_len, "TX length preserved");
     ASSERT_EQ_U(adv[0], g_last_adv_data[0], "TX payload copied");
     ASSERT_EQ_U(38u, g_last_listen_channel, "TX restores previous RX channel");
-    ASSERT_EQ_U(0u, sched.tx_count, "TX queue drained after one send");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "TX queue drained after one send");
     ASSERT_EQ_U(1u, sched.counters.tx_ok, "tx_ok counter increments");
 }
 
@@ -567,7 +567,7 @@ static void test_tx_restore_hops_when_dwell_expired(void)
     UB adv[1] = { 0x44u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(37u, g_last_listen_channel, "TX expiry test starts on channel 37");
@@ -593,15 +593,16 @@ static void test_queue_full_drop_policy(void)
     unsigned int i;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
-    for (i = 0u; i < BLE_MESH_SCHED_TX_QUEUE_CAPACITY; i++) {
+    for (i = 0u; i < BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY; i++) {
         ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
                                                    BLE_MESH_SCHED_CH_ALL,
                                                    BLE_MESH_SCHED_TX_OWN, 0u),
                     "fill queue with own packet");
     }
-    ASSERT_EQ_U(BLE_MESH_SCHED_TX_QUEUE_CAPACITY, sched.tx_count, "queue reaches capacity");
+    ASSERT_EQ_U(BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY, sched.legacy_tx_count,
+                "queue reaches capacity");
     ASSERT_EQ_U(0u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_OWN, 0u),
@@ -627,9 +628,9 @@ static void test_relay_priority_drop(void)
     unsigned int own_count = 0u;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
-    for (i = 0u; i < BLE_MESH_SCHED_TX_QUEUE_CAPACITY; i++) {
+    for (i = 0u; i < BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY; i++) {
         relay_adv[0] = (UB)(0x20u + i);
         ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, relay_adv, sizeof(relay_adv),
                                                    BLE_MESH_SCHED_CH_ALL,
@@ -641,12 +642,13 @@ static void test_relay_priority_drop(void)
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_OWN, 0u),
                 "own packet replaces oldest relay when queue is full");
-    ASSERT_EQ_U(BLE_MESH_SCHED_TX_QUEUE_CAPACITY, sched.tx_count, "queue remains at capacity");
+    ASSERT_EQ_U(BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY, sched.legacy_tx_count,
+                "queue remains at capacity");
     ASSERT_EQ_U(1u, sched.counters.queue_drop, "queue_drop records replaced relay");
     ASSERT_EQ_U(1u, sched.counters.relay_drop, "relay_drop records replaced relay");
 
-    for (i = 0u; i < sched.tx_count; i++) {
-        if (sched.tx_queue[i].kind == BLE_MESH_SCHED_TX_OWN) {
+    for (i = 0u; i < sched.legacy_tx_count; i++) {
+        if (sched.legacy_tx_queue[i].kind == BLE_MESH_SCHED_TX_OWN) {
             own_count++;
         }
     }
@@ -665,7 +667,7 @@ static void test_relay_rate_limit(void)
     UB second[1] = { 0x32u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
     ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, first, sizeof(first),
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_RELAY, 0u),
@@ -678,18 +680,18 @@ static void test_relay_rate_limit(void)
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(1u, g_advertise_calls, "first relay transmits immediately");
     ASSERT_EQ_U(first[0], g_last_adv_data[0], "first relay payload transmitted");
-    ASSERT_EQ_U(1u, sched.tx_count, "second relay remains queued");
+    ASSERT_EQ_U(1u, sched.legacy_tx_count, "second relay remains queued");
 
     (void)ble_mesh_scheduler_poll(&sched, 100u, &event);
     ASSERT_EQ_U(1u, g_advertise_calls, "second relay is rate-limited at 100 ms");
-    ASSERT_EQ_U(1u, sched.tx_count, "rate-limited relay remains queued");
+    ASSERT_EQ_U(1u, sched.legacy_tx_count, "rate-limited relay remains queued");
     ASSERT_TRUE(sched.counters.relay_rate_limited >= 1u,
                 "relay_rate_limited counter increments");
 
     (void)ble_mesh_scheduler_poll(&sched, BLE_MESH_SCHED_RELAY_TX_INTERVAL_MS, &event);
     ASSERT_EQ_U(2u, g_advertise_calls, "second relay transmits after interval");
     ASSERT_EQ_U(second[0], g_last_adv_data[0], "second relay payload transmitted");
-    ASSERT_EQ_U(0u, sched.tx_count, "relay queue drained after rate interval");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "relay queue drained after rate interval");
 }
 
 static void test_channel_dwell_hop(void)
@@ -698,7 +700,7 @@ static void test_channel_dwell_hop(void)
     ble_mesh_sched_event_t event;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(37u, g_last_listen_channel, "initial listen channel 37");
@@ -728,7 +730,7 @@ static void test_repeated_rx_does_not_extend_dwell(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x80u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(50u, sched.hop_at_ms, "initial dwell deadline is 50 ms");
@@ -771,7 +773,7 @@ static void test_due_own_tx_preempts_continuous_rx(void)
     UB tx_adv[1] = { 0xA5u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, tx_adv, sizeof(tx_adv),
                                                BLE_MESH_SCHED_CH_ALL,
@@ -784,7 +786,7 @@ static void test_due_own_tx_preempts_continuous_rx(void)
     ASSERT_EQ_U(1u, g_advertise_calls,
                 "due own TX is serviced even when an RX snapshot is ready");
     ASSERT_EQ_U(tx_adv[0], g_last_adv_data[0], "due own payload transmitted");
-    ASSERT_EQ_U(0u, sched.tx_count, "due own queue entry drained");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "due own queue entry drained");
 }
 
 static void test_safe_rx_snapshot_ownership(void)
@@ -795,7 +797,7 @@ static void test_safe_rx_snapshot_ownership(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x70u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     load_rx_adv(adv, sizeof(adv), 61u);
@@ -804,7 +806,8 @@ static void test_safe_rx_snapshot_ownership(void)
     ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 1u, &event), "RX snapshot produces event");
     ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_RX_ADV, event.type, "event type is RX_ADV");
     ASSERT_EQ_U(37u, event.channel, "RX event reports current channel");
-    ASSERT_EQ_U(61u, event.rssi_dbm, "RX event reports RSSI snapshot");
+    ASSERT_EQ_U(61u, event.rssi_magnitude_db,
+                "RX event reports RSSI magnitude snapshot");
     ASSERT_EQ_U(sizeof(adv), event.adv_len, "RX AdvData length copied");
     ASSERT_EQ_U(adv[0], event.adv_data[0], "RX AdvData bytes copied");
     ASSERT_EQ_U(0u, g_poll_calls, "unsafe ble_radio_poll was not used");
@@ -824,7 +827,7 @@ static void test_null_event_consumes_valid_rx_without_error_count(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x90u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, NULL);
     load_rx_adv(adv, sizeof(adv), 64u);
@@ -842,7 +845,7 @@ static void test_null_event_malformed_rx_counts_error(void)
     ble_mesh_scheduler_t sched;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    ble_mesh_scheduler_init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, NULL);
     g_rx_pdu[0] = 0x42u;

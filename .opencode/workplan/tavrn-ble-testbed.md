@@ -251,16 +251,16 @@ Hardware fanout rules:
 - Validation: No open blocker/major PoC issue; Phase 0 profile/architecture/wire/deviation/test docs are added to workplan specFiles before Phase 1.
 
 ### 2. Improve routed BLE link and prove custody/retry while preserving legacy flood <!-- workplan-phase-id: phase-1-link-v2 -->
-- Status: draft
+- Status: in_progress
 - Id: phase-1-link-v2
 #### 2.1 Author and record failing link-v2 tests <!-- workplan-step-id: step-1a-link-red-tests -->
-- Status: draft
+- Status: completed
 - Id: step-1a-link-red-tests
 - Target: host codec/link virtual-time tests and golden vectors
 - Action: Test author writes assertion-level red tests for all link requirement IDs: exact frame sizes, transmitter/receiver/origin/destination, flood admission, HACK statuses, custody, duplicate re-HACK exactly once, busy/rejected behavior, retries/deadlines/wrap, failed-DATA ownership, controlled flooding, queue bounds and RX restoration. Run exact red command; lower legacy suites must stay green; save red evidence.
 - Validation: Failure is due to missing behavior, not compile/link breakage; red output lists requirement IDs; legacy tests/build remain green.
 #### 2.2 Implement shared routed link-v2 <!-- workplan-step-id: step-1b-link-implementation -->
-- Status: draft
+- Status: in_progress
 - Id: step-1b-link-implementation
 - Target: pure link codec/state modules and minimal shared scheduler/radio extensions
 - Action: Code-writer implements routed wire-v2, logical next-hop filtering, custody queue, HACK, bounded retry, RETRY_EXHAUSTED event carrying failed DATA context, controlled flood API, RSSI/ACK observations, timer profiles, counters and complete manifests. Legacy flood wire-v1 remains golden-compatible.

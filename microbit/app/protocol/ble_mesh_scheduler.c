@@ -49,24 +49,26 @@ static uint8_t sanitize_channel_mask(uint8_t channel_mask)
 
 static uint8_t queue_index(const ble_mesh_scheduler_t *sched, uint8_t pos)
 {
-    return (uint8_t)((sched->tx_head + pos) % BLE_MESH_SCHED_TX_QUEUE_CAPACITY);
+    return (uint8_t)((sched->legacy_tx_head + pos) %
+                     BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY);
 }
 
 static void queue_remove_pos(ble_mesh_scheduler_t *sched, uint8_t pos)
 {
     uint8_t i;
 
-    if (pos >= sched->tx_count) {
+    if (pos >= sched->legacy_tx_count) {
         return;
     }
 
-    for (i = pos; i + 1u < sched->tx_count; i++) {
-        sched->tx_queue[queue_index(sched, i)] = sched->tx_queue[queue_index(sched, (uint8_t)(i + 1u))];
+    for (i = pos; i + 1u < sched->legacy_tx_count; i++) {
+        sched->legacy_tx_queue[queue_index(sched, i)] =
+            sched->legacy_tx_queue[queue_index(sched, (uint8_t)(i + 1u))];
     }
 
-    sched->tx_count--;
-    if (sched->tx_count == 0u) {
-        sched->tx_head = 0u;
+    sched->legacy_tx_count--;
+    if (sched->legacy_tx_count == 0u) {
+        sched->legacy_tx_head = 0u;
     }
 }
 
@@ -74,25 +76,27 @@ static int find_oldest_relay(const ble_mesh_scheduler_t *sched)
 {
     uint8_t pos;
 
-    for (pos = 0u; pos < sched->tx_count; pos++) {
-        if (sched->tx_queue[queue_index(sched, pos)].kind == BLE_MESH_SCHED_TX_RELAY) {
+    for (pos = 0u; pos < sched->legacy_tx_count; pos++) {
+        if (sched->legacy_tx_queue[queue_index(sched, pos)].kind ==
+            BLE_MESH_SCHED_TX_RELAY) {
             return (int)pos;
         }
     }
     return -1;
 }
 
-static int queue_push(ble_mesh_scheduler_t *sched, const ble_mesh_sched_tx_item_t *item)
+static int queue_push(ble_mesh_scheduler_t *sched,
+                      const ble_mesh_sched_legacy_tx_item_t *item)
 {
     uint8_t tail;
 
-    if (sched->tx_count >= BLE_MESH_SCHED_TX_QUEUE_CAPACITY) {
+    if (sched->legacy_tx_count >= BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY) {
         return 0;
     }
 
-    tail = queue_index(sched, sched->tx_count);
-    sched->tx_queue[tail] = *item;
-    sched->tx_count++;
+    tail = queue_index(sched, sched->legacy_tx_count);
+    sched->legacy_tx_queue[tail] = *item;
+    sched->legacy_tx_count++;
     return 1;
 }
 
@@ -132,13 +136,14 @@ static void hop_rx_channel(ble_mesh_scheduler_t *sched, uint32_t now_ms)
     start_rx_on_current_channel(sched, now_ms);
 }
 
-static int item_not_before_reached(const ble_mesh_sched_tx_item_t *item, uint32_t now_ms)
+static int item_not_before_reached(const ble_mesh_sched_legacy_tx_item_t *item,
+                                   uint32_t now_ms)
 {
     return time_reached(now_ms, item->not_before_ms);
 }
 
 static int relay_rate_allows(ble_mesh_scheduler_t *sched,
-                             ble_mesh_sched_tx_item_t *item,
+                             ble_mesh_sched_legacy_tx_item_t *item,
                              uint32_t now_ms)
 {
     uint32_t next_ms;
@@ -167,15 +172,17 @@ static int select_tx_pos(ble_mesh_scheduler_t *sched, uint32_t now_ms)
 
     /* Own packets are allowed to pass relay packets. Relay packets are lower
        priority and can also be delayed by the relay rate limiter. */
-    for (pos = 0u; pos < sched->tx_count; pos++) {
-        ble_mesh_sched_tx_item_t *item = &sched->tx_queue[queue_index(sched, pos)];
+    for (pos = 0u; pos < sched->legacy_tx_count; pos++) {
+        ble_mesh_sched_legacy_tx_item_t *item =
+            &sched->legacy_tx_queue[queue_index(sched, pos)];
         if (item->kind == BLE_MESH_SCHED_TX_OWN && item_not_before_reached(item, now_ms)) {
             return (int)pos;
         }
     }
 
-    for (pos = 0u; pos < sched->tx_count; pos++) {
-        ble_mesh_sched_tx_item_t *item = &sched->tx_queue[queue_index(sched, pos)];
+    for (pos = 0u; pos < sched->legacy_tx_count; pos++) {
+        ble_mesh_sched_legacy_tx_item_t *item =
+            &sched->legacy_tx_queue[queue_index(sched, pos)];
         if (item->kind == BLE_MESH_SCHED_TX_RELAY &&
             item_not_before_reached(item, now_ms) &&
             relay_rate_allows(sched, item, now_ms)) {
@@ -188,9 +195,9 @@ static int select_tx_pos(ble_mesh_scheduler_t *sched, uint32_t now_ms)
 
 static void transmit_pos(ble_mesh_scheduler_t *sched, uint8_t pos, uint32_t now_ms)
 {
-    ble_mesh_sched_tx_item_t item;
+    ble_mesh_sched_legacy_tx_item_t item;
 
-    item = sched->tx_queue[queue_index(sched, pos)];
+    item = sched->legacy_tx_queue[queue_index(sched, pos)];
     queue_remove_pos(sched, pos);
 
     ble_radio_idle();
@@ -243,7 +250,7 @@ static int copy_rx_event(ble_mesh_scheduler_t *sched,
 
     event->type = BLE_MESH_SCHED_EVENT_RX_ADV;
     event->channel = current_channel(sched);
-    event->rssi_dbm = (uint8_t)(rssi_dbm & 0xFFu);
+    event->rssi_magnitude_db = (uint8_t)(rssi_dbm & 0xFFu);
     event->adv_len = (uint8_t)adv_len;
     if (adv_len > 0u) {
         copy_bytes(event->adv_data, &pdu[8], adv_len);
@@ -251,7 +258,7 @@ static int copy_rx_event(ble_mesh_scheduler_t *sched,
     return 1;
 }
 
-void ble_mesh_scheduler_init(ble_mesh_scheduler_t *sched, uint32_t now_ms)
+void ble_mesh_scheduler_init_legacy(ble_mesh_scheduler_t *sched, uint32_t now_ms)
 {
     if (sched == NULL) {
         return;
@@ -278,7 +285,7 @@ int ble_mesh_scheduler_enqueue(ble_mesh_scheduler_t *sched,
                                ble_mesh_sched_tx_kind_t kind,
                                uint32_t not_before_ms)
 {
-    ble_mesh_sched_tx_item_t item;
+    ble_mesh_sched_legacy_tx_item_t item;
     int relay_pos;
 
     if (sched == NULL || (adv == NULL && adv_len != 0u)) {
@@ -293,7 +300,7 @@ int ble_mesh_scheduler_enqueue(ble_mesh_scheduler_t *sched,
         kind = BLE_MESH_SCHED_TX_RELAY;
     }
 
-    if (sched->tx_count >= BLE_MESH_SCHED_TX_QUEUE_CAPACITY) {
+    if (sched->legacy_tx_count >= BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY) {
         if (kind == BLE_MESH_SCHED_TX_RELAY) {
             sched->counters.queue_drop++;
             sched->counters.relay_drop++;
