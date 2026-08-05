@@ -61,10 +61,106 @@ static const uint8_t flood16[] = {
     0x18u, 0x42u, 0x02u, 0x01u, 0x01u, 0x03u, 0xaau,
     0xbbu, 0xccu,
 };
+static const uint8_t flood8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x12u, 0x80u, 0xf0u,
+    0x18u, 0x02u, 0x01u, 0x01u, 0x0cu, 0xa0u, 0xa1u,
+    0xa2u, 0xa3u, 0xa4u, 0xa5u, 0xa6u, 0xa7u, 0xa8u,
+    0xa9u, 0xaau, 0xabu,
+};
 static const uint8_t rrep_ack8[] = {
     0x02u, 0x01u, 0x06u, 0x10u, 0xffu, 0xffu, 0xffu,
     0x54u, 0x52u, 0x02u, 0x2au, 0x09u, 0x80u, 0x11u,
     0x11u, 0x03u, 0x02u, 0x18u, 0x01u, 0x10u,
+};
+static const uint8_t rreq8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x01u, 0x88u, 0xf0u,
+    0x18u, 0x01u, 0x10u, 0x11u, 0x03u, 0x02u, 0x05u,
+    0x04u, 0x04u, 0xdcu, 0xa1u, 0x11u, 0x50u, 0xaau,
+    0x42u, 0xbbu, 0x32u,
+};
+static const uint8_t rrep8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x02u, 0xc8u, 0x42u,
+    0xdcu, 0x11u, 0x03u, 0x02u, 0x18u, 0x01u, 0x10u,
+    0x2cu, 0x81u, 0x03u, 0xdcu, 0xa0u, 0x11u, 0x50u,
+    0xaau, 0x41u,
+};
+static const uint8_t rerr16_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x00u, 0xf0u,
+    0x18u, 0x42u, 0x01u, 0x00u, 0x03u, 0x11u, 0x22u,
+    0x01u, 0x00u, 0x18u, 0x42u, 0x02u, 0x00u, 0xdcu,
+    0x4bu, 0x03u, 0x00u,
+};
+static const uint8_t rerr8_d1_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x01u, 0x20u, 0x01u, 0x11u, 0x01u, 0x01u,
+    0x04u, 0xdcu, 0xa1u, 0x11u, 0x50u, 0xaau, 0x42u,
+    0xbbu, 0x32u,
+};
+static const uint8_t rerr8_d2_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x02u, 0x20u, 0x02u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0x03u, 0xdcu, 0xa1u, 0x11u,
+    0x50u, 0xaau, 0x42u,
+};
+static const uint8_t rerr8_d3_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x03u, 0x20u, 0x03u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0xbbu, 0x03u, 0x01u, 0x01u,
+    0xdcu, 0xa1u,
+};
+static const uint8_t rerr8_d4[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x80u, 0xf0u,
+    0x18u, 0x04u, 0x20u, 0x04u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0xbbu, 0x03u, 0x01u, 0xdcu,
+    0x04u, 0x01u,
+};
+static const uint8_t hello8_verification[] = {
+    0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x04u, 0xb8u, 0x10u,
+    0xdcu, 0xdcu, 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au,
+    0xddu, 0x02u, 0x00u, 0x01u, 0xdcu, 0xa1u,
+};
+static const uint8_t sync_offer[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x05u, 0x00u, 0x10u,
+    0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x02u, 0x44u,
+    0x33u, 0x01u, 0x00u,
+};
+static const uint8_t sync_pull[] = {
+    0x02u, 0x01u, 0x06u, 0x19u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x06u, 0x00u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x18u, 0x42u,
+    0xdeu, 0x52u, 0x4au, 0xddu, 0x44u, 0x33u, 0x00u,
+    0x01u,
+};
+static const uint8_t sync_data_present[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x07u, 0xc0u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x44u, 0x33u,
+    0x00u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u,
+    0x05u, 0x04u, 0xa2u,
+};
+static const uint8_t sync_data_empty[] = {
+    0x02u, 0x01u, 0x06u, 0x12u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x07u, 0x40u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x44u, 0x33u,
+    0x00u,
+};
+static const uint8_t tc_update[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x08u, 0x00u, 0x30u,
+    0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu, 0x88u,
+    0x77u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u,
+    0x00u, 0x34u, 0x12u,
 };
 
 typedef struct conflict_probe {
@@ -367,15 +463,167 @@ static void test_bearer_02_exact_modes_callbacks_and_error_outputs(void)
                                               sizeof(encoded), &encoded_len) ==
                            TAVRN_CODEC_OK);
     CHECK("BEARER-02", encoded_len == 28u && encoded[3] == 0x18u &&
-                            encoded[11] == TAVRN_WIRE_DATA && encoded[12] == 0xa0u &&
-                           encoded[19] == 0x01u && encoded[20] == 0x07u &&
-                           memcmp(&encoded[21], &data16[24], 7u) == 0);
+                             encoded[11] == TAVRN_WIRE_DATA && encoded[12] == 0xa0u &&
+                            encoded[19] == 0x01u && encoded[20] == 0x07u &&
+                            memcmp(&encoded[21], &data16[24], 7u) == 0);
+}
+
+static void check_control_round_trip(const tavrn_codec_config_t *config,
+                                     const uint8_t outer_adva[6],
+                                     const uint8_t *vector, size_t vector_len)
+{
+    tavrn_decoded_frame_t frame;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    uint8_t malformed[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+    tavrn_codec_result_t result;
+
+    memset(&frame, 0, sizeof(frame));
+    result = tavrn_wire_v2_decode(config, outer_adva, vector, vector_len, &frame);
+    CHECK("BEARER-02", result == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.detail.control.type == frame.type &&
+                       frame.detail.control.pdu_len == vector_len - 7u);
+    CHECK("BEARER-02", tavrn_wire_v2_encode(config, &frame, encoded, sizeof(encoded),
+                                               &encoded_len) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == vector_len &&
+                       memcmp(encoded, vector, vector_len) == 0);
+    memcpy(malformed, vector, vector_len);
+    malformed[3]--;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, malformed,
+                                               vector_len, &frame) ==
+                       TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+}
+
+static void check_flood_round_trip(const tavrn_codec_config_t *config,
+                                   const uint8_t outer_adva[6],
+                                   const uint8_t *vector, size_t vector_len)
+{
+    tavrn_decoded_frame_t frame;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    uint8_t malformed[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+
+    memset(&frame, 0, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, vector, vector_len,
+                                               &frame) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_FLOOD &&
+                       frame.detail.flood.body_len == 12u);
+    CHECK("BEARER-02", tavrn_wire_v2_encode(config, &frame, encoded, sizeof(encoded),
+                                               &encoded_len) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == vector_len &&
+                       memcmp(encoded, vector, vector_len) == 0);
+    memcpy(malformed, vector, vector_len);
+    malformed[3]--;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, malformed,
+                                               vector_len, &frame) ==
+                       TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+}
+
+static void test_bearer_02_control_budget_shapes_and_hello_q(void)
+{
+    typedef struct control_vector_case {
+        const uint8_t *vector;
+        size_t length;
+        const uint8_t *outer_adva;
+        tavrn_identity_width_t width;
+    } control_vector_case_t;
+    static const control_vector_case_t control_vectors[] = {
+        { rreq8_max, sizeof(rreq8_max), adva_a, TAVRN_IDENTITY_SID8 },
+        { rrep8_max, sizeof(rrep8_max), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr16_max, sizeof(rerr16_max), adva_a, TAVRN_IDENTITY_SID16 },
+        { rerr8_d1_meta, sizeof(rerr8_d1_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d2_meta, sizeof(rerr8_d2_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d3_meta, sizeof(rerr8_d3_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d4, sizeof(rerr8_d4), adva_a, TAVRN_IDENTITY_SID8 },
+        { rrep_ack8, sizeof(rrep_ack8), adva_b, TAVRN_IDENTITY_SID8 },
+        { hello8_verification, sizeof(hello8_verification), adva_a,
+          TAVRN_IDENTITY_SID8 },
+        { sync_offer, sizeof(sync_offer), adva_a, TAVRN_IDENTITY_SID16 },
+        { sync_pull, sizeof(sync_pull), adva_b, TAVRN_IDENTITY_SID16 },
+        { sync_data_present, sizeof(sync_data_present), adva_a,
+          TAVRN_IDENTITY_SID16 },
+        { sync_data_empty, sizeof(sync_data_empty), adva_a,
+          TAVRN_IDENTITY_SID16 },
+        { tc_update, sizeof(tc_update), adva_b, TAVRN_IDENTITY_SID16 },
+    };
+    conflict_probe_t probe;
+    tavrn_codec_config_t sid8_config;
+    tavrn_codec_config_t sid16_config;
+    tavrn_decoded_frame_t frame;
+    uint8_t mutation[sizeof(hello8_verification)];
+    uint8_t invalid_rerr8_d4[sizeof(rerr8_d4)];
+    size_t i;
+
+    memset(&probe, 0, sizeof(probe));
+    sid8_config = make_config(adva_b, TAVRN_IDENTITY_SID8, &probe);
+    sid16_config = make_config(adva_b, TAVRN_IDENTITY_SID16, NULL);
+
+    CHECK("BEARER-02", sizeof(rreq8_max) == BLE_ADV_MAX_DATA &&
+                       sizeof(rrep8_max) == 30u &&
+                       sizeof(rerr16_max) == BLE_ADV_MAX_DATA &&
+                       sizeof(rerr8_d1_meta) == 30u &&
+                       sizeof(rerr8_d2_meta) == BLE_ADV_MAX_DATA &&
+                       sizeof(rerr8_d3_meta) == 30u &&
+                       sizeof(rerr8_d4) == 30u &&
+                       sizeof(hello8_verification) == 27u &&
+                       sizeof(sync_offer) == BLE_ADV_MAX_DATA &&
+                       sizeof(sync_pull) == 29u &&
+                       sizeof(sync_data_present) == BLE_ADV_MAX_DATA &&
+                       sizeof(sync_data_empty) == 22u &&
+                       sizeof(tc_update) == BLE_ADV_MAX_DATA);
+    CHECK("BEARER-02", sizeof(flood8_max) == BLE_ADV_MAX_DATA);
+    check_flood_round_trip(&sid8_config, adva_a, flood8_max, sizeof(flood8_max));
+    for (i = 0u; i < sizeof(control_vectors) / sizeof(control_vectors[0]); i++) {
+        check_control_round_trip(control_vectors[i].width == TAVRN_IDENTITY_SID8 ?
+                                 &sid8_config : &sid16_config,
+                                 control_vectors[i].outer_adva,
+                                 control_vectors[i].vector,
+                                 control_vectors[i].length);
+    }
+
+    memcpy(invalid_rerr8_d4, rerr8_d4, sizeof(invalid_rerr8_d4));
+    invalid_rerr8_d4[12] |= 0x10u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a,
+                                               invalid_rerr8_d4,
+                                               sizeof(invalid_rerr8_d4), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FIELD);
+
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0xb0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0x98u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0x38u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0xa8u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[26] = 0xa0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FIELD);
 }
 
 int main(void)
 {
     test_bearer_01_wrapper_decode_and_exact_data16();
     test_bearer_02_exact_modes_callbacks_and_error_outputs();
+    test_bearer_02_control_budget_shapes_and_hello_q();
     if (failures != 0u) {
         printf("tavrn_wire_v2 RED tests failed: %u assertion(s)\n", failures);
         return 1;

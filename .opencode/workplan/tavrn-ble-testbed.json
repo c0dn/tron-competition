@@ -74,7 +74,15 @@
     "microbit/docs/tavrn_ble_wire_v2.md",
     "microbit/docs/tavrn_ble_ack_contract.md",
     "microbit/docs/tavrn_ble_identity.md",
-    "microbit/docs/tavrn_ble_architecture.md"
+    "microbit/docs/tavrn_ble_architecture.md",
+    "microbit/app/protocol/tavrn_wire_v2.c",
+    "microbit/app/protocol/tavrn_link_v2.c",
+    "microbit/app/protocol/ble_mesh_tx_queue.c",
+    "microbit/tests/protocol/test_tavrn_link_v2.c",
+    "microbit/app/ble_link_v2_testbed/",
+    "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
+    "microbit/build-tavrn-ble.sh",
+    "microbit/tests/protocol/run_tron_ble_build_profile_tests.sh"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
@@ -163,7 +171,7 @@
           "target": "pure link codec/state modules and minimal shared scheduler/radio extensions",
           "action": "Code-writer implements routed wire-v2, logical next-hop filtering, custody queue, HACK, bounded retry, RETRY_EXHAUSTED event carrying failed DATA context, controlled flood API, RSSI/ACK observations, timer profiles, counters and complete manifests. Legacy flood wire-v1 remains golden-compatible.",
           "validation": "All link tests pass with -Wall -Wextra -Werror; legacy flood host tests/build pass; a dedicated link-v2 test harness/firmware builds for hardware proof. It is not an AODV_ONLY profile or third routing implementation. AODV_ONLY becomes a valid continuously tested feature level only after Phase 2 implements the real AODV core.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-1c-link-checker-candidate",
@@ -171,7 +179,7 @@
           "target": "complete link slice",
           "action": "Code-checker reviews bounds, ACK/idempotency, queue/failure semantics, scheduler ownership, starvation, admission-before-dedupe and legacy compatibility. Code-writer fixes valid findings; checker re-reviews. Commit the green accepted slice, then build clean candidate artifacts.",
           "validation": "Candidate commit clean and immutable; manifest includes full provenance and artifact hashes; no blocker/major remains.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-1d-link-hardware",
@@ -599,6 +607,139 @@
       "detail": "Resolved: all seven Phase 0 contracts are registered, JSON/Markdown execution state is synchronized, and workplan validation passes.",
       "source": "code-checker ses_03223af62ffexcEZVBNT8ZC0C6 finding 15",
       "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Phase 1 generated HACK receiver is reversed",
+      "detail": "Resolved: generated HACK immediate_receiver is the prior DATA transmitter, and two independent link instances verify ACCEPTED, DUPLICATE, BUSY, and REJECTED correlation end to end.",
+      "source": "code-checker re-review ses_031304a81ffeDVVDIzYydLu1ap",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Legacy shared scheduler bypasses typed radio seams",
+      "detail": "Resolved: legacy mesh scheduling now uses only bounded typed radio calls, stores/passes canonical AdvA, emits truthful typed TX outcomes, preserves causal masks across partial and restore faults, and fail-stops visibly.",
+      "source": "code-checker final host re-review ses_031304a81ffeDVVDIzYydLu1ap",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dedicated Phase 1 firmware and provenance integration absent",
+      "detail": "Resolved: the non-routing production-radio ble_link_v2_testbed, target-scoped generated profiles, strict identity inventory, runtime evidence, and durable artifact publisher are implemented and final-checker accepted.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Full DATA and FLOOD caches lack deterministic replacement",
+      "detail": "Resolved: DATA skips pinned entries and replaces the wrap-safe oldest legal victim with stable ties; FLOOD uses expired-first deterministic oldest replacement. Full, tie, wrap, and all-pinned tests pass.",
+      "source": "code-checker re-review ses_031304a81ffeDVVDIzYydLu1ap",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "HELLO Q validation and wire guard coverage incomplete",
+      "detail": "Partially resolved: illegal HELLO Q combinations are rejected and mandatory Section 11 capacity vectors/mutations pass. Nonblocking completeness remains for constant-based HACK16/HACK8/RREQ16/RREP16 guards and the HELLO16 bootstrap vector.",
+      "source": "code-checker final host re-review ses_031304a81ffeDVVDIzYydLu1ap",
+      "status": "open"
+    },
+    {
+      "severity": "major",
+      "title": "Link harness cross-task queues are data-racy",
+      "detail": "Resolved with fixed-capacity state protected by short μT-Kernel dispatch-disabled critical sections and host-tested reserve/ring behavior.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Final-delivery reservation publishes before resolve",
+      "detail": "Resolved: delivery remains provisional and invisible until ACCEPTED resolution succeeds; failure cancels without false delivery or leaked capacity.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Harness service loop violates manifested poll bound",
+      "detail": "Resolved: healthy cycles gate before poll, service one transition/dispatch, use a preemptible bounded wait, and inject/fail-stop before radio work on POLL_OVERRUN.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Harness HACK suppression is not exact-current correlation",
+      "detail": "Resolved under the user-approved testbed adapter: pre-call ordinal/state capture plus full decoded tuple/status/full-AdvA matching removes only the exact newly generated HACK and covers duplicate handling.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Harness final-application policy is too permissive",
+      "detail": "Resolved: only the exact diagnostic application shape is accepted; permanent rejection precedes transient BUSY and unsupported input consumes no BUSY hook.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Generated timer registry is not runtime authority",
+      "detail": "Resolved: one immutable generated tron_timer_config_t governs implemented scheduler, queue, link-harness, and legacy timing consumers; host tests link the frozen profile object.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Global CMake inputs contaminate legacy target",
+      "detail": "Resolved: explicit Phase 1 target selection scopes validation/builds, cross-target inputs fail configure, and the effective legacy hook alias is compiled and tested.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Candidate inventory omits selected-width fleet collision checks",
+      "detail": "Resolved: every TSV AdvA is semantically parsed, SID16 uniqueness/nonreservation gates Phase 1, and SID8/full-identity status plus selected record/hash are manifested.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Artifact manifest and candidate eligibility are incomplete",
+      "detail": "Resolved: complete capacity/timer/source/tool/identity/hook/eligibility schema and durable exact build-command/config sidecars are published with sizes and SHA-256 values.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Runtime evidence cannot prove Phase 1 hardware acceptance",
+      "detail": "Resolved: parseable identity equality, effective timer/hook configuration, causal outcomes/faults, hook activation, delivery, and transaction summary records support the planned two-board proof.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "SID16-only Phase 1 rejects reserved SID8 unnecessarily",
+      "detail": "Resolved: Phase 1 eligibility gates SID16 only while SID8 reservation/uniqueness is derived and manifested for future fixed-k activation.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Build tests miss acceptance-critical harness behavior",
+      "detail": "Resolved for Step 1b with queue/reservation/policy/HACK/poll-gate tests, target contamination and fleet fixtures, exact manifest/sidecar checks, and dirty-candidate rejection. Positive clean candidate publication belongs to Step 1c after the immutable commit.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Ordinary logger output deterministically trips poll bound",
+      "detail": "Resolved: logger is lower priority, mesh uses a bounded preemptible wait, and the wrap-safe pre-poll gate skips radio work and fails closed before an over-budget poll.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Effective build command evidence is hashed then deleted",
+      "detail": "Resolved: exact selected-target Ninja commands, compile_commands, build.ninja, CMake cache, and generated config sidecars survive publication and are named/hashed/sized in the final manifest.",
+      "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
+      "status": "resolved"
     }
   ],
   "notes": [
@@ -624,9 +765,18 @@
     "Focused Phase 0 checker-fix pass completed across the profile, wire/ACK/identity, and architecture lanes. Requirement-to-matrix coverage is now 70/70; contracts reduce net diameter to 15, use a fresh RREQ ID per ring, implement two-phase inbound DATA admission, and freeze boot-nonce, identity, capacity, repair, and E_RREP_ACK semantics. Parent reconciliation and whole-contract re-review remain in progress.",
     "Final bounded Phase 0 checker pass `ses_03223af62ffexcEZVBNT8ZC0C6` passed with no blocker/major findings. Accepted contracts have 70 requirements mapped 1:1 to 70 matrix rows, an exact 71-key profile/architecture timer registry, 23 validated complete wire vectors, coherent six-outcome custody semantics, and board-bound routed hardware provenance. Phase 0 is closed; Phase 1 begins with assertion-level red tests.",
     "Phase 1 started after contract commit 760c65d. Step 1a is authoring assertion-level red tests against the frozen link-v2 contracts while preserving all legacy baseline suites.",
-    "Step 1a RED gate completed. Exact command `cd microbit && ./tests/protocol/run_tavrn_link_v2_tests.sh --red` compiled three binaries and exited 1 with assertion-level failures for BEARER-01..04 and LINK-01..06. Adversarial checker `ses_03192ee32ffe7TDrrn4TYEGny3` accepted the RED handoff. Legacy packet 17/17, dedupe 12/12, PING/PONG 12/12 plus guards, radio/scheduler host suites, and `./build.sh ble_mesh_node` remained green. Step 1b now implements production codec/link/queue/typed scheduler-radio behavior against these tests."
+    "Step 1a RED gate completed. Exact command `cd microbit && ./tests/protocol/run_tavrn_link_v2_tests.sh --red` compiled three binaries and exited 1 with assertion-level failures for BEARER-01..04 and LINK-01..06. Adversarial checker `ses_03192ee32ffe7TDrrn4TYEGny3` accepted the RED handoff. Legacy packet 17/17, dedupe 12/12, PING/PONG 12/12 plus guards, radio/scheduler host suites, and `./build.sh ble_mesh_node` remained green. Step 1b now implements production codec/link/queue/typed scheduler-radio behavior against these tests.",
+    "Phase 1 production integration resumed under workflow execution on 2026-08-05. Corrected LINK-04 BUSY/REJECTED HACK fixtures so their sequence bytes correlate with custody sequences 0x6002/0x6003. `cd microbit && ./tests/protocol/run_tavrn_link_v2_tests.sh` now passes wire-v2, link-v2, and radio/scheduler-v2 suites under C99 `-Wall -Wextra -Werror`. Legacy regressions, whole-slice adversarial review, dedicated firmware harness, and build/provenance integration remain before step 1b completion.",
+    "Whole-slice adversarial host review `ses_031474e2affe53mO8YnO2sCAPC` confirmed three acceptance-blocking High findings and two Medium contract gaps. Existing focused and legacy suites/build passed but do not exercise these defects. Entering one narrow parallel fix pass with disjoint link/wire and scheduler lanes; firmware/CMake/provenance integration remains a separate config-gated step.",
+    "Phase 1 host fix cycle 2 completed and final adversarial re-review `ses_031304a81ffeDVVDIzYydLu1ap` accepted the pure host gate: no blocker/critical/high host issue remains. Parent reran production wire/link/radio-scheduler suites, intentional RED suite, packet 17/17, dedupe 12/12, PING/PONG 12/12 plus guards, BLE driver/scheduler tests, legacy firmware build, static typed-radio call check, and diff whitespace check successfully. Step 1b remains in progress solely because the dedicated non-routing link-v2 firmware/build/provenance integration has not been implemented; that next step requires explicit approval to modify configuration files.",
+    "2026-08-05 configuration gate approved: user authorized CMake/build changes for centralized Phase 1 profiles/source selection, the dedicated non-routing ble_link_v2_testbed target, and artifact/provenance publication. Preserve legacy wire-v1 behavior/builds, do not flash hardware during integration, and require full host/build/manifest regression plus final adversarial review.",
+    "2026-08-05 harness control decision: use deterministic build-time testbed inputs rather than a runtime serial command parser. Add generated peer AdvA, initiator flag, TX interval, and transaction target; use strict one-record-per-line TSV inventory `<probe_uid>\\t<canonical_adva>`. Keep production protocol headers frozen. Implement HACK-drop/BUSY/RX-block behavior in the dedicated testbed adapter at scheduler/link boundaries and manifest every input.",
+    "Phase 1 firmware/build integration lane `ses_02fb040a7ffeHsHYtKjwfpeims` added the dedicated production-radio link-v2 harness, centralized 71-key profile/config generation, strict TSV candidate identity validation, clean-temp artifact publisher, and focused positive/negative profile tests. Parent validation passed the production and RED link suites, all legacy host suites, the new build/profile/publisher suite, and both `./build.sh ble_mesh_node` and `./build.sh ble_link_v2_testbed`. Whole-integration adversarial review remains required before step 1b completion.",
+    "Whole integration checker `ses_02f9806afffeuZphzNJhjbJGOT` verified the 71 timer registry, source isolation, fake-route rejection, SID16 runtime, basic publisher hashes/naming, and dirty-candidate rejection, but rejected step 1b on ten High acceptance defects. Entering a narrow fix pass; no commit or hardware action until all major findings are re-reviewed.",
+    "Integration re-review resolved queue safety, provisional delivery, exact HACK suppression, app policy, timer authority, target scoping, fleet validation, runtime evidence, and most manifest requirements. One final disjoint fix pass remains for preemptible logger scheduling/pre-poll overrun checking and durable exact build-command sidecars.",
+    "Final integration checker `ses_02f9806afffeuZphzNJhjbJGOT` passed Step 1b with no blocker/critical/high/medium findings. Parent and checker verified host/RED suites, all legacy regressions, immutable timer authority, harness state/poll-gate tests, target/profile/inventory/publisher tests, both firmware builds, durable exact command sidecars, script modes, diff hygiene, and valid workplan structure. Step 1b is complete; Step 1c begins immutable commit and clean candidate publication."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-04T21:12:10.259Z"
+  "updatedAt": "2026-08-05T07:12:25.349Z"
 }

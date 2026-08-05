@@ -17,11 +17,11 @@
 #include "tron_mesh_dedupe.h"
 #include "tron_mesh_packet.h"
 #include "tron_mesh_pingpong.h"
+#include "tron_timer_config.h"
+#include "tron_build_info.h"
 
-#define FICR_DEVICEADDR0          0x100000A4UL
-
-/* Defined by CMake; 0 means "derive the id from FICR". Kept here so the file
-   still compiles if it is built outside the project's CMake setup. */
+/* Defined by CMake; 0 derives the legacy label from the canonical local AdvA.
+   Kept here so the file still compiles outside the project's CMake setup. */
 #ifndef TRON_NODE_ID
 #define TRON_NODE_ID              0
 #endif
@@ -35,12 +35,6 @@
 
 #define TRON_NODE_NET_ID          TRON_MESH_PINGPONG_NET_ID
 #define TRON_NODE_OWN_TTL         TRON_MESH_TTL_MAX
-#define TRON_NODE_DUMMY_INTERVAL_MS 1000u
-#define TRON_NODE_STATS_MS        5000u
-#define TRON_NODE_RELAY_MIN_MS    20u
-#define TRON_NODE_RELAY_MAX_MS    120u
-#define TRON_NODE_LOOP_DELAY_MS   2u
-
 typedef struct tron_node_counters {
     uint32_t rx_ok;
     uint32_t decode_error;
@@ -68,6 +62,7 @@ static tron_node_counters_t node_counters;
 static tron_mesh_pingpong_root_t ping_root;
 static uint32_t next_seq24;
 static uint32_t prng_state;
+static UB local_adva[6];
 
 static uint32_t now_ms(void)
 {
@@ -94,7 +89,26 @@ static uint16_t node_id(void)
     if ((uint16_t)((uint32_t)TRON_NODE_ID & 0xFFFFu) != 0u) {
         return (uint16_t)((uint32_t)TRON_NODE_ID & 0xFFFFu);
     }
-    return (uint16_t)(in_w(FICR_DEVICEADDR0) & 0xFFFFu);
+    return (uint16_t)local_adva[0] | ((uint16_t)local_adva[1] << 8);
+}
+
+static const UB *scheduler_fault_name(ble_mesh_sched_fault_t fault)
+{
+    switch (fault) {
+    case BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT:
+        return (const UB *)"radio_timeout";
+    case BLE_MESH_SCHED_FAULT_RADIO_INVALID_ARGUMENT:
+        return (const UB *)"radio_invalid_argument";
+    case BLE_MESH_SCHED_FAULT_POLL_OVERRUN:
+        return (const UB *)"poll_overrun";
+    case BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT:
+        return (const UB *)"queue_corrupt";
+    case BLE_MESH_SCHED_FAULT_INTERNAL_STATE:
+        return (const UB *)"internal_state";
+    case BLE_MESH_SCHED_FAULT_NONE:
+    default:
+        return (const UB *)"none";
+    }
 }
 
 static uint32_t next_prng(void)
@@ -105,12 +119,13 @@ static uint32_t next_prng(void)
 
 static uint32_t relay_backoff_ms(const tron_mesh_packet_t *packet, uint32_t now)
 {
-    uint32_t span = (TRON_NODE_RELAY_MAX_MS - TRON_NODE_RELAY_MIN_MS) + 1u;
+    uint32_t span = (tron_timer_config.legacy_relay_max_ms -
+                     tron_timer_config.legacy_relay_min_ms) + 1u;
 
     prng_state ^= ((uint32_t)packet->src << 16) ^
                   (packet->seq24 & TRON_MESH_SEQ24_MAX) ^
                   ((uint32_t)packet->net_id << 8) ^ now;
-    return TRON_NODE_RELAY_MIN_MS + (next_prng() % span);
+    return tron_timer_config.legacy_relay_min_ms + (next_prng() % span);
 }
 
 static int dedupe_seen_or_insert(const tron_mesh_packet_t *packet, uint32_t now)
@@ -281,7 +296,7 @@ static void maybe_schedule_ping(ble_mesh_scheduler_t *sched, uint32_t now)
                   ping.src,
                   TRON_MESH_PINGPONG_LEAF_ID,
                   (UW)ping.seq24,
-                  (UW)TRON_MESH_PINGPONG_TIMEOUT_MS);
+                   (UW)tron_timer_config.legacy_ping_timeout_ms);
     }
 }
 
@@ -467,8 +482,8 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     ble_mesh_sched_event_t event;
     uint16_t self = node_id();
     uint32_t t = now_ms();
-    uint32_t next_dummy_at = t + TRON_NODE_DUMMY_INTERVAL_MS;
-    uint32_t next_stats_at = t + TRON_NODE_STATS_MS;
+    uint32_t next_dummy_at = t + (tron_timer_config.legacy_ping_interval_ms / 2u);
+    uint32_t next_stats_at = t + tron_timer_config.stats_ms;
 
     (void)stacd;
     (void)exinf;
@@ -480,6 +495,7 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     prng_state = ((uint32_t)self << 16) | 1u;
 
     tm_printf((UB *)"experimental BLE advertising mesh-like transport; not Bluetooth Mesh compliant\n");
+    tm_printf((UB *)"%s\n", (UB *)tron_build_info_line());
     tm_printf((UB *)"mesh node src=0x%04x net=0x%02x ttl=%u passive RX with interleaved TX\n",
               self,
               (UINT)TRON_NODE_NET_ID,
@@ -487,12 +503,16 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
     tm_printf((UB *)"mesh PING/PONG root=0x%04x leaf=0x%04x interval=%lums timeout=%lums role=%s\n",
               TRON_MESH_PINGPONG_ROOT_ID,
               TRON_MESH_PINGPONG_LEAF_ID,
-              (UW)TRON_MESH_PINGPONG_INTERVAL_MS,
-              (UW)TRON_MESH_PINGPONG_TIMEOUT_MS,
+               (UW)tron_timer_config.legacy_ping_interval_ms,
+               (UW)tron_timer_config.legacy_ping_timeout_ms,
               self == TRON_MESH_PINGPONG_ROOT_ID ? (UB *)"root" :
               (self == TRON_MESH_PINGPONG_LEAF_ID ? (UB *)"leaf" : (UB *)"generic"));
 
-    ble_mesh_scheduler_init_legacy(&sched, t);
+    ble_mesh_scheduler_init_legacy(&sched, t, local_adva);
+    if (!ble_mesh_scheduler_copy_local_adva(&sched, local_adva)) {
+        tm_printf((UB *)"mesh scheduler rejected canonical AdvA\n");
+        return;
+    }
     ble_mesh_scheduler_start_rx(&sched, t);
 
     while (1) {
@@ -503,12 +523,21 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
         } else if (self != TRON_MESH_PINGPONG_LEAF_ID &&
                    tron_mesh_time_reached(t, next_dummy_at)) {
             schedule_dummy_packet(&sched, self, t);
-            next_dummy_at = t + TRON_NODE_DUMMY_INTERVAL_MS;
+            next_dummy_at = t + (tron_timer_config.legacy_ping_interval_ms / 2u);
         }
 
-        if (ble_mesh_scheduler_poll(&sched, t, &event) &&
-            event.type == BLE_MESH_SCHED_EVENT_RX_ADV) {
-            handle_packet(&sched, &event, self, t);
+        if (ble_mesh_scheduler_poll(&sched, t, &event)) {
+            if (event.type == BLE_MESH_SCHED_EVENT_RX_ADV) {
+                handle_packet(&sched, &event, self, t);
+            } else if (event.type == BLE_MESH_SCHED_EVENT_RADIO_FAULT ||
+                       event.type == BLE_MESH_SCHED_EVENT_SERVICE_FAULT) {
+                tm_printf((UB *)"mesh scheduler stopped fault=%s(%u) tx_req=0x%02x tx_done=0x%02x\n",
+                          scheduler_fault_name(event.fault),
+                          (UINT)event.fault,
+                          (UINT)event.tx_requested_channel_mask,
+                          (UINT)event.tx_completed_channel_mask);
+                return;
+            }
         }
 
         /* Give an on-time packet captured in this scheduler poll a chance to
@@ -518,15 +547,15 @@ LOCAL void mesh_node_task(INT stacd, void *exinf)
             node_counters.ping_timeout++;
             tm_printf((UB *)"mesh PING timeout seq=%lu after=%lums\n",
                       (UW)ping_root.pending_seq24,
-                      (UW)TRON_MESH_PINGPONG_TIMEOUT_MS);
+                       (UW)tron_timer_config.legacy_ping_timeout_ms);
         }
 
         if (tron_mesh_time_reached(t, next_stats_at)) {
             log_counters(&sched);
-            next_stats_at = t + TRON_NODE_STATS_MS;
+            next_stats_at = t + tron_timer_config.stats_ms;
         }
 
-        tk_dly_tsk(TRON_NODE_LOOP_DELAY_MS);
+        tk_dly_tsk(tron_timer_config.loop_delay_ms);
     }
 }
 
@@ -541,7 +570,18 @@ EXPORT INT usermain(void)
     };
     ID tskid;
 
-    ble_radio_init();
+    if (!tron_timer_config_is_valid(&tron_timer_config)) {
+        tm_printf((UB *)"generated timer configuration is invalid\n");
+        return 1;
+    }
+    if (ble_radio_try_init(tron_timer_config.radio_state_timeout_ms) != BLE_RADIO_OP_OK) {
+        tm_printf((UB *)"bounded BLE radio initialization failed\n");
+        return 1;
+    }
+    if (ble_radio_read_default_adva(local_adva) != BLE_RADIO_OP_OK) {
+        tm_printf((UB *)"canonical BLE AdvA acquisition failed\n");
+        return 1;
+    }
 
     tskid = tk_cre_tsk(&ctsk);
     if (tskid > 0) {

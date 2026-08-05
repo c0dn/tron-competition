@@ -68,7 +68,7 @@ static int start_pending(tron_mesh_pingpong_root_t *state,
     uint32_t due;
 
     tron_mesh_pingpong_root_init(state, init_ms);
-    due = init_ms + TRON_MESH_PINGPONG_INTERVAL_MS;
+    due = init_ms + tron_timer_config.legacy_ping_interval_ms;
     ASSERT_TRUE(tron_mesh_pingpong_root_ping_due(state, due));
     ASSERT_EQ_U32(TRON_MESH_PINGPONG_ATTEMPT_QUEUED,
                   tron_mesh_pingpong_root_record_ping_attempt(state, seq24,
@@ -193,14 +193,15 @@ static int test_ttl_zero_is_valid_for_local_delivery(void)
     return 0;
 }
 
-static int test_timing_constants_are_wrap_safe(void)
+static int test_frozen_timer_object_is_wrap_safe(void)
 {
-    ASSERT_EQ_U32(2000u, TRON_MESH_PINGPONG_INTERVAL_MS);
-    ASSERT_EQ_U32(1500u, TRON_MESH_PINGPONG_TIMEOUT_MS);
-    ASSERT_TRUE(TRON_MESH_PINGPONG_TIMEOUT_MS <
-                TRON_MESH_PINGPONG_INTERVAL_MS);
-    ASSERT_TRUE(TRON_MESH_PINGPONG_INTERVAL_MS < 0x80000000UL);
-    ASSERT_TRUE(TRON_MESH_PINGPONG_TIMEOUT_MS < 0x80000000UL);
+    ASSERT_EQ_U32(2000u, tron_timer_config.legacy_ping_interval_ms);
+    ASSERT_EQ_U32(1500u, tron_timer_config.legacy_ping_timeout_ms);
+    ASSERT_TRUE(tron_timer_config.legacy_ping_timeout_ms <
+                tron_timer_config.legacy_ping_interval_ms);
+    ASSERT_TRUE(tron_timer_config.legacy_ping_interval_ms < 0x80000000UL);
+    ASSERT_TRUE(tron_timer_config.legacy_ping_timeout_ms < 0x80000000UL);
+    ASSERT_TRUE(tron_timer_config_is_valid(&tron_timer_config));
     return 0;
 }
 
@@ -285,19 +286,19 @@ static int test_late_pong_and_timeout(void)
     ASSERT_EQ_U32(TRON_MESH_PINGPONG_PONG_LATE,
                   tron_mesh_pingpong_root_match_pong(
                       &state, &pong,
-                      queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS, NULL));
+                       queued_at + tron_timer_config.legacy_ping_timeout_ms, NULL));
     ASSERT_EQ_U32(0u, state.pending);
 
     ASSERT_TRUE(start_pending(&state, 10000u, 9u, &queued_at) == 0);
     ASSERT_TRUE(!tron_mesh_pingpong_root_check_timeout(
-        &state, queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS - 1u));
+        &state, queued_at + tron_timer_config.legacy_ping_timeout_ms - 1u));
     ASSERT_TRUE(tron_mesh_pingpong_root_check_timeout(
-        &state, queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS));
+        &state, queued_at + tron_timer_config.legacy_ping_timeout_ms));
     ASSERT_EQ_U32(0u, state.pending);
     ASSERT_EQ_U32(TRON_MESH_PINGPONG_PONG_UNMATCHED,
                   tron_mesh_pingpong_root_match_pong(
                       &state, &pong,
-                      queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS + 1u, NULL));
+                       queued_at + tron_timer_config.legacy_ping_timeout_ms + 1u, NULL));
     return 0;
 }
 
@@ -306,7 +307,7 @@ static int test_deadlines_and_rtt_wrap_at_32_bits(void)
     tron_mesh_pingpong_root_t state;
     tron_mesh_packet_t pong = make_pong(77u);
     uint32_t init = UINT32_MAX - 2500u;
-    uint32_t queued_at = init + TRON_MESH_PINGPONG_INTERVAL_MS;
+    uint32_t queued_at = init + tron_timer_config.legacy_ping_interval_ms;
     uint32_t rtt = 0u;
 
     tron_mesh_pingpong_root_init(&state, init);
@@ -316,7 +317,7 @@ static int test_deadlines_and_rtt_wrap_at_32_bits(void)
                   tron_mesh_pingpong_root_record_ping_attempt(&state, 77u,
                                                                queued_at, 1));
     ASSERT_TRUE(!tron_mesh_pingpong_root_check_timeout(
-        &state, queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS - 1u));
+        &state, queued_at + tron_timer_config.legacy_ping_timeout_ms - 1u));
     ASSERT_EQ_U32(TRON_MESH_PINGPONG_PONG_MATCHED,
                   tron_mesh_pingpong_root_match_pong(&state, &pong,
                                                       queued_at + 1000u, &rtt));
@@ -327,7 +328,7 @@ static int test_deadlines_and_rtt_wrap_at_32_bits(void)
                   tron_mesh_pingpong_root_record_ping_attempt(&state, 77u,
                                                                queued_at, 1));
     ASSERT_TRUE(tron_mesh_pingpong_root_check_timeout(
-        &state, queued_at + TRON_MESH_PINGPONG_TIMEOUT_MS));
+        &state, queued_at + tron_timer_config.legacy_ping_timeout_ms));
     return 0;
 }
 
@@ -364,7 +365,7 @@ int main(void)
         { "PONG builder supports in-place conversion", test_pong_builder_supports_in_place_conversion },
         { "endpoint and semantic validation", test_endpoint_and_semantic_validation },
         { "TTL zero remains valid for local delivery", test_ttl_zero_is_valid_for_local_delivery },
-        { "timing constants are wrap-safe", test_timing_constants_are_wrap_safe },
+        { "frozen timer object is wrap-safe", test_frozen_timer_object_is_wrap_safe },
         { "pending starts only after successful queue", test_pending_starts_only_after_successful_queue },
         { "matching PONG reports enqueue latency", test_matching_pong_reports_enqueue_latency },
         { "wrong source, destination, and correlation are unmatched", test_wrong_source_destination_and_correlation_are_unmatched },

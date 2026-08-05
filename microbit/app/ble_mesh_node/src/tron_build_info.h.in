@@ -1,0 +1,6 @@
+#ifndef TRON_BUILD_INFO_H
+#define TRON_BUILD_INFO_H
+
+const char *tron_build_info_line(void);
+
+#endif /* TRON_BUILD_INFO_H */

@@ -46,12 +46,14 @@ else
         "${MICROBIT_ROOT}/app/protocol/tavrn_wire_v2.c"
     )
     LINK_SOURCES=(
+        "${MICROBIT_ROOT}/app/protocol/tron_timer_config.c"
         "${MICROBIT_ROOT}/app/protocol/tavrn_link_v2.c"
         "${MICROBIT_ROOT}/app/protocol/tavrn_wire_v2.c"
         "${MICROBIT_ROOT}/app/protocol/ble_mesh_tx_queue.c"
         "${MICROBIT_ROOT}/tests/protocol/support/ble_mesh_scheduler_port.c"
     )
     RADIO_SOURCES=(
+        "${MICROBIT_ROOT}/app/protocol/tron_timer_config.c"
         "${MICROBIT_ROOT}/app/protocol/ble_mesh_tx_queue.c"
         "${MICROBIT_ROOT}/app/protocol/ble_mesh_scheduler.c"
         "${MICROBIT_ROOT}/app/drivers/ble_radio.c"

@@ -13,6 +13,9 @@ void tron_mesh_dedupe_reset(tron_mesh_dedupe_t *cache)
         return;
     }
 
+    cache->timers = tron_timer_config_is_valid(&tron_timer_config) ?
+        &tron_timer_config : NULL;
+
     for (i = 0u; i < TRON_MESH_DEDUPE_SIZE; i++) {
         cache->entries[i].valid = 0u;
         cache->entries[i].net_id = 0u;
@@ -43,7 +46,8 @@ int tron_mesh_dedupe_seen_or_insert(tron_mesh_dedupe_t *cache,
     int insert;
     unsigned int i;
 
-    if (cache == NULL || packet == NULL) {
+    if (cache == NULL || packet == NULL ||
+        !tron_timer_config_is_valid(cache->timers)) {
         return 0;
     }
 
@@ -86,7 +90,7 @@ int tron_mesh_dedupe_seen_or_insert(tron_mesh_dedupe_t *cache,
     cache->entries[insert].msg_type = packet->msg_type;
     cache->entries[insert].src = packet->src;
     cache->entries[insert].seq24 = packet->seq24 & TRON_MESH_SEQ24_MAX;
-    cache->entries[insert].expires_at_ms = now_ms + TRON_MESH_DEDUPE_TTL_MS;
+    cache->entries[insert].expires_at_ms = now_ms + cache->timers->legacy_dedupe_ms;
     return 0;
 }
 

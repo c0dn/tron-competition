@@ -25,12 +25,13 @@ static void set_destination(tron_mesh_packet_t *packet, uint16_t destination)
     packet->payload[1] = (uint8_t)((destination >> 8) & 0xFFu);
 }
 
-static uint32_t advance_periodic_deadline(uint32_t deadline_ms, uint32_t now_ms)
+static uint32_t advance_periodic_deadline(uint32_t deadline_ms, uint32_t now_ms,
+                                          uint32_t interval_ms)
 {
     uint32_t elapsed = now_ms - deadline_ms;
-    uint32_t periods = (elapsed / TRON_MESH_PINGPONG_INTERVAL_MS) + 1u;
+    uint32_t periods = (elapsed / interval_ms) + 1u;
 
-    return deadline_ms + (periods * TRON_MESH_PINGPONG_INTERVAL_MS);
+    return deadline_ms + (periods * interval_ms);
 }
 
 int tron_mesh_pingpong_is_supported_type(uint8_t msg_type)
@@ -143,13 +144,18 @@ void tron_mesh_pingpong_root_init(tron_mesh_pingpong_root_t *state,
         return;
     }
     *state = empty;
-    state->next_ping_at_ms = now_ms + TRON_MESH_PINGPONG_INTERVAL_MS;
+    if (!tron_timer_config_is_valid(&tron_timer_config)) {
+        return;
+    }
+    state->timers = &tron_timer_config;
+    state->next_ping_at_ms = now_ms + state->timers->legacy_ping_interval_ms;
 }
 
 int tron_mesh_pingpong_root_ping_due(const tron_mesh_pingpong_root_t *state,
                                      uint32_t now_ms)
 {
-    return state != NULL && state->pending == 0u &&
+    return state != NULL && tron_timer_config_is_valid(state->timers) &&
+           state->pending == 0u &&
            time_reached(now_ms, state->next_ping_at_ms);
 }
 
@@ -163,8 +169,8 @@ tron_mesh_pingpong_attempt_result_t tron_mesh_pingpong_root_record_ping_attempt(
         return TRON_MESH_PINGPONG_ATTEMPT_NOT_DUE;
     }
 
-    state->next_ping_at_ms = advance_periodic_deadline(state->next_ping_at_ms,
-                                                        now_ms);
+    state->next_ping_at_ms = advance_periodic_deadline(
+        state->next_ping_at_ms, now_ms, state->timers->legacy_ping_interval_ms);
     if (!queue_succeeded) {
         return TRON_MESH_PINGPONG_ATTEMPT_QUEUE_FAILED;
     }
@@ -172,7 +178,7 @@ tron_mesh_pingpong_attempt_result_t tron_mesh_pingpong_root_record_ping_attempt(
     state->pending = 1u;
     state->pending_seq24 = seq24 & TRON_MESH_SEQ24_MAX;
     state->pending_queued_at_ms = now_ms;
-    state->pending_deadline_ms = now_ms + TRON_MESH_PINGPONG_TIMEOUT_MS;
+    state->pending_deadline_ms = now_ms + state->timers->legacy_ping_timeout_ms;
     return TRON_MESH_PINGPONG_ATTEMPT_QUEUED;
 }
 

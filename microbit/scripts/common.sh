@@ -26,7 +26,18 @@ find_tool() {
 
 configure_build() {
     local build_dir="$1"
-    cmake -S "${REPO_ROOT}" -B "$build_dir" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+    local target="${2:-ble_mesh_node}"
+    local phase1_target="LEGACY"
+    local node_mode="LEGACY_FLOOD"
+
+    case "$target" in
+        ble_mesh_node) phase1_target="LEGACY" ;;
+        ble_link_v2_testbed) phase1_target="LINK"; node_mode="NOT_APPLICABLE" ;;
+    esac
+    cmake -S "${REPO_ROOT}" -B "$build_dir" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+        -DTRON_PHASE1_TARGET="$phase1_target" \
+        -DTRON_NODE_MODE="$node_mode"
 }
 
 firmware_output_dir() {

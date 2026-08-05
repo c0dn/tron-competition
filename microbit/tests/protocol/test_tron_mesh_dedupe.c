@@ -148,10 +148,10 @@ static int test_entry_expires_after_ttl(void)
     ASSERT_EQ_U32(0u, tron_mesh_dedupe_seen_or_insert(&cache, &p, 1000u));
     /* Just inside the window: still a duplicate. */
     ASSERT_EQ_U32(1u, tron_mesh_dedupe_seen_or_insert(&cache, &p,
-                                                      1000u + TRON_MESH_DEDUPE_TTL_MS - 1u));
+                                                       1000u + tron_timer_config.legacy_dedupe_ms - 1u));
     /* At and past the window: treated as new again. */
     ASSERT_EQ_U32(0u, tron_mesh_dedupe_seen_or_insert(&cache, &p,
-                                                      1000u + TRON_MESH_DEDUPE_TTL_MS));
+                                                       1000u + tron_timer_config.legacy_dedupe_ms));
     return 0;
 }
 

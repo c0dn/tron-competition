@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "ble_radio.h"
+#include "tron_timer_config.h"
 
 #define BLE_MESH_TX_QUEUE_CAPACITY 4u
 #define BLE_MESH_TX_TOKEN_NONE     0u

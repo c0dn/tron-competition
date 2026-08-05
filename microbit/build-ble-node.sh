@@ -63,6 +63,10 @@ if [[ "$canonical_block_direct_peer" != "0x0000" && "$canonical_block_direct_pee
     printf '%s\n' '--block-direct-peer must not equal --node-id' >&2
     exit 2
 fi
+test_hooks=OFF
+if [[ "$canonical_block_direct_peer" != "0x0000" ]]; then
+    test_hooks=ON
+fi
 artifact_base="ble_mesh_node-${canonical_node_id}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tron-ble-node.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
@@ -77,7 +81,10 @@ mkdir -p "$out_dir"
 
 cmake -S "$repo_root" -B "$build_dir" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+    -DTRON_PHASE1_TARGET=LEGACY \
+    -DTRON_NODE_MODE=LEGACY_FLOOD \
     -DTRON_NODE_ID="$canonical_node_id" \
+    -DTRON_ENABLE_TEST_HOOKS="$test_hooks" \
     -DTRON_NODE_BLOCK_DIRECT_PEER_ID="$canonical_block_direct_peer"
 cmake --build "$build_dir" --target ble_mesh_node --parallel
 

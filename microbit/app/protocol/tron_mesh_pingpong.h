@@ -10,29 +10,13 @@
 #include <stdint.h>
 
 #include "tron_mesh_packet.h"
+#include "tron_timer_config.h"
 
 #define TRON_MESH_PINGPONG_NET_ID          0x01u
 #define TRON_MESH_PINGPONG_ROOT_ID         0x0001u
 #define TRON_MESH_PINGPONG_LEAF_ID         0x0002u
 #define TRON_MESH_PINGPONG_PAYLOAD_LEN     2u
 #define TRON_MESH_PINGPONG_ADV_LEN         (TRON_MESH_ADV_BASE_LEN + TRON_MESH_PINGPONG_PAYLOAD_LEN)
-#ifndef TRON_MESH_PINGPONG_INTERVAL_MS
-#define TRON_MESH_PINGPONG_INTERVAL_MS     2000u
-#endif
-#ifndef TRON_MESH_PINGPONG_TIMEOUT_MS
-#define TRON_MESH_PINGPONG_TIMEOUT_MS      1500u
-#endif
-
-#if TRON_MESH_PINGPONG_TIMEOUT_MS >= TRON_MESH_PINGPONG_INTERVAL_MS
-#error "TRON mesh PING/PONG timeout must be less than the interval"
-#endif
-#if TRON_MESH_PINGPONG_INTERVAL_MS >= 0x80000000UL
-#error "TRON mesh PING/PONG interval must stay below the wrap-safe half-range"
-#endif
-#if TRON_MESH_PINGPONG_TIMEOUT_MS >= 0x80000000UL
-#error "TRON mesh PING/PONG timeout must stay below the wrap-safe half-range"
-#endif
-
 typedef enum tron_mesh_pingpong_result {
     TRON_MESH_PINGPONG_OK = 0,
     TRON_MESH_PINGPONG_ERR_NULL,
@@ -45,6 +29,7 @@ typedef enum tron_mesh_pingpong_result {
 } tron_mesh_pingpong_result_t;
 
 typedef struct tron_mesh_pingpong_root {
+    const tron_timer_config_t *timers;
     uint32_t next_ping_at_ms;
     uint32_t pending_seq24;
     uint32_t pending_queued_at_ms;

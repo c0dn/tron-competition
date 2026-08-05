@@ -15,9 +15,8 @@
 
 #include "ble_radio.h"
 #include "ble_mesh_tx_queue.h"
+#include "tron_timer_config.h"
 
-#define BLE_MESH_SCHED_DWELL_MS_DEFAULT       50u
-#define BLE_MESH_SCHED_RELAY_TX_INTERVAL_MS   200u
 #define BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY 4u
 #define BLE_MESH_SCHED_ADV_DATA_MAX           BLE_ADV_MAX_DATA
 
@@ -85,7 +84,7 @@ typedef struct ble_mesh_sched_counters {
     uint32_t tx_len_drop;
 } ble_mesh_sched_counters_t;
 
-/* Compatibility-only wire-v1 queue. Routed callers use ble_mesh_tx_queue_t. */
+/* Wire-v1 queue. Routed callers use ble_mesh_tx_queue_t. */
 typedef struct ble_mesh_sched_legacy_tx_item {
     uint8_t adv_len;
     uint8_t channel_mask;
@@ -95,6 +94,7 @@ typedef struct ble_mesh_sched_legacy_tx_item {
 } ble_mesh_sched_legacy_tx_item_t;
 
 typedef struct ble_mesh_scheduler {
+    const tron_timer_config_t *timers;
     uint8_t rx_channel_index;
     uint8_t rx_started;
     uint32_t hop_at_ms;
@@ -108,6 +108,7 @@ typedef struct ble_mesh_scheduler {
     uint8_t relay_last_tx_valid;
     ble_mesh_sched_counters_t counters;
     uint8_t local_adva[6];
+    uint8_t local_adva_valid;
     uint8_t routed_started;
     uint8_t custody_bypass_count;
     ble_mesh_sched_fault_t latched_fault;
@@ -118,9 +119,10 @@ typedef struct ble_mesh_scheduler {
 void ble_mesh_scheduler_init(ble_mesh_scheduler_t *sched, uint32_t now_ms,
                              const uint8_t local_adva[6]);
 
-/* Compatibility-only wire-v1 initializer used by the existing legacy node. */
+/* Wire-v1 initializer. It copies the canonical local AdvA by value. */
 void ble_mesh_scheduler_init_legacy(ble_mesh_scheduler_t *sched,
-                                    uint32_t now_ms);
+                                      uint32_t now_ms,
+                                      const uint8_t local_adva[6]);
 int ble_mesh_scheduler_copy_local_adva(const ble_mesh_scheduler_t *sched,
                                        uint8_t out_adva[6]);
 
@@ -145,14 +147,11 @@ int ble_mesh_scheduler_poll(
 const ble_mesh_sched_counters_t *ble_mesh_scheduler_counters(const ble_mesh_scheduler_t *sched);
 
 /*
- * The legacy compatibility implementation below uses the pre-routed radio
- * wrappers. Routed mesh paths must use the typed try_* radio API and the
- * routed queue/event fields above; that behavior is intentionally not present
- * in this legacy source file.
- * One-shot RX disables at packet END before copying raw PDU bytes, so the
+ * Every mesh scheduler path uses only the bounded typed radio API. One-shot RX
+ * disables at packet END before copying raw PDU bytes, so the
  * single rx_pkt buffer is not auto-restarted and overwritten while handed to
- * the mesh node for decode. Existing ble_beacon/ble_observer source
- * compatibility is preserved through ble_radio_listen() and ble_radio_poll().
+ * the mesh node for decode. Non-mesh beacon and observer callers retain their
+ * existing radio APIs outside this scheduler.
  */
 
 #endif /* BLE_MESH_SCHEDULER_H */
