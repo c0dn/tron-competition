@@ -301,6 +301,69 @@ if ! awk '
     printf '%s\n' 'link testbed must dispatch poll events using the post-poll timestamp' >&2
     exit 1
 fi
+if ! awk '
+        /^LOCAL void link_mesh_task\(/ { in_task = 1 }
+        /^LOCAL void link_logger_task\(/ { in_task = 0 }
+        in_task && /^    uint32_t start_rx_return;$/ { startup_declaration = NR }
+        in_task && /^    link_testbed_poll_gate_init\(&poll_gate\);$/ {
+            startup_init = NR
+        }
+        in_task && /^    diagnostic_push_simple\(LINK_TEST_DIAG_BOOT, now_ms\(\), 0u\);$/ {
+            startup_boot = NR
+        }
+        in_task && /^    ble_mesh_scheduler_start_rx\(&link_scheduler, now_ms\(\)\);$/ {
+            startup_rx = NR
+        }
+        in_task && /^    start_rx_return = now_ms\(\);$/ { startup_return = NR }
+        in_task && /^    link_testbed_poll_gate_complete\(&poll_gate, start_rx_return\);$/ {
+            startup_complete = NR
+        }
+        in_task && /^    while \(1\) {$/ { loop_line = NR }
+        in_task && /tavrn_link_v2_dispatch\(&link_instance, now_ms\(\), &link_event\)/ {
+            dispatch_line = NR
+        }
+        in_task && /^        yield_delay = mesh_yield_delay_ms;$/ {
+            max_yield_line = NR
+        }
+        in_task && /^        if \(mesh_fault_latched == 0u && poll_gate.have_poll_return != 0u\) {$/ {
+            healthy_line = NR
+        }
+        in_task && /^            yield_delay = link_testbed_mesh_remaining_yield_ms\($/ {
+            remaining_line = NR
+        }
+        in_task && /^                poll_gate.last_poll_return_ms, now_ms\(\),$/ {
+            remaining_args = NR
+        }
+        in_task && /^                tron_timer_config.scheduler_poll_max_ms\);$/ {
+            remaining_budget = NR
+        }
+        in_task && /^        if \(yield_delay != 0u\) {$/ { delay_guard = NR }
+        in_task && /^            \(void\)tk_dly_tsk\(yield_delay\);$/ {
+            delay_call = NR
+        }
+        END {
+            exit !(startup_declaration && startup_init && startup_boot &&
+                   startup_rx && startup_return && startup_complete &&
+                   loop_line && startup_declaration < startup_init &&
+                   startup_init < startup_boot && startup_boot < startup_rx &&
+                   startup_rx < startup_return &&
+                   startup_return < startup_complete &&
+                   startup_complete < loop_line && dispatch_line &&
+                   max_yield_line && healthy_line && remaining_line &&
+                   remaining_args == remaining_line + 1 &&
+                   remaining_budget == remaining_line + 2 && delay_guard &&
+                   delay_call && dispatch_line < max_yield_line &&
+                   max_yield_line < healthy_line &&
+                   healthy_line < remaining_line &&
+                   remaining_budget < delay_guard && delay_guard < delay_call)
+        }
+    ' "$link_testbed_main" ||
+   ! grep -Fq 'mesh_yield_max_ms=%lu mesh_yield_policy=remaining_slack' \
+        "$link_testbed_main" ||
+   grep -Fq '(void)tk_dly_tsk(mesh_yield_delay_ms);' "$link_testbed_main"; then
+    printf '%s\n' 'link testbed must yield only unconsumed healthy-cycle poll slack' >&2
+    exit 1
+fi
 if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     "$WORK_DIR/runtime-link/compile_commands.json"; then
     printf '%s\n' 'firmware compile commands must not contain the host-only immediate HACK macro' >&2

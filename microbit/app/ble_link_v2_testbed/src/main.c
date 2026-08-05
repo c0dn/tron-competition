@@ -300,7 +300,7 @@ static void log_startup_record(const UB *configured_runtime_equal,
                                const UB *effective_runtime_equal,
                                const UB *effective_scheduler_equal)
 {
-    tm_printf((UB *)"linkv2 startup %s runtime_ficr=%02x:%02x:%02x:%02x:%02x:%02x effective_local=%02x:%02x:%02x:%02x:%02x:%02x scheduler_adva=%02x:%02x:%02x:%02x:%02x:%02x configured_runtime_equal=%s effective_runtime_equal=%s effective_scheduler_equal=%s sid16=%u sid8=%u fixed_k=disabled mesh_yield_ms=%lu %s %s\n",
+    tm_printf((UB *)"linkv2 startup %s runtime_ficr=%02x:%02x:%02x:%02x:%02x:%02x effective_local=%02x:%02x:%02x:%02x:%02x:%02x scheduler_adva=%02x:%02x:%02x:%02x:%02x:%02x configured_runtime_equal=%s effective_runtime_equal=%s effective_scheduler_equal=%s sid16=%u sid8=%u fixed_k=disabled mesh_yield_max_ms=%lu mesh_yield_policy=remaining_slack %s %s\n",
               (UB *)TRON_BUILD_RUNTIME_CONFIG_EVIDENCE,
               (UINT)runtime_ficr_adva[0], (UINT)runtime_ficr_adva[1],
               (UINT)runtime_ficr_adva[2], (UINT)runtime_ficr_adva[3],
@@ -734,16 +734,20 @@ LOCAL void link_mesh_task(INT stacd, void *exinf)
     ble_mesh_sched_event_t scheduler_event;
     tavrn_link_event_t link_event;
     uint32_t next_tx_at = now_ms();
+    uint32_t start_rx_return;
     link_testbed_poll_gate_t poll_gate;
 
     (void)stacd;
     (void)exinf;
-    ble_mesh_scheduler_start_rx(&link_scheduler, now_ms());
     link_testbed_poll_gate_init(&poll_gate);
     diagnostic_push_simple(LINK_TEST_DIAG_BOOT, now_ms(), 0u);
+    ble_mesh_scheduler_start_rx(&link_scheduler, now_ms());
+    start_rx_return = now_ms();
+    link_testbed_poll_gate_complete(&poll_gate, start_rx_return);
     while (1) {
         uint32_t poll_start;
         uint32_t poll_return;
+        uint32_t yield_delay;
         if (mesh_fault_latched == 0u) {
             /* The pre-poll gate is the only healthy-cycle work before poll.
              * It measures from the prior scheduler-operation return and faults
@@ -776,10 +780,17 @@ LOCAL void link_mesh_task(INT stacd, void *exinf)
             process_link_event(&link_event, now_ms());
         }
 
-        /* Logger priority is lower, so its UART byte polling is preempted when
-         * this bounded mesh wait expires. The next pre-poll gate remains the
-         * authority if kernel wakeup latency nevertheless exceeds the budget. */
-        (void)tk_dly_tsk(mesh_yield_delay_ms);
+        /* Spend only unconsumed service-gap slack on the lower-priority logger.
+         * Faulted cycles retain a bounded yield so terminal evidence drains. */
+        yield_delay = mesh_yield_delay_ms;
+        if (mesh_fault_latched == 0u && poll_gate.have_poll_return != 0u) {
+            yield_delay = link_testbed_mesh_remaining_yield_ms(
+                poll_gate.last_poll_return_ms, now_ms(),
+                tron_timer_config.scheduler_poll_max_ms);
+        }
+        if (yield_delay != 0u) {
+            (void)tk_dly_tsk(yield_delay);
+        }
     }
 }
 

@@ -333,6 +333,18 @@ static void test_poll_gate_wrap_and_no_extra_poll(void)
     CHECK(LINK_TESTBED_MESH_TASK_PRIORITY < LINK_TESTBED_LOGGER_TASK_PRIORITY);
     CHECK(link_testbed_mesh_yield_delay_ms(2u) == 1u);
     CHECK(link_testbed_mesh_yield_delay_ms(1u) == 0u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(100u, 100u, 2u) == 1u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(100u, 101u, 2u) == 0u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(100u, 102u, 2u) == 0u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(0xfffffffeu, 0xffffffffu,
+                                                3u) == 1u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(0xffffffffu, 0u, 3u) == 1u);
+    CHECK(link_testbed_mesh_remaining_yield_ms(100u, 100u, 1u) == 0u);
+    link_testbed_poll_gate_init(&gate);
+    link_testbed_poll_gate_complete(&gate, 100u);
+    CHECK(!link_testbed_poll_gate_begin(&gate, 103u, 2u));
+    CHECK(gate.fault_latched == 1u);
+    link_testbed_poll_gate_init(&gate);
     CHECK(link_testbed_poll_gate_begin(&gate, 0xfffffffcu, 2u));
     link_testbed_poll_gate_complete(&gate, 0xfffffffeu);
     CHECK(link_testbed_poll_gate_begin(&gate, 0u, 2u));

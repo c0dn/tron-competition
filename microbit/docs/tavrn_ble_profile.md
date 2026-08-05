@@ -239,7 +239,9 @@ Eligibility-to-TX_DONE bound is
 `timer.scheduler_poll_max_ms` is the maximum from completion of one bounded
 scheduler operation to the start of the next scheduler poll in the dedicated
 mesh loop; it is not `timer.loop_delay_ms`, which remains a generic firmware-loop
-setting and is not used in this service proof.
+setting and is not used in this service proof. The testbed's preemptible logger
+yield uses only the operation-return gap still unconsumed by healthy-cycle mesh
+work; it is skipped when that work has spent the voluntary-yield budget.
 HACK response-window sum is `3 * 250 = 750`; no-response wall bound is
 `response_window_sum + 3 * link_tx_scheduler_attempt_bound = 840`.
 `hack_turnaround_ms` is a validated link-config field set from the existing

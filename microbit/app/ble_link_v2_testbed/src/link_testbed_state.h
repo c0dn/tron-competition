@@ -99,12 +99,23 @@ static inline void link_testbed_ring_init(link_testbed_ring_state_t *state)
     }
 }
 
-/* The mesh task voluntarily waits for one millisecond less than the immutable
- * poll budget. Any kernel wakeup or logger delay that exceeds the remaining
- * slack is caught before another radio operation begins. */
+/* Reserve one millisecond of the immutable poll budget for kernel wakeup and
+ * loop overhead. This is the largest voluntary logger yield on an idle cycle. */
 static inline uint32_t link_testbed_mesh_yield_delay_ms(uint32_t poll_max_ms)
 {
     return poll_max_ms > 1u ? poll_max_ms - 1u : 0u;
+}
+
+/* Non-poll mesh work consumes the voluntary-yield budget first. The unsigned
+ * elapsed calculation is wrap-safe; an exhausted or over-budget cycle returns
+ * immediately to the pre-poll gate instead of adding a deterministic delay. */
+static inline uint32_t link_testbed_mesh_remaining_yield_ms(
+    uint32_t poll_return_ms, uint32_t work_complete_ms, uint32_t poll_max_ms)
+{
+    uint32_t yield_budget_ms = link_testbed_mesh_yield_delay_ms(poll_max_ms);
+    uint32_t elapsed_ms = (uint32_t)(work_complete_ms - poll_return_ms);
+
+    return elapsed_ms < yield_budget_ms ? yield_budget_ms - elapsed_ms : 0u;
 }
 
 static inline void link_testbed_poll_gate_init(link_testbed_poll_gate_t *gate)

@@ -439,7 +439,9 @@ their mutable queues. Its loop performs one bounded scheduler operation, handles
 the copied result, drains one due link/router transition, and begins the next
 poll within `timer.scheduler_poll_max_ms=2` after the bounded radio operation
 returns. It performs no blocking logging, display update, shell/serial output,
-patient processing, or application callback.
+patient processing, or application callback. The initial bounded RX-start return
+seeds the same pre-poll gate before the first loop iteration, so startup cannot
+receive a one-operation exemption from the service-gap contract.
 
 Other tasks communicate through one fixed eight-entry by-value command queue
 into the mesh task and the existing fixed eight-entry node/application event
@@ -454,7 +456,11 @@ operation fault similarly emits `RADIO_FAULT`. Link-v2 marks every custody slot
 non-eligible immediately and surfaces one typed owned terminal outcome per
 subsequent tick until all slots are returned; no queued/in-flight/READY item is
 left silently eligible. Recovery requires an explicit firmware restart in this
-PoC.
+PoC. On a healthy cycle the preemptible logger yield consumes only the portion
+of the poll-gap budget not already spent on copied-event handling, one due
+transition, application admission, and dispatch. If that work consumes the
+voluntary-yield budget, the mesh task proceeds directly to the next pre-poll
+gate. Faulted cycles retain the bounded yield so terminal evidence can drain.
 
 Static include/call checks forbid every mesh path from calling the unbounded
 compatibility names. The typed init, idle, listen/restore/hop, snapshot, and TX
