@@ -94,6 +94,7 @@ static tavrn_link_config_t link_config(const tavrn_direct_peer_t *local)
     config.hack_max_attempts = 3u;
     config.busy_max_responses = 3u;
     config.hack_response_ms = 250u;
+    config.hack_turnaround_ms = 8u;
     config.busy_backoff_ms = 500u;
     config.data_forward_deadline_ms = 5000u;
     config.candidate_resolve_ms = 10u;
@@ -102,6 +103,43 @@ static tavrn_link_config_t link_config(const tavrn_direct_peer_t *local)
     config.flood_jitter_min_ms = 20u;
     config.flood_jitter_max_ms = 120u;
     return config;
+}
+
+static tavrn_codec_config_t telemetry_codec_config(const tavrn_direct_peer_t *local)
+{
+    tavrn_codec_config_t config;
+
+    memset(&config, 0, sizeof(config));
+    config.network_id = 0x2au;
+    config.local_peer = *local;
+    return config;
+}
+
+static int make_telemetry_data_event(ble_mesh_sched_event_t *event,
+                                     const tavrn_codec_config_t *config,
+                                     const uint8_t outer_adva[6], uint8_t channel)
+{
+    tavrn_decoded_frame_t frame;
+    size_t length = 0u;
+
+    if (event == NULL || config == NULL) {
+        return 0;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.type = TAVRN_WIRE_DATA;
+    frame.network_id = config->network_id;
+    frame.detail.data.immediate_receiver = config->local_peer.logical_id;
+    frame.detail.data.data = diagnostic_data(0x7110u);
+    memset(event, 0, sizeof(*event));
+    event->type = BLE_MESH_SCHED_EVENT_RX_ADV;
+    event->channel = channel;
+    memcpy(event->adv_addr, outer_adva, sizeof(event->adv_addr));
+    if (tavrn_wire_v2_encode(config, &frame, event->adv_data,
+                             sizeof(event->adv_data), &length) != TAVRN_CODEC_OK) {
+        return 0;
+    }
+    event->adv_len = (uint8_t)length;
+    return 1;
 }
 
 static int make_candidate(tavrn_link_v2_t *link, ble_mesh_scheduler_t *scheduler,
@@ -306,12 +344,140 @@ static void test_poll_gate_wrap_and_no_extra_poll(void)
     CHECK(gate.last_poll_return_ms == 0u);
 }
 
+static void test_valid_wire_channel_telemetry(void)
+{
+    typedef struct rf_row_case {
+        tavrn_wire_type_t type;
+        link_testbed_rf_row_t row;
+    } rf_row_case_t;
+    static const rf_row_case_t rows[] = {
+        { TAVRN_WIRE_E_RREQ, LINK_TESTBED_RF_ROW_E_RREQ },
+        { TAVRN_WIRE_E_RREP, LINK_TESTBED_RF_ROW_E_RREP },
+        { TAVRN_WIRE_E_RERR, LINK_TESTBED_RF_ROW_E_RERR },
+        { TAVRN_WIRE_HELLO, LINK_TESTBED_RF_ROW_HELLO },
+        { TAVRN_WIRE_SYNC_OFFER, LINK_TESTBED_RF_ROW_SYNC_OFFER },
+        { TAVRN_WIRE_SYNC_PULL, LINK_TESTBED_RF_ROW_SYNC_PULL },
+        { TAVRN_WIRE_SYNC_DATA, LINK_TESTBED_RF_ROW_SYNC_DATA },
+        { TAVRN_WIRE_TC_UPDATE, LINK_TESTBED_RF_ROW_TC_UPDATE },
+        { TAVRN_WIRE_E_RREP_ACK, LINK_TESTBED_RF_ROW_E_RREP_ACK },
+        { TAVRN_WIRE_DATA, LINK_TESTBED_RF_ROW_DATA },
+        { TAVRN_WIRE_HACK, LINK_TESTBED_RF_ROW_HACK },
+        { TAVRN_WIRE_FLOOD, LINK_TESTBED_RF_ROW_FLOOD },
+    };
+    static const uint8_t channels[] = { 37u, 38u, 39u };
+    link_testbed_rf_telemetry_t telemetry;
+    tavrn_decoded_frame_t frame;
+    size_t type_index;
+    size_t channel_index;
+
+    link_testbed_rf_telemetry_init(&telemetry);
+    for (type_index = 0u; type_index < sizeof(rows) / sizeof(rows[0]); type_index++) {
+        for (channel_index = 0u; channel_index < sizeof(channels) / sizeof(channels[0]);
+             channel_index++) {
+            memset(&frame, 0, sizeof(frame));
+            frame.type = rows[type_index].type;
+            link_testbed_rf_telemetry_record(&telemetry, channels[channel_index],
+                                             TAVRN_CODEC_OK, &frame);
+        }
+    }
+    for (type_index = 0u; type_index < sizeof(rows) / sizeof(rows[0]); type_index++) {
+        CHECK(telemetry.valid_wire_channel[rows[type_index].row]
+                                          [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+        CHECK(telemetry.valid_wire_channel[rows[type_index].row]
+                                          [LINK_TESTBED_RF_CHANNEL_38] == 1u);
+        CHECK(telemetry.valid_wire_channel[rows[type_index].row]
+                                          [LINK_TESTBED_RF_CHANNEL_39] == 1u);
+    }
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_39] == 1u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK]
+                                      [LINK_TESTBED_RF_CHANNEL_39] == 1u);
+
+    link_testbed_rf_telemetry_init(&telemetry);
+    memset(&frame, 0, sizeof(frame));
+    frame.type = TAVRN_WIRE_DATA;
+    link_testbed_rf_telemetry_record(&telemetry, 37u, TAVRN_CODEC_MALFORMED_FIELD,
+                                     &frame);
+    link_testbed_rf_telemetry_record(&telemetry, 37u, TAVRN_CODEC_FOREIGN_NETWORK,
+                                     &frame);
+    link_testbed_rf_telemetry_record(&telemetry, 37u, TAVRN_CODEC_UNSUPPORTED_TYPE,
+                                     &frame);
+    link_testbed_rf_telemetry_record(&telemetry, 37u, TAVRN_CODEC_IDENTITY_CONFLICT,
+                                     &frame);
+    link_testbed_rf_telemetry_record(&telemetry, 36u, TAVRN_CODEC_OK, &frame);
+    link_testbed_rf_telemetry_record(&telemetry, 40u, TAVRN_CODEC_OK, &frame);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 0u);
+}
+
+static void test_encoded_rx_event_telemetry_classification(void)
+{
+    static const uint8_t local_sid_alias_adva[6] = {
+        0x18u, 0x42u, 0x0au, 0x06u, 0x03u, 0xf8u,
+    };
+    tavrn_direct_peer_t local = peer_from(local_adva);
+    tavrn_codec_config_t config = telemetry_codec_config(&local);
+    link_testbed_rf_telemetry_t telemetry;
+    ble_mesh_sched_event_t event;
+
+    link_testbed_rf_telemetry_init(&telemetry);
+    CHECK(make_telemetry_data_event(&event, &config, peer_adva, 37u));
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_39] == 0u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 0u);
+
+    event.adv_len = 1u;
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+
+    CHECK(make_telemetry_data_event(&event, &config, peer_adva, 37u));
+    event.adv_data[10] = 0x2bu;
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+
+    CHECK(make_telemetry_data_event(&event, &config, peer_adva, 37u));
+    event.adv_data[11] = 0x13u;
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+
+    CHECK(make_telemetry_data_event(&event, &config, local_sid_alias_adva, 37u));
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+
+    CHECK(make_telemetry_data_event(&event, &config, peer_adva, 37u));
+    event.type = BLE_MESH_SCHED_EVENT_TX_DONE;
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+
+    CHECK(make_telemetry_data_event(&event, &config, peer_adva, 36u));
+    link_testbed_rf_telemetry_record_rx_event(&telemetry, &config, &event);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_37] == 1u);
+    CHECK(telemetry.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA]
+                                      [LINK_TESTBED_RF_CHANNEL_39] == 0u);
+}
+
 int main(void)
 {
     test_delivery_reserve_commit_cancel_and_policy();
     test_exact_hack_suppression();
     test_resolve_failure_and_hack_enqueue_commit();
     test_poll_gate_wrap_and_no_extra_poll();
+    test_valid_wire_channel_telemetry();
+    test_encoded_rx_event_telemetry_classification();
     if (failures != 0u) {
         return 1;
     }

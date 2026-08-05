@@ -419,7 +419,8 @@ mask, completed mask, and fault; a success-only log may not erase partial/fault
 state.
 
 `TX_DONE` means at least one selected channel completed; it does not mean peer
-receipt. Link-v2 starts a HACK deadline from TX_DONE, never from queue admission.
+receipt. Link-v2 starts a HACK deadline from the post-poll observed TX_DONE
+time, never from queue admission or the pre-poll scheduler-selection time.
 AdvA is the six bytes copied from the received PDU; the identity contract owns
 its canonical display and suffix interpretation.
 
@@ -791,6 +792,7 @@ typedef struct tavrn_link_config {
     uint8_t hack_max_attempts;
     uint8_t busy_max_responses;
     uint32_t hack_response_ms;
+    uint32_t hack_turnaround_ms;
     uint32_t retry_backoff_ms;
     uint32_t busy_backoff_ms;
     uint32_t data_forward_deadline_ms;
@@ -1159,6 +1161,19 @@ Retries enter the shared queue at `BLE_MESH_TX_PRIORITY_RETRY`, above ordinary
 DATA/control and below HACK. Scheduler `TX_DONE`, not enqueue success, increments
 attempt count and starts the response deadline.
 
+Every receiver-side DATA HACK producer sets its scheduler item's
+`not_before_ms` to `now + config.hack_turnaround_ms`. For an RX event, `now` is
+the post-poll observed event/decision time passed into link-v2, rather than the
+pre-poll scheduler-selection time. The link-v2 testbed
+initializes `hack_turnaround_ms` directly from
+`tron_timer_config.radio_tx_event_bound_ms` (8 ms); host fixtures use the same
+value. It is a validated wrap-safe link-config duration, not a timer-registry
+field. The producer set includes ACCEPTED, committed DUPLICATE, explicit BUSY,
+REJECTED, additional-DATA BUSY, candidate-timeout BUSY, and all-pinned
+dedupe-capacity BUSY. This `DEV-023` correction extends the existing `DEV-006`
+custody adaptation without changing HACK priority, retry policy, dwell, channel
+order, power, the 250 ms response deadline, or the 750/840 ms bounds.
+
 `timer.link_response_window_sum_ms=750` is exactly the sum of three 250 ms
 response windows, not the total wall bound. With zero retry backoff and the
 30 ms custody service bound for each initial/retry attempt, the enforceable
@@ -1191,6 +1206,12 @@ Phase 1 uses this API in `ble_link_v2_testbed`; it does not provide a router and
 cannot be labelled `AODV_ONLY`. AODV control structs, action unions, route
 snapshots, and router hook typedefs are deliberately not part of this Phase 1
 header; the Phase 2 red-test API contract freezes them before AODV implementation.
+The testbed owns a separate fixed `12 x 3` valid-wire/channel aggregate state:
+one row for each wire-v2 type and columns for channels 37/38/39. It receives a
+successful post-decode frame plus RX channel and records no malformed,
+foreign-network, unsupported-type, identity-conflict, or invalid-channel input.
+It is testbed-only state, not a link/scheduler production counter or UART
+contract.
 
 ## 9. One AODV core and one route table
 
@@ -1457,6 +1478,10 @@ the required manifest keys and consumers:
 | `timer.metadata_cooldown_ms`, `timer.tc_uuid_ms`, `timer.tc_subject_ms` | metadata/topology maintenance |
 | `timer.repair_timeout_ms`, `timer.repair_cooldown_ms` | optional repair; timeout is `2 * aodv_path_discovery + 500` |
 | `timer.stats_ms`, `timer.loop_delay_ms` | firmware application loop/logging |
+
+`tavrn_link_config_t.hack_turnaround_ms` is initialized from the existing
+`timer.radio_tx_event_bound_ms`; it deliberately has no `timer.*` manifest key.
+The registry remains exactly 71 keys.
 
 Profile intent is fixed:
 

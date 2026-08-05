@@ -237,6 +237,75 @@ require_line 'timer.radio_tx_event_bound_ms=8' "$runtime_manifest"
 require_line 'timer.link_tx_scheduler_attempt_bound_ms=30' "$runtime_manifest"
 require_line 'timer.link_response_window_sum_ms=750' "$runtime_manifest"
 require_line 'formula.link_no_response_wall_bound_ms=timer.link_response_window_sum_ms+timer.link_max_attempts*timer.link_tx_scheduler_attempt_bound_ms' "$runtime_manifest"
+link_testbed_main="$MICROBIT_ROOT/app/ble_link_v2_testbed/src/main.c"
+if ! grep -Fqx '    config.hack_turnaround_ms = tron_timer_config.radio_tx_event_bound_ms;' \
+    "$link_testbed_main" ||
+   grep -Fq 'timer.hack_turnaround' "$runtime_manifest"; then
+    printf '%s\n' 'link HACK turnaround must source the existing radio bound without a timer key' >&2
+    exit 1
+fi
+if [[ "$(grep -Fxc '    record_valid_rf_rx(event);' "$link_testbed_main")" -ne 1 ]] ||
+   ! awk '
+       /^static void handle_scheduler_event\(/ { in_handler = 1 }
+       /^static void maybe_submit_diagnostic_data\(/ { in_handler = 0 }
+       in_handler && /^    if \(event == NULL\) \{/ { saw_null_guard = 1 }
+       in_handler && saw_null_guard && /^    \}/ { null_guard_complete = 1 }
+       in_handler && /^    record_valid_rf_rx\(event\);$/ {
+           record_line = NR
+           record_after_null_guard = null_guard_complete
+       }
+       in_handler && /event->type == BLE_MESH_SCHED_EVENT_RADIO_FAULT/ {
+           fault_line = NR
+       }
+       in_handler && /TRON_BUILD_RX_BLOCK_ADVA_ENABLED/ { rx_block_line = NR }
+       in_handler && /^    capture_duplicate_hack\(event, &capture\);$/ {
+           hack_drop_line = NR
+       }
+       END {
+           exit !(record_line && record_after_null_guard &&
+                  record_line < fault_line && record_line < rx_block_line &&
+                  record_line < hack_drop_line)
+       }
+   ' "$link_testbed_main"; then
+    printf '%s\n' 'link testbed RF telemetry must record once at the RX boundary before hooks' >&2
+    exit 1
+fi
+if ! grep -Fqx '    link_testbed_rf_telemetry_record_rx_event(&rf_telemetry, &config, event);' \
+    "$link_testbed_main"; then
+    printf '%s\n' 'link testbed RX boundary must use the pure telemetry classifier' >&2
+    exit 1
+fi
+if ! awk '
+        /^LOCAL void link_mesh_task\(/ { in_task = 1 }
+        /^LOCAL void link_logger_task\(/ { in_task = 0 }
+        in_task && /^        uint32_t poll_return;$/ { declaration_line = NR }
+        in_task && /^                \(void\)ble_mesh_scheduler_poll\(/ {
+            poll_line = NR
+        }
+        in_task && /^                poll_return = now_ms\(\);$/ {
+            return_line = NR
+        }
+        in_task && /^                link_testbed_poll_gate_complete\(&poll_gate, poll_return\);$/ {
+            gate_line = NR
+        }
+        in_task && /^                    handle_scheduler_event\(&scheduler_event, poll_return\);$/ {
+            event_line = NR
+        }
+        END {
+            exit !(declaration_line && poll_line && return_line && gate_line &&
+                   event_line && poll_line < return_line &&
+                   return_line < gate_line && gate_line < event_line)
+        }
+    ' "$link_testbed_main" ||
+   grep -Fq 'handle_scheduler_event(&scheduler_event, poll_start)' "$link_testbed_main"; then
+    printf '%s\n' 'link testbed must dispatch poll events using the post-poll timestamp' >&2
+    exit 1
+fi
+if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
+    "$WORK_DIR/runtime-link/compile_commands.json"; then
+    printf '%s\n' 'firmware compile commands must not contain the host-only immediate HACK macro' >&2
+    exit 1
+fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 71 ]] ||
    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 29 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2

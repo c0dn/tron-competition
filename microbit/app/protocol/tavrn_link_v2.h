@@ -137,6 +137,7 @@ typedef struct tavrn_link_config {
     uint8_t hack_max_attempts;
     uint8_t busy_max_responses;
     uint32_t hack_response_ms;
+    uint32_t hack_turnaround_ms;
     uint32_t retry_backoff_ms;
     uint32_t busy_backoff_ms;
     uint32_t data_forward_deadline_ms;

@@ -74,6 +74,8 @@ typedef struct link_test_summary_snapshot {
     link_test_counters_t counters;
     link_test_hook_counters_t hooks;
     tavrn_link_counters_t link;
+    link_testbed_rf_telemetry_t rf;
+    ble_mesh_sched_counters_t scheduler;
     uint8_t final_queue_count;
     uint8_t final_provisional;
     uint8_t diagnostic_queue_count;
@@ -99,6 +101,7 @@ static link_test_diag_t diagnostics[LINK_TESTBED_DIAGNOSTIC_CAPACITY];
 static link_testbed_ring_state_t diagnostic_state;
 static link_test_hook_counters_t hook_counters;
 static link_test_counters_t test_counters;
+static link_testbed_rf_telemetry_t rf_telemetry;
 static uint32_t forced_busy_remaining = TRON_BUILD_BUSY_ADMISSION_COUNT;
 static uint32_t suppressed_hacks_remaining = TRON_BUILD_HACK_DROP_COUNT;
 static uint16_t next_data_seq = 1u;
@@ -259,6 +262,7 @@ static int final_delivery_pop(link_test_final_delivery_t *out)
 static void snapshot_summary(link_test_summary_snapshot_t *snapshot)
 {
     const tavrn_link_counters_t *link_counters;
+    const ble_mesh_sched_counters_t *scheduler_counters;
 
     if (snapshot == NULL) {
         return;
@@ -273,6 +277,11 @@ static void snapshot_summary(link_test_summary_snapshot_t *snapshot)
     snapshot->final_provisional = final_delivery_state.provisional;
     snapshot->diagnostic_queue_count = diagnostic_state.count;
     snapshot->fault_latched = mesh_fault_latched;
+    snapshot->rf = rf_telemetry;
+    scheduler_counters = ble_mesh_scheduler_counters(&link_scheduler);
+    if (scheduler_counters != NULL) {
+        snapshot->scheduler = *scheduler_counters;
+    }
     link_counters = tavrn_link_v2_counters(&link_instance);
     if (link_counters != NULL) {
         snapshot->link = *link_counters;
@@ -408,6 +417,60 @@ static void log_summary(uint32_t now, const UB *phase)
               (UINT)snapshot.final_provisional,
               (UINT)snapshot.fault_latched,
               (UW)snapshot.link.hack_enqueue_failed);
+    tm_printf((UB *)"linkv2 rf phase=%s now=%lu channels=37,38,39 e_rreq=%lu/%lu/%lu e_rrep=%lu/%lu/%lu e_rerr=%lu/%lu/%lu hello=%lu/%lu/%lu sync_offer=%lu/%lu/%lu sync_pull=%lu/%lu/%lu sync_data=%lu/%lu/%lu tc_update=%lu/%lu/%lu e_rrep_ack=%lu/%lu/%lu data=%lu/%lu/%lu hack=%lu/%lu/%lu flood=%lu/%lu/%lu rx_ok=%lu tx_ok=%lu rx_crc_or_empty=%lu queue_drop=%lu relay_drop=%lu relay_rate_limited=%lu tx_len_drop=%lu\n",
+              (UB *)phase, (UW)now,
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREQ][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREQ][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREQ][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RERR][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RERR][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RERR][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HELLO][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HELLO][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HELLO][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_OFFER][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_OFFER][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_OFFER][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_PULL][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_PULL][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_PULL][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_DATA][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_DATA][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_SYNC_DATA][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_TC_UPDATE][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_TC_UPDATE][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_TC_UPDATE][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP_ACK][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP_ACK][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_E_RREP_ACK][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_DATA][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_HACK][LINK_TESTBED_RF_CHANNEL_39],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_FLOOD][LINK_TESTBED_RF_CHANNEL_37],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_FLOOD][LINK_TESTBED_RF_CHANNEL_38],
+               (UW)snapshot.rf.valid_wire_channel[LINK_TESTBED_RF_ROW_FLOOD][LINK_TESTBED_RF_CHANNEL_39],
+              (UW)snapshot.scheduler.rx_ok, (UW)snapshot.scheduler.tx_ok,
+              (UW)snapshot.scheduler.rx_crc_or_empty,
+              (UW)snapshot.scheduler.queue_drop,
+              (UW)snapshot.scheduler.relay_drop,
+              (UW)snapshot.scheduler.relay_rate_limited,
+              (UW)snapshot.scheduler.tx_len_drop);
+}
+
+static void record_valid_rf_rx(const ble_mesh_sched_event_t *event)
+{
+    tavrn_codec_config_t config;
+
+    memset(&config, 0, sizeof(config));
+    config.network_id = TRON_BUILD_NETWORK_ID;
+    config.local_peer = local_peer;
+    link_testbed_rf_telemetry_record_rx_event(&rf_telemetry, &config, event);
 }
 
 static void process_link_event(const tavrn_link_event_t *event, uint32_t now)
@@ -592,6 +655,7 @@ static void handle_scheduler_event(const ble_mesh_sched_event_t *event, uint32_t
     if (event == NULL) {
         return;
     }
+    record_valid_rf_rx(event);
     if (event->type == BLE_MESH_SCHED_EVENT_RADIO_FAULT) {
         record_scheduler_fault(event, now);
         mesh_fault_latched = 1u;
@@ -679,6 +743,7 @@ LOCAL void link_mesh_task(INT stacd, void *exinf)
     diagnostic_push_simple(LINK_TEST_DIAG_BOOT, now_ms(), 0u);
     while (1) {
         uint32_t poll_start;
+        uint32_t poll_return;
         if (mesh_fault_latched == 0u) {
             /* The pre-poll gate is the only healthy-cycle work before poll.
              * It measures from the prior scheduler-operation return and faults
@@ -691,9 +756,10 @@ LOCAL void link_mesh_task(INT stacd, void *exinf)
                 memset(&scheduler_event, 0, sizeof(scheduler_event));
                 (void)ble_mesh_scheduler_poll(&link_scheduler, poll_start,
                                                &scheduler_event);
-                link_testbed_poll_gate_complete(&poll_gate, now_ms());
+                poll_return = now_ms();
+                link_testbed_poll_gate_complete(&poll_gate, poll_return);
                 if (scheduler_event.type != BLE_MESH_SCHED_EVENT_NONE) {
-                    handle_scheduler_event(&scheduler_event, poll_start);
+                    handle_scheduler_event(&scheduler_event, poll_return);
                 }
             }
         }
@@ -774,6 +840,7 @@ EXPORT INT usermain(void)
 
     link_testbed_delivery_init(&final_delivery_state);
     link_testbed_ring_init(&diagnostic_state);
+    link_testbed_rf_telemetry_init(&rf_telemetry);
     if (!tron_timer_config_is_valid(&tron_timer_config) ||
         (mesh_yield_delay_ms = link_testbed_mesh_yield_delay_ms(
              tron_timer_config.scheduler_poll_max_ms)) == 0u ||
@@ -813,6 +880,7 @@ EXPORT INT usermain(void)
     config.hack_max_attempts = (uint8_t)tron_timer_config.link_max_attempts;
     config.busy_max_responses = (uint8_t)tron_timer_config.link_busy_max_responses;
     config.hack_response_ms = tron_timer_config.link_hack_timeout_ms;
+    config.hack_turnaround_ms = tron_timer_config.radio_tx_event_bound_ms;
     config.retry_backoff_ms = tron_timer_config.link_retry_backoff_ms;
     config.busy_backoff_ms = tron_timer_config.link_busy_backoff_ms;
     config.data_forward_deadline_ms = tron_timer_config.link_data_deadline_ms;

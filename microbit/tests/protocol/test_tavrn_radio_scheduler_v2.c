@@ -241,11 +241,61 @@ static void test_queue_capacity_eviction_and_link_service_order(void)
                         selection.item.token == custody.token);
 }
 
+static void test_hack_turnaround_due_selection(void)
+{
+    ble_mesh_tx_queue_t queue;
+    ble_mesh_tx_selection_t selection;
+    ble_mesh_tx_item_t hack = make_item(BLE_MESH_TX_PRIORITY_HACK,
+                                         BLE_MESH_TX_SERVICE_BEST_EFFORT,
+                                         BLE_MESH_TX_TOKEN_NONE, 8u, 0xa1u);
+    ble_mesh_tx_item_t data = make_item(BLE_MESH_TX_PRIORITY_DATA,
+                                         BLE_MESH_TX_SERVICE_BEST_EFFORT,
+                                         BLE_MESH_TX_TOKEN_NONE, 0u, 0xa2u);
+
+    ble_mesh_tx_queue_init(&queue);
+    CHECK("LINK-02", ble_mesh_tx_queue_enqueue(&queue, &hack).status ==
+                       BLE_MESH_TX_ENQUEUE_OK);
+    CHECK("LINK-02", ble_mesh_tx_queue_select_due(&queue, 7u,
+                                                     BLE_MESH_TX_TOKEN_NONE,
+                                                     &selection) ==
+                       BLE_MESH_TX_SELECT_NONE);
+    CHECK("LINK-02", ble_mesh_tx_queue_select_due(&queue, 8u,
+                                                     BLE_MESH_TX_TOKEN_NONE,
+                                                     &selection) ==
+                       BLE_MESH_TX_SELECT_OK &&
+                       selection.item.priority == BLE_MESH_TX_PRIORITY_HACK);
+
+    ble_mesh_tx_queue_init(&queue);
+    CHECK("LINK-02", ble_mesh_tx_queue_enqueue(&queue, &hack).status ==
+                       BLE_MESH_TX_ENQUEUE_OK);
+    CHECK("LINK-02", ble_mesh_tx_queue_enqueue(&queue, &data).status ==
+                       BLE_MESH_TX_ENQUEUE_OK);
+    CHECK("LINK-02", ble_mesh_tx_queue_select_due(&queue, 0u,
+                                                     BLE_MESH_TX_TOKEN_NONE,
+                                                     &selection) ==
+                       BLE_MESH_TX_SELECT_OK && selection.item.adv_data[0] == 0xa2u);
+
+    ble_mesh_tx_queue_init(&queue);
+    hack.not_before_ms = 4u;
+    CHECK("LINK-02", ble_mesh_tx_queue_enqueue(&queue, &hack).status ==
+                       BLE_MESH_TX_ENQUEUE_OK);
+    CHECK("LINK-02", ble_mesh_tx_queue_select_due(&queue, 3u,
+                                                     BLE_MESH_TX_TOKEN_NONE,
+                                                     &selection) ==
+                       BLE_MESH_TX_SELECT_NONE);
+    CHECK("LINK-02", ble_mesh_tx_queue_select_due(&queue, 4u,
+                                                     BLE_MESH_TX_TOKEN_NONE,
+                                                     &selection) ==
+                       BLE_MESH_TX_SELECT_OK &&
+                       selection.item.priority == BLE_MESH_TX_PRIORITY_HACK);
+}
+
 int main(void)
 {
     test_typed_radio_precise_channel_faults();
     test_scheduler_fault_latch_and_fresh_rx_admission();
     test_queue_capacity_eviction_and_link_service_order();
+    test_hack_turnaround_due_selection();
     if (failures != 0u) {
         printf("tavrn_radio_scheduler_v2 RED tests failed: %u assertion(s)\n", failures);
         return 1;

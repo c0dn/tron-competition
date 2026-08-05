@@ -1,4 +1,5 @@
 #include "tavrn_link_v2.h"
+#include "tron_timer_config.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -105,6 +106,7 @@ static tavrn_link_config_t make_config(void)
     config.hack_max_attempts = 3u;
     config.busy_max_responses = 3u;
     config.hack_response_ms = 250u;
+    config.hack_turnaround_ms = 8u;
     config.retry_backoff_ms = 0u;
     config.busy_backoff_ms = 500u;
     config.data_forward_deadline_ms = 5000u;
@@ -1170,6 +1172,172 @@ static void test_link_02_dedupe_replacement(void)
                        link.flood_dedupe[0].sequence == 0x0102u);
 }
 
+static void test_link_02_hack_turnaround_config_bounds(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    tavrn_link_config_t config = make_config();
+
+    memset(&scheduler, 0, sizeof(scheduler));
+    ble_mesh_scheduler_init(&scheduler, 0u, adva_a);
+    config.hack_turnaround_ms = 0u;
+    CHECK("LINK-02", tavrn_link_v2_init(&link, &scheduler, &config, 0u) ==
+                       TAVRN_LINK_INIT_INVALID_CONFIG);
+
+    config = make_config();
+    config.hack_turnaround_ms = 0x80000000u;
+    CHECK("LINK-02", tavrn_link_v2_init(&link, &scheduler, &config, 0u) ==
+                       TAVRN_LINK_INIT_INVALID_CONFIG);
+
+    config = make_config();
+    config.hack_turnaround_ms = UINT32_MAX;
+    CHECK("LINK-02", tavrn_link_v2_init(&link, &scheduler, &config, 0u) ==
+                       TAVRN_LINK_INIT_INVALID_CONFIG);
+}
+
+static void check_queued_hack_due(const ble_mesh_scheduler_t *scheduler,
+                                  tavrn_hack_status_t status,
+                                  uint32_t expected_not_before_ms)
+{
+    const ble_mesh_tx_item_t *item = queued_hack_item(scheduler, (uint8_t)status);
+
+    CHECK("LINK-02", item != NULL && item->not_before_ms == expected_not_before_ms);
+}
+
+static void test_link_02_hack_turnaround_enqueue_paths(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    ble_mesh_sched_event_t event;
+    tavrn_link_event_t output;
+    tavrn_rx_candidate_token_t token;
+    uint8_t directed[sizeof(data16)];
+    uint8_t alternate[sizeof(data16)];
+    const uint32_t turnaround_ms = 8u;
+
+    memcpy(directed, data16, sizeof(directed));
+    directed[14] = adva_a[0];
+    directed[15] = adva_a[1];
+
+    if (!setup_link(&link, &scheduler, 100u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 100u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_EVENT);
+    token = output.detail.candidate.token;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
+                                                 100u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED, 100u + turnaround_ms);
+
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 101u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_NO_EVENT);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_DUPLICATE, 101u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, 200u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, 200u, &output);
+    token = output.detail.candidate.token;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_BUSY,
+                                                 200u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 200u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, 300u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, 300u, &output);
+    token = output.detail.candidate.token;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_REJECTED,
+                                                 300u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_REJECTED, 300u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, 400u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, 400u, &output);
+    memcpy(alternate, directed, sizeof(alternate));
+    alternate[20] ^= 0x01u;
+    make_rx_event(&event, alternate, (uint8_t)sizeof(alternate), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 401u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_ADDITIONAL_DATA_BUSY);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 401u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, 500u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, 500u, &output);
+    CHECK("LINK-02", tavrn_link_v2_tick(&link, 510u, &output) ==
+                       TAVRN_LINK_STEP_CANDIDATE_TIMEOUT_BUSY);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 510u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, 600u)) {
+        return;
+    }
+    seed_full_data_dedupe(&link, 600u, 1u);
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 600u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_NO_EVENT);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 600u + turnaround_ms);
+
+    if (!setup_link(&link, &scheduler, UINT32_MAX - 3u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, UINT32_MAX - 3u, &output);
+    token = output.detail.candidate.token;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
+                                                 UINT32_MAX - 3u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED, 4u);
+}
+
+static void test_link_04_tx_done_response_deadline(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    ble_mesh_sched_event_t event;
+    tavrn_link_event_t output;
+
+    CHECK("LINK-04", tron_timer_config.radio_tx_event_bound_ms == 8u &&
+                       tron_timer_config.link_hack_timeout_ms == 250u &&
+                       tron_timer_config.link_response_window_sum_ms == 750u &&
+                       tron_timer_config.link_no_response_wall_bound_ms == 840u);
+    if (!setup_link(&link, &scheduler, 100u)) {
+        return;
+    }
+    seed_active_queued(&link, 0x7100u, 100u);
+    make_tx_event(&event, BLE_MESH_SCHED_EVENT_TX_DONE, active_token(&link),
+                  BLE_RADIO_ADV_CH_ALL);
+    CHECK("LINK-04", tavrn_link_v2_on_scheduler_event(&link, &event, 100u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_NO_EVENT);
+    CHECK("LINK-04", link.custody[0].response_deadline_ms == 350u);
+
+    if (!setup_link(&link, &scheduler, 0xfffffff0u)) {
+        return;
+    }
+    seed_active_queued(&link, 0x7101u, 0xfffffff0u);
+    make_tx_event(&event, BLE_MESH_SCHED_EVENT_TX_DONE, active_token(&link),
+                  BLE_RADIO_ADV_CH_ALL);
+    CHECK("LINK-04", tavrn_link_v2_on_scheduler_event(&link, &event, 0xfffffff0u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_NO_EVENT);
+    CHECK("LINK-04", link.custody[0].response_deadline_ms == 0x000000eau);
+}
+
 int main(void)
 {
     test_bearer_04_outer_adva_before_mutation();
@@ -1181,6 +1349,9 @@ int main(void)
     test_link_05_rrep_ack_never_cross_satisfies_data();
     test_link_06_directed_data_and_controlled_flood();
     test_link_02_dedupe_replacement();
+    test_link_02_hack_turnaround_config_bounds();
+    test_link_02_hack_turnaround_enqueue_paths();
+    test_link_04_tx_done_response_deadline();
     if (failures != 0u) {
         printf("tavrn_link_v2 RED tests failed: %u assertion(s)\n", failures);
         return 1;

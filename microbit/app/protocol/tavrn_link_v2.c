@@ -2,6 +2,11 @@
 
 #include <string.h>
 
+#if defined(TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK) && \
+    !defined(BLE_RADIO_HOST_TEST)
+#error "immediate-HACK RED mode is host-test-only"
+#endif
+
 #define TAVRN_LINK_HALF_RANGE 0x80000000u
 #define TAVRN_LINK_PROFILE_MAX_ATTEMPTS 3u
 #define TAVRN_LINK_PROFILE_BUSY_RESPONSES 3u
@@ -514,7 +519,12 @@ static int enqueue_hack(tavrn_link_v2_t *link,
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_HACK;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+#if defined(TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK)
+    /* Host-only turnaround RED mode: restore the superseded immediate due time. */
     item.not_before_ms = now_ms;
+#else
+    item.not_before_ms = now_ms + link->config.hack_turnaround_ms;
+#endif
     item.token = BLE_MESH_TX_TOKEN_NONE;
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
@@ -688,10 +698,12 @@ tavrn_link_init_status_t tavrn_link_v2_init(
     if (config->network_id == 0u || config->network_id == 0xffu ||
         config->hack_max_attempts != TAVRN_LINK_PROFILE_MAX_ATTEMPTS ||
         config->busy_max_responses != TAVRN_LINK_PROFILE_BUSY_RESPONSES ||
-        config->hack_response_ms == 0u || config->data_forward_deadline_ms == 0u ||
+        config->hack_response_ms == 0u || config->hack_turnaround_ms == 0u ||
+        config->data_forward_deadline_ms == 0u ||
         config->candidate_resolve_ms == 0u || config->data_dedupe_ms == 0u ||
         config->flood_dedupe_ms == 0u ||
         !time_value_valid(config->hack_response_ms) ||
+        !time_value_valid(config->hack_turnaround_ms) ||
         !time_value_valid(config->retry_backoff_ms) ||
         !time_value_valid(config->busy_backoff_ms) ||
         !time_value_valid(config->data_forward_deadline_ms) ||

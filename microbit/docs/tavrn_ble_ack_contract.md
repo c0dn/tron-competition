@@ -31,6 +31,20 @@ One multi-channel advertisement TX event over selected primary channels
 when the scheduler reports TX_DONE with a nonzero intersection of selected and
 completed channel masks.
 
+### HACK turnaround correction (`DEV-023`, extending `DEV-006`)
+
+Every generated DATA HACK is scheduler-ineligible until
+`now + config.hack_turnaround_ms`, where `now` is the receiver-side time of the
+ACCEPTED, DUPLICATE, explicit BUSY, REJECTED, additional-DATA BUSY,
+candidate-timeout BUSY, or dedupe-capacity BUSY decision. For a scheduler RX
+event, that decision time is the observed event time captured immediately after
+the synchronous scheduler poll returns, not the pre-poll scheduler-selection
+time. The generated config sources this field directly from the existing
+`timer.radio_tx_event_bound_ms=8`; it is not a 72nd timer key. This lets a
+sender finish the bounded synchronous 37→38→39 TX event and restore RX before a
+receiver's HACK can be selected. The delay applies with normal wrap-safe
+deadline arithmetic and does not change HACK priority once due.
+
 ## 2. Exact HACK correlation
 
 The pending sender key is:
@@ -170,6 +184,8 @@ selected-next-hop deadline    = timer.link_data_deadline_ms
 
 BALANCED examples are three attempts, 250 ms response, zero retry backoff,
 500 ms BUSY backoff, three BUSY responses, and a 5000 ms transaction deadline.
+`hack_turnaround_ms=8` is a link-config field sourced from the existing radio
+TX-event bound, not a separately manifested timer.
 
 The canonical hardware/manifest keys and values are exactly:
 
@@ -203,8 +219,11 @@ simultaneous attempt-wall guarantees.
 1. Encoding failure, scheduler rejection, or expiry before a required actual
    transmission terminates with `LOCAL_TX_NOT_ATTEMPTED`; that unperformed TX
    does not increment attempt count and the link remains valid.
-2. On actual TX completion, increment attempt count and arm
-   `timer.link_hack_timeout_ms` (BALANCED 250 ms).
+2. On observed actual TX_DONE, increment attempt count and set
+   `response_deadline_ms = observed_TX_DONE_time + timer.link_hack_timeout_ms`
+   (BALANCED 250 ms). The observed TX_DONE time is captured immediately after
+   the synchronous scheduler poll returns, not the pre-poll scheduler-selection
+   time.
 3. Matching ACCEPTED or DUPLICATE completes custody.
 4. Matching BUSY cancels the response deadline, clears the radio-loss attempt
    episode, and schedules the same DATA no earlier than
@@ -434,6 +453,11 @@ At minimum, later red/green tests must prove:
 23. public candidate/custody/failure storage handles ten-byte DATA8 while
     patient validation remains exactly seven bytes; and
 24. timer comparisons remain correct across 32-bit millisecond wrap.
+25. every DATA HACK producer queues its HACK at exactly `now + 8`, including
+    due-1/due selection and `UINT32_MAX` wrap; a future high-priority HACK does
+    not block due lower-priority work;
+26. TX_DONE sets `response_deadline_ms` exactly 250 ms later, including wrap,
+    while the 250/750/840 values and formulas remain unchanged.
 
 The ACCEPTED golden vector for the wire document's patient DATA is:
 
