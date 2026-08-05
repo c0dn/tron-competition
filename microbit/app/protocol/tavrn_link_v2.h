@@ -255,6 +255,14 @@ tavrn_link_send_status_t tavrn_link_v2_send_unicast(
 tavrn_link_send_status_t tavrn_link_v2_send_flood(
     tavrn_link_v2_t *link, const tavrn_codec_flood_t *flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome);
+/* Sends one validated AODV control frame as best-effort scheduler work.  RREQ
+ * and RERR are controlled floods and take no next hop; RREP and RREP_ACK are
+ * direct and must name the PDU's immediate receiver.  This never allocates
+ * DATA custody or a nonzero scheduler token. */
+tavrn_link_send_status_t tavrn_link_v2_send_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, tavrn_link_event_t *local_outcome);
 tavrn_link_resolve_status_t tavrn_link_v2_resolve_rx(
     tavrn_link_v2_t *link, tavrn_rx_candidate_token_t token,
     tavrn_rx_decision_t decision, uint32_t now_ms,

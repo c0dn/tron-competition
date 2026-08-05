@@ -873,8 +873,407 @@ static void test_deterministic_three_node_chain(void)
     data_input.transmitter = peer_b;
     data_input.data = action.detail.data.data;
     CHECK("AODV-05", aodv_core_ingest_data(&node_c, &data_input, 8u) == AODV_STATUS_OK &&
-                       aodv_core_poll_action(&node_c, &action) == AODV_ACTION_POLL_OK &&
-                       action.type == AODV_ACTION_DELIVER_DATA);
+                        aodv_core_poll_action(&node_c, &action) == AODV_ACTION_POLL_OK &&
+                        action.type == AODV_ACTION_DELIVER_DATA);
+}
+
+static void drain_actions(aodv_core_t *core)
+{
+    aodv_action_t action;
+
+    while (aodv_core_poll_action(core, &action) == AODV_ACTION_POLL_OK) {
+    }
+}
+
+static void fill_action_queue_with_discoveries(aodv_core_t *core, uint16_t first,
+                                                uint32_t now_ms)
+{
+    tron_application_data_t application;
+    uint8_t i;
+
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY; i++) {
+        tavrn_logical_id_t destination;
+
+        destination.width = TAVRN_IDENTITY_SID16;
+        destination.value = (uint16_t)(first + i);
+        application = make_application(destination);
+        CHECK("AODV-05", aodv_core_submit_application(core, &application, now_ms) ==
+                            AODV_STATUS_QUEUED);
+    }
+}
+
+static void test_blocker_route_freshness_after_invalidation(void)
+{
+    aodv_core_t core;
+    tavrn_codec_config_t codec = make_codec_config(adva_b);
+    tavrn_validated_control_t request;
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tavrn_logical_id_t destination = make_peer(adva_c).logical_id;
+    aodv_action_t action;
+    aodv_control_input_t input;
+    aodv_route_snapshot_t route;
+    uint16_t invalid_sequence = (uint16_t)(0x0100u + destination.value + 1u);
+
+    if (!init_core(&core, adva_b, 1u) ||
+        !decode_control("AODV-03", &codec, adva_a, rreq16, sizeof(rreq16),
+                        TAVRN_WIRE_E_RREQ, &request) ||
+        !decode_control("AODV-03", &codec, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template) ||
+        !install_route_through_next_hop("AODV-03", &core, &peer_b, &peer_c, &peer_a,
+                                        destination, &reply_template, 0u)) {
+        return;
+    }
+    CHECK("AODV-03", aodv_core_report_link_failure(&core, &peer_c, NULL,
+                                                     AODV_LINK_FAILURE_IMMEDIATE_RERR,
+                                                     10u) == AODV_FAILURE_OK);
+    drain_actions(&core);
+    if (!record_reverse_request("AODV-03", &core, &peer_a, &request, 0x2001u, 11u,
+                                &action)) {
+        return;
+    }
+    make_matching_rrep(&reply, &reply_template, &peer_b, destination,
+                       (uint16_t)(invalid_sequence - 0x8000u), &action);
+    input = make_control_input(&peer_c, &reply);
+    CHECK("AODV-03", aodv_core_ingest_control(&core, &input, 11u) == AODV_STATUS_OK);
+    drain_actions(&core);
+    CHECK("AODV-03", aodv_core_route_snapshot(&core, &destination, &route) ==
+                        AODV_ROUTE_QUERY_FOUND && route.state == AODV_ROUTE_INVALID &&
+                        route.destination_sequence == invalid_sequence);
+
+    if (!record_reverse_request("AODV-03", &core, &peer_a, &request, 0x2002u, 12u,
+                                &action)) {
+        return;
+    }
+    make_matching_rrep(&reply, &reply_template, &peer_b, destination, invalid_sequence,
+                       &action);
+    input.control = reply;
+    CHECK("AODV-03", aodv_core_ingest_control(&core, &input, 12u) == AODV_STATUS_OK);
+    drain_actions(&core);
+    CHECK("AODV-03", aodv_core_route_snapshot(&core, &destination, &route) ==
+                        AODV_ROUTE_QUERY_FOUND && route.state == AODV_ROUTE_VALID &&
+                        route.destination_sequence == invalid_sequence);
+}
+
+static void test_blocker_control_backpressure_retries(void)
+{
+    aodv_core_t rreq_core;
+    aodv_core_t rrep_core;
+    aodv_core_t rerr_core;
+    tavrn_codec_config_t codec_a = make_codec_config(adva_a);
+    tavrn_codec_config_t codec_b = make_codec_config(adva_b);
+    tavrn_validated_control_t request;
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_validated_control_t error;
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tron_application_data_t application = make_application(peer_c.logical_id);
+    aodv_control_input_t input;
+    aodv_action_t action;
+    uint8_t i;
+
+    if (!decode_control("AODV-02", &codec_b, adva_a, rreq16, sizeof(rreq16),
+                        TAVRN_WIRE_E_RREQ, &request) ||
+        !decode_control("AODV-03", &codec_a, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template) ||
+        !decode_control("AODV-06", &codec_a, adva_b, rerr16, sizeof(rerr16),
+                        TAVRN_WIRE_E_RERR, &error)) {
+        return;
+    }
+
+    if (!init_core(&rreq_core, adva_b, 1u)) {
+        return;
+    }
+    fill_action_queue_with_discoveries(&rreq_core, 0x4000u, 0u);
+    input = make_control_input(&peer_a, &request);
+    CHECK("AODV-02", aodv_core_ingest_control(&rreq_core, &input, 1u) ==
+                        AODV_STATUS_BUSY);
+    drain_actions(&rreq_core);
+    CHECK("AODV-02", aodv_core_ingest_control(&rreq_core, &input, 2u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-02", &rreq_core, AODV_ACTION_SEND_RREQ,
+                                     &action));
+
+    if (!init_core(&rrep_core, adva_a, 1u) ||
+        aodv_core_submit_application(&rrep_core, &application, 0u) !=
+            AODV_STATUS_QUEUED ||
+        !poll_control("AODV-04", &rrep_core, AODV_ACTION_SEND_RREQ, &action)) {
+        return;
+    }
+    make_matching_rrep(&reply, &reply_template, &peer_a, peer_c.logical_id, 0x0203u,
+                       &action);
+    CHECK("AODV-04", aodv_core_tick(&rrep_core, 600u) == AODV_STATUS_OK);
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY - 1u; i++) {
+        tavrn_logical_id_t destination;
+
+        destination.width = TAVRN_IDENTITY_SID16;
+        destination.value = (uint16_t)(0x5000u + i);
+        application = make_application(destination);
+        CHECK("AODV-05", aodv_core_submit_application(&rrep_core, &application, 600u) ==
+                            AODV_STATUS_QUEUED);
+    }
+    input = make_control_input(&peer_c, &reply);
+    CHECK("AODV-03", aodv_core_ingest_control(&rrep_core, &input, 600u) ==
+                        AODV_STATUS_OK);
+    drain_actions(&rrep_core);
+
+    if (!init_core(&rerr_core, adva_a, 1u)) {
+        return;
+    }
+    fill_action_queue_with_discoveries(&rerr_core, 0x6000u, 0u);
+    input = make_control_input(&peer_b, &error);
+    CHECK("AODV-06", aodv_core_ingest_control(&rerr_core, &input, 1u) ==
+                        AODV_STATUS_BUSY);
+    drain_actions(&rerr_core);
+    CHECK("AODV-06", aodv_core_ingest_control(&rerr_core, &input, 2u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-06", &rerr_core, AODV_ACTION_SEND_RERR,
+                                     &action));
+}
+
+static void test_blocker_pending_release_and_busy_submit(void)
+{
+    aodv_core_t core;
+    tavrn_codec_config_t codec = make_codec_config(adva_b);
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tavrn_logical_id_t destination;
+    tron_application_data_t application;
+    aodv_control_input_t input;
+    aodv_action_t action;
+    uint8_t i;
+
+    if (!init_core(&core, adva_b, 1u) ||
+        !decode_control("AODV-05", &codec, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template)) {
+        return;
+    }
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY; i++) {
+        destination.width = TAVRN_IDENTITY_SID16;
+        destination.value = (uint16_t)(0x7000u + i);
+        if (!install_route_through_next_hop("AODV-05", &core, &peer_b, &peer_c,
+                                            &peer_b, destination, &reply_template,
+                                            (uint32_t)i * 200u)) {
+            return;
+        }
+        drain_actions(&core);
+    }
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY; i++) {
+        destination.width = TAVRN_IDENTITY_SID16;
+        destination.value = (uint16_t)(0x7000u + i);
+        application = make_application(destination);
+        CHECK("AODV-05", aodv_core_submit_application(&core, &application,
+                                                         10000u + i) == AODV_STATUS_OK);
+    }
+    destination.width = TAVRN_IDENTITY_SID16;
+    destination.value = 0x7100u;
+    application = make_application(destination);
+    CHECK("AODV-05", aodv_core_submit_application(&core, &application, 11000u) ==
+                        AODV_STATUS_BUSY);
+    drain_actions(&core);
+    CHECK("AODV-05", aodv_core_submit_application(&core, &application, 11001u) ==
+                        AODV_STATUS_QUEUED &&
+                        poll_control("AODV-04", &core, AODV_ACTION_SEND_RREQ, &action));
+    make_matching_rrep(&reply, &reply_template, &peer_b, destination, 0x0701u, &action);
+    input = make_control_input(&peer_c, &reply);
+    CHECK("AODV-05", aodv_core_ingest_control(&core, &input, 11002u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-05", &core, AODV_ACTION_FORWARD_DATA,
+                                     &action) &&
+                        aodv_core_poll_action(&core, &action) == AODV_ACTION_POLL_EMPTY);
+}
+
+static void test_blocker_late_ack_and_blacklist_admission(void)
+{
+    aodv_core_t core;
+    aodv_core_t sequence_core;
+    tavrn_codec_config_t codec = make_codec_config(adva_c);
+    tavrn_validated_control_t request;
+    tavrn_validated_control_t request_after_blacklist;
+    tavrn_validated_control_t ack;
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tron_application_data_t application = make_application(peer_b.logical_id);
+    aodv_control_input_t input;
+    aodv_action_t action;
+
+    if (!decode_control("AODV-07", &codec, adva_b, rreq16, sizeof(rreq16),
+                        TAVRN_WIRE_E_RREQ, &request) ||
+        !decode_control("AODV-07", &codec, adva_b, rrep_ack16,
+                        sizeof(rrep_ack16), TAVRN_WIRE_E_RREP_ACK, &ack) ||
+        !decode_control("AODV-03", &codec, adva_b, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template) ||
+        !init_core(&core, adva_c, 0x0203u)) {
+        return;
+    }
+    input = make_control_input(&peer_b, &request);
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 0u) == AODV_STATUS_OK &&
+                        poll_control("AODV-07", &core, AODV_ACTION_SEND_RREP, &action) &&
+                        pdu_u16(&action.detail.control.control, 11u) == 0x0203u &&
+                        aodv_core_mark_action_sent(&core, action.detail.control.token, 1u) ==
+                            AODV_STATUS_OK);
+    input.control = ack;
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 251u) ==
+                        AODV_STATUS_UNMATCHED &&
+                        poll_control("AODV-07", &core, AODV_ACTION_BLACKLIST_NEIGHBOR,
+                                     &action));
+
+    request_after_blacklist = request;
+    pdu_set_u16(&request_after_blacklist, 9u, 0x1002u);
+    input.control = request_after_blacklist;
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 252u) ==
+                        AODV_STATUS_BUSY);
+
+    CHECK("AODV-05", aodv_core_submit_application(&core, &application, 253u) ==
+                        AODV_STATUS_QUEUED &&
+                        poll_control("AODV-04", &core, AODV_ACTION_SEND_RREQ, &action));
+    make_matching_rrep(&reply, &reply_template, &peer_c, peer_b.logical_id,
+                       0x0303u, &action);
+    input = make_control_input(&peer_b, &reply);
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 253u) ==
+                        AODV_STATUS_BUSY);
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 852u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-05", &core, AODV_ACTION_FORWARD_DATA,
+                                     &action));
+
+    if (!init_core(&sequence_core, adva_c, 0x0203u)) {
+        return;
+    }
+    CHECK("AODV-03", aodv_core_submit_application(&sequence_core, &application, 0u) ==
+                        AODV_STATUS_QUEUED &&
+                        poll_control("AODV-04", &sequence_core, AODV_ACTION_SEND_RREQ,
+                                     &action));
+    input = make_control_input(&peer_b, &request);
+    CHECK("AODV-03", aodv_core_ingest_control(&sequence_core, &input, 1u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-03", &sequence_core, AODV_ACTION_SEND_RREP,
+                                     &action) &&
+                        pdu_u16(&action.detail.control.control, 11u) == 0x0204u);
+}
+
+static void test_blocker_failure_rediscovery_resumes_data(void)
+{
+    aodv_core_t node_a;
+    aodv_core_t node_c;
+    tavrn_codec_config_t codec_a = make_codec_config(adva_a);
+    tavrn_codec_config_t codec_c = make_codec_config(adva_c);
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tron_application_data_t application = make_application(peer_c.logical_id);
+    aodv_data_input_t data_input;
+    aodv_route_snapshot_t route;
+    aodv_action_t action;
+
+    if (!init_core(&node_a, adva_a, 1u) || !init_core(&node_c, adva_c, 0x0203u)) {
+        return;
+    }
+    CHECK("AODV-05", aodv_core_submit_application(&node_a, &application, 0u) ==
+                        AODV_STATUS_QUEUED &&
+                        poll_control("AODV-04", &node_a, AODV_ACTION_SEND_RREQ, &action) &&
+                        transmit_control("AODV-02", &codec_a, &codec_c, &peer_a, &action,
+                                         &node_c, 1u) &&
+                        poll_control("AODV-03", &node_c, AODV_ACTION_SEND_RREP, &action) &&
+                        aodv_core_mark_action_sent(&node_c, action.detail.control.token,
+                                                   1u) == AODV_STATUS_OK &&
+                        transmit_control("AODV-03", &codec_c, &codec_a, &peer_c, &action,
+                                         &node_a, 2u) &&
+                        poll_control("AODV-07", &node_a, AODV_ACTION_SEND_RREP_ACK,
+                                     &action) &&
+                        transmit_control("AODV-07", &codec_a, &codec_c, &peer_a, &action,
+                                         &node_c, 3u) &&
+                        poll_control("AODV-05", &node_a, AODV_ACTION_FORWARD_DATA,
+                                     &action));
+    memset(&data_input, 0, sizeof(data_input));
+    data_input.transmitter = peer_a;
+    data_input.data = action.detail.data.data;
+    CHECK("AODV-05", aodv_core_ingest_data(&node_c, &data_input, 4u) == AODV_STATUS_OK &&
+                        poll_control("AODV-05", &node_c, AODV_ACTION_DELIVER_DATA,
+                                     &action));
+
+    CHECK("AODV-06", aodv_core_report_link_failure(&node_a, &peer_c, NULL,
+                                                      AODV_LINK_FAILURE_IMMEDIATE_RERR,
+                                                      5u) == AODV_FAILURE_OK &&
+                        poll_control("AODV-06", &node_a, AODV_ACTION_SEND_RERR, &action));
+    CHECK("AODV-05", aodv_core_submit_application(&node_a, &application, 6u) ==
+                        AODV_STATUS_QUEUED &&
+                        poll_control("AODV-04", &node_a, AODV_ACTION_SEND_RREQ, &action) &&
+                        (action.detail.control.control.pdu[5] & 0x10u) == 0u &&
+                        pdu_u16(&action.detail.control.control, 13u) == 0x0204u &&
+                        transmit_control("AODV-02", &codec_a, &codec_c, &peer_a, &action,
+                                         &node_c, 7u) &&
+                        poll_control("AODV-03", &node_c, AODV_ACTION_SEND_RREP, &action) &&
+                        pdu_u16(&action.detail.control.control, 11u) == 0x0204u &&
+                        aodv_core_mark_action_sent(&node_c, action.detail.control.token,
+                                                   7u) == AODV_STATUS_OK &&
+                        transmit_control("AODV-03", &codec_c, &codec_a, &peer_c, &action,
+                                         &node_a, 8u) &&
+                        poll_control("AODV-07", &node_a, AODV_ACTION_SEND_RREP_ACK,
+                                     &action) &&
+                        transmit_control("AODV-07", &codec_a, &codec_c, &peer_a, &action,
+                                         &node_c, 9u) &&
+                        poll_control("AODV-05", &node_a, AODV_ACTION_FORWARD_DATA,
+                                     &action));
+    data_input.transmitter = peer_a;
+    data_input.data = action.detail.data.data;
+    CHECK("AODV-05", aodv_core_ingest_data(&node_c, &data_input, 10u) ==
+                        AODV_STATUS_OK &&
+                        poll_control("AODV-05", &node_c, AODV_ACTION_DELIVER_DATA,
+                                     &action));
+    CHECK("AODV-03", aodv_core_route_snapshot(&node_a, &peer_c.logical_id, &route) ==
+                        AODV_ROUTE_QUERY_FOUND && route.state == AODV_ROUTE_VALID &&
+                        route.destination_sequence == 0x0204u);
+}
+
+static void test_blocker_eight_pending_with_rrep_ack_drains(void)
+{
+    aodv_core_t core;
+    tavrn_codec_config_t codec = make_codec_config(adva_a);
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tron_application_data_t application = make_application(peer_c.logical_id);
+    aodv_control_input_t input;
+    aodv_route_snapshot_t route;
+    aodv_action_t action;
+    uint8_t i;
+
+    if (!init_core(&core, adva_a, 1u) ||
+        !decode_control("AODV-03", &codec, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template)) {
+        return;
+    }
+    for (i = 0u; i < TAVRN_AODV_PENDING_DATA_CAPACITY; i++) {
+        CHECK("AODV-05", aodv_core_submit_application(&core, &application, 0u) ==
+                            AODV_STATUS_QUEUED);
+    }
+    if (!poll_control("AODV-04", &core, AODV_ACTION_SEND_RREQ, &action)) {
+        return;
+    }
+    make_matching_rrep(&reply, &reply_template, &peer_a, peer_c.logical_id, 0x0203u,
+                       &action);
+    reply.pdu[5] |= 0x40u;
+    input = make_control_input(&peer_c, &reply);
+    CHECK("AODV-07", aodv_core_ingest_control(&core, &input, 1u) == AODV_STATUS_OK &&
+                        poll_control("AODV-07", &core, AODV_ACTION_SEND_RREP_ACK,
+                                     &action));
+    for (i = 0u; i < TAVRN_AODV_PENDING_DATA_CAPACITY; i++) {
+        CHECK("AODV-05", poll_control("AODV-05", &core, AODV_ACTION_FORWARD_DATA,
+                                        &action));
+    }
+    CHECK("AODV-05", aodv_core_poll_action(&core, &action) == AODV_ACTION_POLL_EMPTY &&
+                        aodv_core_route_snapshot(&core, &peer_c.logical_id, &route) ==
+                            AODV_ROUTE_QUERY_FOUND && route.state == AODV_ROUTE_VALID);
 }
 
 int main(void)
@@ -889,6 +1288,12 @@ int main(void)
     test_aodv_07_exact_ack_and_scoped_timeout();
     test_serial_04_rejoin_invalidation_has_route_and_precursor();
     test_deterministic_three_node_chain();
+    test_blocker_route_freshness_after_invalidation();
+    test_blocker_control_backpressure_retries();
+    test_blocker_pending_release_and_busy_submit();
+    test_blocker_late_ack_and_blacklist_admission();
+    test_blocker_failure_rediscovery_resumes_data();
+    test_blocker_eight_pending_with_rrep_ack_drains();
     if (failures != 0u) {
         printf("tavrn_aodv RED tests failed: %u assertion(s)\n", failures);
         return 1;

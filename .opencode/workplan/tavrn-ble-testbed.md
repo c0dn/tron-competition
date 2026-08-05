@@ -317,19 +317,19 @@ Hardware fanout rules:
 - Action: Write assertion-level red tests for RREQ/RREP/RERR/E_RREP_ACK vectors, request dedupe, reverse/forward routes, destination/request sequence serial arithmetic and half-range policy, reboot/rejoin policy, freshness/ties, expanding ring, expiry, loop prevention, pending DATA, precursors, HACK-triggered failure, two-node direct and three-node chain. Keep link and legacy suites green; save red evidence.
 - Validation: Tests fail on missing AODV behavior only and map to normative requirement IDs.
 #### 3.2 Implement the common TAVRN router with AODV_ONLY enabled <!-- workplan-step-id: step-2b-aodv-implementation -->
-- Status: draft
+- Status: completed
 - Id: step-2b-aodv-implementation
 - Target: tavrn_router orchestrator and aodv_core modules
 - Action: Code-writer implements fixed-capacity AODV route/control state over link-v2 callbacks. TAVRN router always owns this engine; FULL_TAVRN modules are absent/disabled, not alternative routing plugins. DATA has no broadcast fallback when a valid route is required.
 - Validation: AODV simulations pass; legacy and link suites remain green; AODV_ONLY candidate builds without GTT/ESC/mentorship dependencies.
 #### 3.3 Check and commit immutable AODV candidate <!-- workplan-step-id: step-2c-aodv-checker-candidate -->
-- Status: draft
+- Status: completed
 - Id: step-2c-aodv-checker-candidate
 - Target: AODV_ONLY feature level and all lower profiles
 - Action: Code-checker reviews sequence/loop safety, lifetimes, next-hop/final destination, discovery bounds, RERR/RREP_ACK, callback ownership and feature-level layering. Fix/re-review valid findings, commit accepted green slice, build clean role artifacts.
 - Validation: No blocker/major medium-correctness issue; provenance complete; no TAVRN extension leakage.
 #### 3.4 Mandatory two- and three-board AODV proof <!-- workplan-step-id: step-2d-aodv-hardware-mandatory -->
-- Status: draft
+- Status: in_progress
 - Id: step-2d-aodv-hardware-mandatory
 - Target: two direct boards then A-B-C forced chain
 - Action: Run 20 cold discoveries and at least 100 transactions direct, expiry/rediscovery and ACK loss. With three boards, force A->B->C using test hooks and capture all serial streams. Do not start Phase 3 until this gate passes.
@@ -603,6 +603,9 @@ Hardware fanout rules:
 - Fresh confirmation runs passed 99/100 and 97/100 unhooked gates plus repeated HACK-drop and BUSY behavior with no terminal faults. Phase 1 is closed; keep future experiments lightweight and prioritize implementation delivery over evidence packaging.
 - Phase 2a started after Phase 1 closure commit 875ebac. Scope is test-only: assertion-level naive-AODV RED coverage and a dedicated runner; production routing implementation, build configuration, and hardware remain unchanged.
 - Step 2a RED gate completed. `cd microbit && ./tests/protocol/run_tavrn_aodv_tests.sh --red` compiles the public AODV core contract with a test-only nonfunctional backend, emits assertion failures for SERIAL-02..04 and AODV-01..07, and exits 1; setup/compile failures exit 2. The production link-v2 suite and legacy packet, dedupe, and PING/PONG suites remain green. Three micro:bit v2 probes are connected for the later direct/forced-chain gate; no Phase 2 firmware has been flashed.
+- Step 2b reached GREEN and immediate hardware smoke. The fixed-capacity AODV core, link control adapter, and `tavrn_routed_node` AODV_ONLY target pass focused AODV/link, legacy protocol, profile/build, and all three firmware builds. Focused checker `ses_02c725d58ffeX2gmrpMO3lZQeZ` found no blocker/major for direct/three-node PoC use.
+- Rapid hardware loop passed without evidence packaging: direct A->C delivered fresh sequences 1..20 with 20/20 source custody; forced A->B->C delivered fresh sequences 1..20 with A 20/20 custody, B 20 forwards/20 custody, active A<->C RX blocks, and zero retry exhaustion, scheduler faults, local faults, or AODV backpressure. Temporary UART captures remain outside the repository.
+- Step 2c closes as a working PoC checkpoint: focused checker found no blocker/major, all host/build gates passed, and direct plus forced-chain hardware smokes succeeded before commit. Per user direction, this rapid-iteration checkpoint intentionally omits clean-candidate/evidence packaging. Step 2d continues with higher-volume discovery, expiry/rediscovery, and ACK-loss hardware iteration.
 
 ## Status
 - Overall status: in_progress

@@ -1338,6 +1338,138 @@ static void test_link_04_tx_done_response_deadline(void)
     CHECK("LINK-04", link.custody[0].response_deadline_ms == 0x000000eau);
 }
 
+static tavrn_validated_control_t make_aodv_control(tavrn_wire_type_t type)
+{
+    tavrn_validated_control_t control;
+
+    memset(&control, 0, sizeof(control));
+    control.type = type;
+    control.pdu[0] = 0x54u;
+    control.pdu[1] = 0x52u;
+    control.pdu[2] = 0x02u;
+    control.pdu[3] = 0x2au;
+    control.pdu[4] = (uint8_t)type;
+    control.pdu[6] = 0xf0u;
+    if (type == TAVRN_WIRE_E_RREQ) {
+        control.pdu_len = 17u;
+        control.pdu[5] = 0x10u;
+        control.pdu[7] = adva_a[0]; control.pdu[8] = adva_a[1];
+        control.pdu[9] = 1u;
+        control.pdu[11] = 0x11u; control.pdu[12] = 0x22u;
+        control.pdu[15] = 1u;
+    } else if (type == TAVRN_WIRE_E_RREP) {
+        control.pdu_len = 19u;
+        control.pdu[7] = adva_b[0]; control.pdu[8] = adva_b[1];
+        control.pdu[9] = 0x11u; control.pdu[10] = 0x22u;
+        control.pdu[11] = 2u;
+        control.pdu[13] = adva_a[0]; control.pdu[14] = adva_a[1];
+        control.pdu[15] = 1u;
+        control.pdu[17] = 0xe8u; control.pdu[18] = 3u;
+    } else if (type == TAVRN_WIRE_E_RERR) {
+        control.pdu_len = 16u;
+        control.pdu[7] = adva_a[0]; control.pdu[8] = adva_a[1];
+        control.pdu[9] = 1u;
+        control.pdu[11] = 1u;
+        control.pdu[12] = 0x11u; control.pdu[13] = 0x22u;
+        control.pdu[14] = 2u;
+    } else {
+        control.pdu_len = 16u;
+        control.pdu[6] = adva_b[0]; control.pdu[7] = adva_b[1];
+        control.pdu[8] = 0x11u; control.pdu[9] = 0x22u;
+        control.pdu[10] = 2u;
+        control.pdu[12] = adva_a[0]; control.pdu[13] = adva_a[1];
+        control.pdu[14] = 1u;
+    }
+    return control;
+}
+
+static void test_link_07_best_effort_aodv_control_send(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    tavrn_link_event_t output;
+    tavrn_validated_control_t control;
+    const ble_mesh_tx_item_t *item;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+
+    if (!setup_link(&link, &scheduler, 100u)) {
+        return;
+    }
+    control = make_aodv_control(TAVRN_WIRE_E_RREQ);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 100u,
+                                                  &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREQ, BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL && item->priority == BLE_MESH_TX_PRIORITY_CONTROL &&
+                       item->service_class == BLE_MESH_TX_SERVICE_BEST_EFFORT &&
+                       item->token == BLE_MESH_TX_TOKEN_NONE && item->not_before_ms == 100u &&
+                       link.custody[0].phase == TAVRN_CUSTODY_FREE);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
+                                                  1u, 100u, &output) == TAVRN_LINK_SEND_INVALID);
+
+    if (!setup_link(&link, &scheduler, 101u)) {
+        return;
+    }
+    control = make_aodv_control(TAVRN_WIRE_E_RERR);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 101u,
+                                                  &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RERR, BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL && item->priority == BLE_MESH_TX_PRIORITY_CONTROL);
+
+    if (!setup_link(&link, &scheduler, 102u)) {
+        return;
+    }
+    control = make_aodv_control(TAVRN_WIRE_E_RREP);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
+                                                  0u, 102u, &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREP, BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL && item->adv_data[14] == adva_b[0] &&
+                       item->adv_data[15] == adva_b[1]);
+    control.pdu[7] = adva_a[0];
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
+                                                  0u, 102u, &output) == TAVRN_LINK_SEND_INVALID);
+
+    if (!setup_link(&link, &scheduler, 103u)) {
+        return;
+    }
+    control = make_aodv_control(TAVRN_WIRE_E_RREP_ACK);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
+                                                  0u, 103u, &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREP_ACK, BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL && item->adv_data[13] == adva_b[0] &&
+                       item->adv_data[14] == adva_b[1]);
+
+    if (!setup_link(&link, &scheduler, 104u)) {
+        return;
+    }
+    seed_active_queued(&link, 0x7400u, 104u);
+    seed_candidate_eviction_queue(&scheduler);
+    control = make_aodv_control(TAVRN_WIRE_E_RREQ);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 104u,
+                                                  &output) == TAVRN_LINK_SEND_OK);
+    CHECK("LINK-07", output.type == TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED &&
+                       output.detail.owned_data.data.data_seq == 0x7400u);
+
+    if (!setup_link(&link, &scheduler, 105u)) {
+        return;
+    }
+    for (uint8_t i = 0u; i < BLE_MESH_TX_QUEUE_CAPACITY; i++) {
+        ble_mesh_tx_queue_entry_t *entry = &scheduler.routed_tx_queue.entries[i];
+
+        entry->occupied = 1u;
+        entry->ordinal = (uint32_t)i + 1u;
+        entry->item.adv_len = 3u;
+        entry->item.channel_mask = BLE_RADIO_ADV_CH_ALL;
+        entry->item.priority = BLE_MESH_TX_PRIORITY_HACK;
+        entry->item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    }
+    scheduler.routed_tx_queue.count = BLE_MESH_TX_QUEUE_CAPACITY;
+    control = make_aodv_control(TAVRN_WIRE_E_RERR);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 105u,
+                                                  &output) == TAVRN_LINK_SEND_BUSY &&
+                       output.type == TAVRN_LINK_EVENT_NONE &&
+                       link.custody[0].phase == TAVRN_CUSTODY_FREE);
+}
+
 int main(void)
 {
     test_bearer_04_outer_adva_before_mutation();
@@ -1352,6 +1484,7 @@ int main(void)
     test_link_02_hack_turnaround_config_bounds();
     test_link_02_hack_turnaround_enqueue_paths();
     test_link_04_tx_done_response_deadline();
+    test_link_07_best_effort_aodv_control_send();
     if (failures != 0u) {
         printf("tavrn_link_v2 RED tests failed: %u assertion(s)\n", failures);
         return 1;

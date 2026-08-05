@@ -2,7 +2,8 @@
 #
 # Noninteractive Phase 1 artifact publisher.  It intentionally leaves the
 # historical build-ble-node.sh CLI untouched while providing one reproducible
-# publication path for the legacy node and the dedicated link-v2 harness.
+# publication path for the legacy node, dedicated link-v2 harness, and routed
+# AODV_ONLY proving ground.
 
 set -euo pipefail
 
@@ -34,22 +35,22 @@ usage() {
 Usage: ./build-tavrn-ble.sh [options]
 
 Targets:
-  --target ble_mesh_node|ble_link_v2_testbed
+  --target ble_mesh_node|ble_link_v2_testbed|tavrn_routed_node
 
 Common options:
   --out DIR                 Published artifact directory
   --timer FAST_TEST|BALANCED|SOAK
   --role LABEL              Label only; does not alter link behavior
-  --network-id VALUE        Wire-v2 network ID (link target)
+  --network-id VALUE        Wire-v2 network ID (routed targets)
   --candidate               Require a clean, inventory-bound link candidate
-  --adva xx:xx:xx:xx:xx:xx  Canonical configured AdvA (link target)
+  --adva xx:xx:xx:xx:xx:xx  Canonical configured AdvA (routed targets)
   --probe-uid UID           Candidate probe UID
   --inventory FILE          Strict UID<TAB>AdvA inventory
 
 Legacy options:
   --node-id VALUE           Legacy label; zero derives its existing FICR label
 
-Link-harness options:
+Routed PoC options:
   --peer-adva ADDR          Direct diagnostic peer AdvA
   --initiator ON|OFF        Emit bounded diagnostic DATA directly to peer
   --tx-interval-ms MS       Diagnostic DATA interval
@@ -88,8 +89,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$target" != "ble_mesh_node" && "$target" != "ble_link_v2_testbed" ]]; then
-    printf '%s\n' '--target must be ble_mesh_node or ble_link_v2_testbed' >&2
+if [[ "$target" != "ble_mesh_node" && "$target" != "ble_link_v2_testbed" &&
+      "$target" != "tavrn_routed_node" ]]; then
+    printf '%s\n' '--target must be ble_mesh_node, ble_link_v2_testbed, or tavrn_routed_node' >&2
     exit 2
 fi
 if [[ "$candidate" == "ON" && "$target" != "ble_link_v2_testbed" ]]; then
@@ -102,6 +104,13 @@ if [[ "$target" == "ble_mesh_node" &&
         -n "$rx_block_adva" || -n "$hack_drop_adva" || "$hack_drop_count" != "0" ||
         "$busy_admission_count" != "0" || "$transaction_target" != "0" ) ]]; then
     printf '%s\n' 'Legacy publication rejects routed identity, harness, and routed-hook inputs' >&2
+    exit 2
+fi
+if [[ "$target" == "tavrn_routed_node" &&
+      ( "$candidate" != "OFF" || -n "$probe_uid" || -n "$inventory_file" ||
+        -n "$hack_drop_adva" || "$hack_drop_count" != "0" ||
+        "$busy_admission_count" != "0" ) ]]; then
+    printf '%s\n' 'Routed AODV_ONLY PoC rejects candidate and link-harness-only inputs' >&2
     exit 2
 fi
 
@@ -120,9 +129,15 @@ mkdir -p "$out_dir"
 if [[ "$target" == "ble_mesh_node" ]]; then
     phase1_target="LEGACY"
     node_mode="LEGACY_FLOOD"
-else
+    feature_level=""
+elif [[ "$target" == "ble_link_v2_testbed" ]]; then
     phase1_target="LINK"
     node_mode="NOT_APPLICABLE"
+    feature_level=""
+else
+    phase1_target="ROUTED"
+    node_mode="TAVRN_ROUTED"
+    feature_level="AODV_ONLY"
 fi
 
 cmake_args=(
@@ -130,6 +145,7 @@ cmake_args=(
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DTRON_PHASE1_TARGET="$phase1_target"
     -DTRON_NODE_MODE="$node_mode"
+    -DTAVRN_FEATURE_LEVEL="$feature_level"
     -DTRON_TIMER_PROFILE="$timer_profile"
     -DTRON_BENCH_ROLE="$role"
     -DTRON_NODE_ID="$node_id"
@@ -223,7 +239,7 @@ if [[ "$target" == "ble_mesh_node" ]]; then
         printf -v identity_tag 'id%04x' "$((node_id))"
     fi
     artifact_base="tron-ble-legacy-na-${timer_tag}-candidate0-repair0-patient0-${role,,}-${identity_tag}-${commit12}"
-else
+elif [[ "$target" == "ble_link_v2_testbed" ]]; then
     if [[ -z "$adva_override" ]]; then
         identity_tag="advaruntime-ficr"
     else
@@ -233,6 +249,14 @@ else
     candidate_bit=0
     [[ "$candidate" == "ON" ]] && candidate_bit=1
     artifact_base="tron-ble-linkv2-harness-${timer_tag}-candidate${candidate_bit}-${role,,}-${identity_tag}-${commit12}"
+else
+    if [[ -z "$adva_override" ]]; then
+        identity_tag="advaruntime-ficr"
+    else
+        identity_tag="adva${adva_override//:/}"
+        identity_tag="${identity_tag,,}"
+    fi
+    artifact_base="tron-ble-routed-aodv-only-${timer_tag}-${role,,}-${identity_tag}-${commit12}"
 fi
 
 install -m 0644 "$source_elf" "$out_dir/${artifact_base}.elf"

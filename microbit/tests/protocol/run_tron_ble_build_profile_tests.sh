@@ -97,6 +97,10 @@ link_manifest_path() {
     printf '%s/firmware/ble_link_v2_testbed/tron-build-config.manifest\n' "$WORK_DIR/$1"
 }
 
+routed_manifest_path() {
+    printf '%s/firmware/tavrn_routed_node/tron-build-config.manifest\n' "$WORK_DIR/$1"
+}
+
 valid_candidate_args=(
     -DTRON_PHASE1_TARGET=LINK
     -DTRON_HARDWARE_CANDIDATE=ON
@@ -149,6 +153,37 @@ if [[ ! -f "$runtime_config_header" ]] ||
     printf '%s\n' 'generated runtime configuration lacks parseable harness evidence fields' >&2
     exit 1
 fi
+
+# BUILD-P2-01: AODV_ONLY is one routed composition, not the Phase 1 link
+# harness. It contains the real core and excludes legacy/full feature sources.
+configure_ok routed-aodv -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_TIMER_PROFILE=FAST_TEST \
+    -DTRON_ADVA_OVERRIDE=18:42:de:52:4a:dd \
+    -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_LINK_TEST_INITIATOR=ON -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+routed_manifest="$(routed_manifest_path routed-aodv)"
+require_line 'build.phase1_target=ROUTED' "$routed_manifest"
+require_line 'build.behavior=TAVRN_ROUTED_AODV_ONLY' "$routed_manifest"
+require_line 'build.node_mode.effective=TAVRN_ROUTED' "$routed_manifest"
+require_line 'feature.level.effective=AODV_ONLY' "$routed_manifest"
+require_line 'capacity.aodv_routes.state=IMPLEMENTED' "$routed_manifest"
+require_line 'capacity.aodv_action_queue.state=IMPLEMENTED' "$routed_manifest"
+require_line 'link_test.peer_adva=dc:4b:0a:06:03:f8' "$routed_manifest"
+if ! grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'app/protocol/aodv_core.c' ||
+   grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'tron_mesh_\|tavrn_gtt\|tavrn_full\|tavrn_repair'; then
+    printf '%s\n' 'routed AODV_ONLY source manifest has missing core or leaked sources' >&2
+    exit 1
+fi
+build_target routed-aodv tavrn_routed_node
+
+# BUILD-P2-02: target selection is fail-closed and keeps link/legacy isolated.
+configure_fail routed-missing-feature -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED
+configure_fail routed-wrong-mode -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=NOT_APPLICABLE \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+configure_fail routed-full -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN
+configure_fail routed-candidate -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_HARDWARE_CANDIDATE=ON
 
 # BUILD-P1-03: effective legacy alias is compiled and cannot bypass hooks OFF.
 configure_ok legacy-alias -DTRON_PHASE1_TARGET=LEGACY -DTRON_ENABLE_TEST_HOOKS=ON \

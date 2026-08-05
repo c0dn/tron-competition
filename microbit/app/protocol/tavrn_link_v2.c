@@ -131,6 +131,48 @@ static int flood_valid(const tavrn_codec_flood_t *flood)
            flood->body_len <= TAVRN_FLOOD_BODY_MAX;
 }
 
+static uint16_t control_pdu_id(const tavrn_validated_control_t *control,
+                               uint8_t offset)
+{
+    if ((control->pdu[5] & 0x80u) != 0u) {
+        return control->pdu[offset];
+    }
+    return (uint16_t)control->pdu[offset] |
+        ((uint16_t)control->pdu[(uint8_t)(offset + 1u)] << 8);
+}
+
+static int control_send_shape_valid(const tavrn_link_v2_t *link,
+                                    const tavrn_validated_control_t *control,
+                                    const tavrn_direct_peer_t *next_hop_or_null,
+                                    uint8_t controlled_flood)
+{
+    uint8_t receiver_offset;
+
+    if (link == NULL || control == NULL || controlled_flood > 1u ||
+        control->pdu_len < 7u || control->type != (tavrn_wire_type_t)control->pdu[4] ||
+        (control->pdu[5] & 0x80u) != 0u ||
+        control->pdu[0] != 0x54u || control->pdu[1] != 0x52u ||
+        control->pdu[2] != 0x02u || control->pdu[3] != link->config.network_id) {
+        return 0;
+    }
+    if (control->type == TAVRN_WIRE_E_RREQ || control->type == TAVRN_WIRE_E_RERR) {
+        return controlled_flood != 0u && next_hop_or_null == NULL;
+    }
+    if (control->type != TAVRN_WIRE_E_RREP &&
+        control->type != TAVRN_WIRE_E_RREP_ACK) {
+        return 0;
+    }
+    if (controlled_flood != 0u || !direct_peer_valid(next_hop_or_null) ||
+        next_hop_or_null->logical_id.width != link->config.local_peer.logical_id.width ||
+        logical_id_equal(&next_hop_or_null->logical_id,
+                         &link->config.local_peer.logical_id)) {
+        return 0;
+    }
+    receiver_offset = control->type == TAVRN_WIRE_E_RREP ? 7u : 6u;
+    return control_pdu_id(control, receiver_offset) ==
+        next_hop_or_null->logical_id.value;
+}
+
 static tavrn_codec_config_t codec_config(const tavrn_link_v2_t *link)
 {
     tavrn_codec_config_t config;
@@ -842,6 +884,57 @@ tavrn_link_send_status_t tavrn_link_v2_send_flood(
     if (terminal_evicted_token(link, result.evicted_token, local_outcome)) {
         return TAVRN_LINK_SEND_LOCAL_NOT_ATTEMPTED;
     }
+    return TAVRN_LINK_SEND_OK;
+}
+
+tavrn_link_send_status_t tavrn_link_v2_send_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, tavrn_link_event_t *local_outcome)
+{
+    tavrn_codec_config_t config;
+    tavrn_decoded_frame_t frame;
+    ble_mesh_tx_item_t item;
+    ble_mesh_sched_enqueue_result_t result;
+    size_t adv_len = 0u;
+
+    if (local_outcome == NULL) {
+        return TAVRN_LINK_SEND_INVALID;
+    }
+    clear_event(local_outcome);
+    if (link == NULL || !control_send_shape_valid(link, control,
+                                                   next_hop_or_null,
+                                                   controlled_flood)) {
+        return TAVRN_LINK_SEND_INVALID;
+    }
+    if (link->mesh_fault_latched != 0u) {
+        return TAVRN_LINK_SEND_MESH_FAULTED;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.type = control->type;
+    frame.network_id = link->config.network_id;
+    frame.detail.control = *control;
+    config = codec_config(link);
+    memset(&item, 0, sizeof(item));
+    if (tavrn_wire_v2_encode(&config, &frame, item.adv_data,
+                             sizeof(item.adv_data), &adv_len) != TAVRN_CODEC_OK ||
+        adv_len > sizeof(item.adv_data)) {
+        return TAVRN_LINK_SEND_INVALID;
+    }
+    item.adv_len = (uint8_t)adv_len;
+    item.channel_mask = BLE_RADIO_ADV_CH_ALL;
+    item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
+    item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.not_before_ms = now_ms;
+    item.token = BLE_MESH_TX_TOKEN_NONE;
+    result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
+    if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
+        return TAVRN_LINK_SEND_BUSY;
+    }
+    /* The control is admitted even if it synchronously evicts DATA.  Preserve
+     * that separate DATA ownership outcome without treating the control as
+     * unsent, so a tracked RREP wait starts exactly after successful enqueue. */
+    (void)terminal_evicted_token(link, result.evicted_token, local_outcome);
     return TAVRN_LINK_SEND_OK;
 }
 

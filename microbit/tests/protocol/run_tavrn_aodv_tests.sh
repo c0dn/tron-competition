@@ -20,19 +20,21 @@ if [[ $# -eq 1 ]]; then
     MODE="red"
 fi
 
-if [[ "${MODE}" != "red" ]]; then
-    printf '%s\n' \
-        'production mode unavailable: expected Phase 2b source app/protocol/aodv_core.c' >&2
-    exit 2
+SOURCES=(
+    "${MICROBIT_ROOT}/app/protocol/tavrn_wire_v2.c"
+)
+if [[ "${MODE}" == "red" ]]; then
+    SOURCES+=("${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_aodv_red_backend.c")
+else
+    SOURCES+=("${MICROBIT_ROOT}/app/protocol/aodv_core.c")
 fi
 
 for source in \
     "${MICROBIT_ROOT}/app/protocol/aodv_core.h" \
-    "${MICROBIT_ROOT}/app/protocol/tavrn_wire_v2.c" \
     "${MICROBIT_ROOT}/tests/protocol/test_tavrn_aodv.c" \
-    "${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_aodv_red_backend.c"; do
+    "${SOURCES[@]}"; do
     if [[ ! -f "${source}" ]]; then
-        printf 'RED setup unavailable: expected source %s\n' \
+        printf 'AODV setup unavailable: expected source %s\n' \
             "${source#"${MICROBIT_ROOT}/"}" >&2
         exit 2
     fi
@@ -45,11 +47,15 @@ if ! "${CC_BIN}" \
     -Werror \
     -I"${MICROBIT_ROOT}/app/protocol" \
     "${MICROBIT_ROOT}/tests/protocol/test_tavrn_aodv.c" \
-    "${MICROBIT_ROOT}/app/protocol/tavrn_wire_v2.c" \
-    "${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_aodv_red_backend.c" \
+    "${SOURCES[@]}" \
     -o "${BUILD_DIR}/test_tavrn_aodv"; then
-    printf '%s\n' 'AODV RED compile failed' >&2
+    printf 'AODV %s compile failed\n' "${MODE}" >&2
     exit 2
+fi
+
+if [[ "${MODE}" != "red" ]]; then
+    "${BUILD_DIR}/test_tavrn_aodv"
+    exit $?
 fi
 
 set +e

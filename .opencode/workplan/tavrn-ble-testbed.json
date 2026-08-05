@@ -227,7 +227,7 @@
           "target": "tavrn_router orchestrator and aodv_core modules",
           "action": "Code-writer implements fixed-capacity AODV route/control state over link-v2 callbacks. TAVRN router always owns this engine; FULL_TAVRN modules are absent/disabled, not alternative routing plugins. DATA has no broadcast fallback when a valid route is required.",
           "validation": "AODV simulations pass; legacy and link suites remain green; AODV_ONLY candidate builds without GTT/ESC/mentorship dependencies.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-2c-aodv-checker-candidate",
@@ -235,7 +235,7 @@
           "target": "AODV_ONLY feature level and all lower profiles",
           "action": "Code-checker reviews sequence/loop safety, lifetimes, next-hop/final destination, discovery bounds, RERR/RREP_ACK, callback ownership and feature-level layering. Fix/re-review valid findings, commit accepted green slice, build clean role artifacts.",
           "validation": "No blocker/major medium-correctness issue; provenance complete; no TAVRN extension leakage.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-2d-aodv-hardware-mandatory",
@@ -243,7 +243,7 @@
           "target": "two direct boards then A-B-C forced chain",
           "action": "Run 20 cold discoveries and at least 100 transactions direct, expiry/rediscovery and ACK loss. With three boards, force A->B->C using test hooks and capture all serial streams. Do not start Phase 3 until this gate passes.",
           "validation": "Direct delivery >=95/100; chain delivery >=90/100; one RREQ processing per request ID/node; reciprocal routes and exactly-once final delivery; rejoin recovers within manifest discovery bound.",
-          "status": "draft"
+          "status": "in_progress"
         }
       ]
     },
@@ -813,9 +813,13 @@
     "Step 1d and Phase 1 passed on candidate `4afe720`. Smoke completed 59/60 custody transfers with no faults. Five-minute qualification completed 100/100 and remained stable past 305 seconds. Controlled HACK-drop and BUSY runs exercised retry, duplicate custody, and deferred admission successfully. Results are summarized in `microbit/hardware-results/2026-08-05-linkv2-4afe720-passed-hardware.md`.",
     "Fresh confirmation runs passed 99/100 and 97/100 unhooked gates plus repeated HACK-drop and BUSY behavior with no terminal faults. Phase 1 is closed; keep future experiments lightweight and prioritize implementation delivery over evidence packaging.",
     "Phase 2a started after Phase 1 closure commit 875ebac. Scope is test-only: assertion-level naive-AODV RED coverage and a dedicated runner; production routing implementation, build configuration, and hardware remain unchanged.",
-    "Step 2a RED gate completed. `cd microbit && ./tests/protocol/run_tavrn_aodv_tests.sh --red` compiles the public AODV core contract with a test-only nonfunctional backend, emits assertion failures for SERIAL-02..04 and AODV-01..07, and exits 1; setup/compile failures exit 2. The production link-v2 suite and legacy packet, dedupe, and PING/PONG suites remain green. Three micro:bit v2 probes are connected for the later direct/forced-chain gate; no Phase 2 firmware has been flashed."
+    "Step 2a RED gate completed. `cd microbit && ./tests/protocol/run_tavrn_aodv_tests.sh --red` compiles the public AODV core contract with a test-only nonfunctional backend, emits assertion failures for SERIAL-02..04 and AODV-01..07, and exits 1; setup/compile failures exit 2. The production link-v2 suite and legacy packet, dedupe, and PING/PONG suites remain green. Three micro:bit v2 probes are connected for the later direct/forced-chain gate; no Phase 2 firmware has been flashed.",
+    "Step 2b started with user approval for production routing and required build/config integration. Delivery order is core host green, then one AODV_ONLY routed firmware target, lower-suite/build regression, and a clean implementation commit; no hardware flash during this step.",
+    "Step 2b reached GREEN and immediate hardware smoke. The fixed-capacity AODV core, link control adapter, and `tavrn_routed_node` AODV_ONLY target pass focused AODV/link, legacy protocol, profile/build, and all three firmware builds. Focused checker `ses_02c725d58ffeX2gmrpMO3lZQeZ` found no blocker/major for direct/three-node PoC use.",
+    "Rapid hardware loop passed without evidence packaging: direct A->C delivered fresh sequences 1..20 with 20/20 source custody; forced A->B->C delivered fresh sequences 1..20 with A 20/20 custody, B 20 forwards/20 custody, active A<->C RX blocks, and zero retry exhaustion, scheduler faults, local faults, or AODV backpressure. Temporary UART captures remain outside the repository.",
+    "Step 2c closes as a working PoC checkpoint: focused checker found no blocker/major, all host/build gates passed, and direct plus forced-chain hardware smokes succeeded before commit. Per user direction, this rapid-iteration checkpoint intentionally omits clean-candidate/evidence packaging. Step 2d continues with higher-volume discovery, expiry/rediscovery, and ACK-loss hardware iteration."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-05T17:40:06.170Z"
+  "updatedAt": "2026-08-05T20:25:38.928Z"
 }
