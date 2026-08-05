@@ -308,7 +308,7 @@ Hardware fanout rules:
 - Validation: At least 95/100 complete; suppressed HACK causes retry and duplicate HACK with one custody/application acceptance; BUSY defers and later completes without BUSY expiry, rejection, or link-break/fault terminal; no reset/stall/corruption. Neighbor state is not implemented by this non-routing harness.
 
 ### 3. Implement the TAVRN router at naive-AODV feature level <!-- workplan-phase-id: phase-2-aodv-base -->
-- Status: in_progress
+- Status: completed
 - Id: phase-2-aodv-base
 #### 3.1 Author and record failing naive-AODV tests <!-- workplan-step-id: step-2a-aodv-red-tests -->
 - Status: completed
@@ -329,7 +329,7 @@ Hardware fanout rules:
 - Action: Code-checker reviews sequence/loop safety, lifetimes, next-hop/final destination, discovery bounds, RERR/RREP_ACK, callback ownership and feature-level layering. Fix/re-review valid findings, commit accepted green slice, build clean role artifacts.
 - Validation: No blocker/major medium-correctness issue; provenance complete; no TAVRN extension leakage.
 #### 3.4 Mandatory two- and three-board AODV proof <!-- workplan-step-id: step-2d-aodv-hardware-mandatory -->
-- Status: in_progress
+- Status: completed
 - Id: step-2d-aodv-hardware-mandatory
 - Target: two direct boards then A-B-C forced chain
 - Action: Run 20 cold discoveries and at least 100 transactions direct, expiry/rediscovery and ACK loss. With three boards, force A->B->C using test hooks and capture all serial streams. Do not start Phase 3 until this gate passes.
@@ -606,6 +606,7 @@ Hardware fanout rules:
 - Step 2b reached GREEN and immediate hardware smoke. The fixed-capacity AODV core, link control adapter, and `tavrn_routed_node` AODV_ONLY target pass focused AODV/link, legacy protocol, profile/build, and all three firmware builds. Focused checker `ses_02c725d58ffeX2gmrpMO3lZQeZ` found no blocker/major for direct/three-node PoC use.
 - Rapid hardware loop passed without evidence packaging: direct A->C delivered fresh sequences 1..20 with 20/20 source custody; forced A->B->C delivered fresh sequences 1..20 with A 20/20 custody, B 20 forwards/20 custody, active A<->C RX blocks, and zero retry exhaustion, scheduler faults, local faults, or AODV backpressure. Temporary UART captures remain outside the repository.
 - Step 2c closes as a working PoC checkpoint: focused checker found no blocker/major, all host/build gates passed, and direct plus forced-chain hardware smokes succeeded before commit. Per user direction, this rapid-iteration checkpoint intentionally omits clean-candidate/evidence packaging. Step 2d continues with higher-volume discovery, expiry/rediscovery, and ACK-loss hardware iteration.
+- 2026-08-06 Step 2d hardware gate passed on three micro:bit v2 boards. Twenty independent direct cold boots all completed route discovery; 19/20 delivered the diagnostic payload, with one post-discovery DATA HACK loss. The direct 100-transaction run delivered 100/100 exactly once from A to C; A confirmed 99/100 custody because one receiver-accepted payload's HACK was missed, emitted RERR, and rediscovered without duplicate delivery. The forced A-B-C run delivered 99/100 exactly once; A confirmed 100/100 A-to-B custody, B confirmed 99/100 B-to-C custody, and the one missing payload was sequence 60 after a B-to-C HACK retry exhaustion; RERR and rediscovery recovered subsequent traffic. A settled-endpoint expiry run sent two transactions 40 seconds apart, performed two distinct RREQ/RREP discoveries across the 36-second active-route lifetime, and delivered/transferred custody for both. Natural RREP_ACK loss produced bounded blacklist actions and later recovery. No scheduler fault, mesh fault, AODV backpressure, pending-data failure, reset, stall, or duplicate final delivery occurred. Raw UART captures remain temporary under `/tmp/opencode` and are not committed.
 
 ## Status
 - Overall status: in_progress
