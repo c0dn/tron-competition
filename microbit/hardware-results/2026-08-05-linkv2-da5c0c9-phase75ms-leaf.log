@@ -1,0 +1,288 @@
+[16:09:29.229643 0.000000] linkv2 summary phase=periodic now=155320 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=81 final_duplicates=23 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:30.223640 0.993998] 
+[16:09:30.223700 0.000063] 
+[16:09:30.223716 0.000016] microT-Kernel Version 3.00
+[16:09:30.226622 0.002905] 
+[16:09:30.226637 0.000016] tron_ble profile=BALANCED target=ble_link_v2_testbed behavior=LINK_V2_HARNESS candidate=ON identity=dc:4b:0a:06:03:f8 identity_source=CONFIGURED_OVERRIDE role=leaf
+[16:09:30.240684 0.014046] linkv2 identity field=runtime_ficr adva=dc:4b:0a:06:03:f8
+[16:09:30.246630 0.005945] linkv2 identity field=effective_local adva=dc:4b:0a:06:03:f8
+[16:09:30.251672 0.005043] linkv2 identity field=scheduler_copy adva=dc:4b:0a:06:03:f8
+[16:09:30.257601 0.005929] linkv2 startup poc=link_v2_harness behavior=LINK_V2_HARNESS candidate=ON timer_profile=BALANCED network=1 role=leaf identity_source=CONFIGURED_OVERRIDE configured_override=dc:4b:0a:06:03:f8 target_uid=99063602000528205539bee7957c8dea000000006e052820 inventory_records=2 inventory_full_adva_unique=yes inventory_sid16_unique=yes inventory_sid16_nonreserved=yes inventory_sid8_unique=yes inventory_sid8_nonreserved=yes peer=18:42:de:52:4a:dd initiator=OFF interval_ms=1000 transaction_target=0 runtime_ficr=dc:4b:0a:06:03:f8 effective_local=dc:4b:0a:06:03:f8 scheduler_adva=dc:4b:0a:06:03:f8 configured_runtime_equal=yes effective_runtime_equal=yes effective_scheduler_equal=yes sid16=19420 sid8=220 fixed_k=disabled mesh_yield_ms=1 hook.enabled=0 hook.rx_block_adva=NOT_CONFIGURED hook.hack_drop_adva=NOT_CONFIGURED hook.hack_drop_count=0 hook.busy_admission_count=0 hook.collision_peer_adva=NOT_IMPLEMENTED  timer.scheduler_dwell_ms=50 timer.scheduler_relay_spacing_ms=200 timer.scheduler_custody_bypass_max=2 timer.scheduler_poll_max_ms=2 timer.radio_state_timeout_ms=2 timer.radio_tx_event_bound_ms=8 timer.legacy_relay_min_ms=20 timer.legacy_relay_max_ms=120 timer.legacy_dedupe_ms=10000 timer.legacy_ping_interval_ms=2000 timer.legacy_ping_timeout_ms=1500 timer.link_hack_timeout_ms=250 timer.link_max_attempts=3 timer.link_retry_backoff_ms=0 timer.link_tx_scheduler_attempt_bound_ms=30 timer.link_response_window_sum_ms=750 timer.link_no_response_wall_bound_ms=840 timer.link_candidate_resolve_ms=10 timer.link_busy_backoff_ms=500 timer.link_busy_max_responses=3 timer.link_data_deadline_ms=5000 timer.link_data_dedupe_ms=10000 timer.link_flood_dedupe_ms=10000 timer.link_flood_jitter_min_ms=20 timer.link_flood_jitter_max_ms=120 timer.aodv_node_traversal_ms=40 timer.aodv_net_diameter=15 timer.aodv_net_traversal_ms=1200 timer.aodv_path_discovery_ms=2400 timer.aodv_rreq_seen_ms=10000 timer.aodv_rreq_retries=2 timer.aodv_rreq_rate=10 timer.aodv_rerr_rate=10 timer.aodv_active_route_ms=360000 timer.aodv_pending_data_ms=30000 timer.aodv_blacklist_ms=2400 timer.aodv_rrep_dedupe_ms=10000 timer.aodv_rerr_dedupe_ms=10000 timer.aodv_rrep_ack_wait_ms=250 timer.gtt_soft_expiry_ms=150000 timer.gtt_hard_expiry_ms=300000 timer.gtt_departed_ms=600000 timer.gtt_maintenance_ms=25000 timer.hello_change_ms=24000 timer.hello_stable_ms=120000 timer.hello_alpha=0.8 timer.hello_snap_ratio=0.95 timer.hello_dedupe_ms=10000 timer.router_reboot_announce_ms=3000 timer.verification_window_ms=8400 timer.verification_new_cap=4 timer.verification_active_cap=4 timer.mentor_offer_window_ms=2000 timer.mentor_page_timeout_ms=2400 timer.mentor_page_attempts=3 timer.mentor_self_bootstrap_ms=3000 timer.mentor_sync_dedupe_ms=10000 timer.mentor_rssi_weak_magnitude_db=90 timer.mentor_rssi_strong_magnitude_db=30 timer.mentor_rssi_weak_delay_ms=500 timer.mentor_rssi_strong_delay_ms=10 timer.mentor_jitter_min_ms=0 timer.mentor_jitter_max_ms=50 timer.mentor_offer_suppression_ms=10000 timer.metadata_cooldown_ms=5000 timer.tc_uuid_ms=30000 timer.tc_subject_ms=1000 timer.repair_timeout_ms=5300 timer.repair_cooldown_ms=1000 timer.stats_ms=5000 timer.loop_delay_ms=2
+[16:09:30.532614 0.275012] linkv2 diag now=308 kind=0 value=0
+[16:09:32.223660 1.691045] linkv2 diag now=2000 kind=5 value=0
+[16:09:32.230635 0.006976] linkv2 diag now=2000 kind=3 value=2
+[16:09:32.235625 0.004991] linkv2 final_delivery now=2000 origin=0x4218 destination=0x4bdc seq=2 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:33.225654 0.990028] linkv2 diag now=3002 kind=5 value=0
+[16:09:33.232659 0.007005] linkv2 diag now=3002 kind=3 value=3
+[16:09:33.237639 0.004981] linkv2 final_delivery now=3002 origin=0x4218 destination=0x4bdc seq=3 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:34.733687 1.496046] linkv2 diag now=4509 kind=5 value=0
+[16:09:34.740663 0.006977] linkv2 diag now=4509 kind=3 value=4
+[16:09:34.745683 0.005021] linkv2 final_delivery now=4509 origin=0x4218 destination=0x4bdc seq=4 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:35.531712 0.786027] linkv2 summary phase=periodic now=5308 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=3 final_duplicates=1 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:36.733706 1.201994] linkv2 diag now=6510 kind=5 value=0
+[16:09:36.740677 0.006973] linkv2 diag now=6510 kind=3 value=6
+[16:09:36.745682 0.005004] linkv2 final_delivery now=6510 origin=0x4218 destination=0x4bdc seq=6 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:37.229714 0.484032] linkv2 diag now=7005 kind=5 value=0
+[16:09:37.236682 0.006968] linkv2 diag now=7005 kind=3 value=7
+[16:09:37.241681 0.004999] linkv2 final_delivery now=7005 origin=0x4218 destination=0x4bdc seq=7 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:38.229710 0.988028] linkv2 diag now=8006 kind=5 value=0
+[16:09:38.236688 0.006979] linkv2 diag now=8006 kind=3 value=8
+[16:09:38.241701 0.005013] linkv2 final_delivery now=8006 origin=0x4218 destination=0x4bdc seq=8 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:39.231724 0.990023] linkv2 diag now=9008 kind=5 value=0
+[16:09:39.238693 0.006968] linkv2 diag now=9008 kind=3 value=9
+[16:09:39.243730 0.005038] linkv2 final_delivery now=9008 origin=0x4218 destination=0x4bdc seq=9 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:40.233740 0.990008] linkv2 diag now=10009 kind=5 value=0
+[16:09:40.240727 0.006988] linkv2 diag now=10009 kind=3 value=10
+[16:09:40.245713 0.004986] linkv2 final_delivery now=10009 origin=0x4218 destination=0x4bdc seq=10 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:40.531775 0.286061] linkv2 summary phase=periodic now=10308 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=8 final_duplicates=4 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:41.486762 0.954987] linkv2 diag now=11262 kind=5 value=0
+[16:09:41.492737 0.005976] linkv2 diag now=11262 kind=3 value=11
+[16:09:41.498715 0.005979] linkv2 final_delivery now=11262 origin=0x4218 destination=0x4bdc seq=11 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:42.234785 0.736069] linkv2 diag now=12011 kind=5 value=0
+[16:09:42.241759 0.006974] linkv2 diag now=12011 kind=3 value=12
+[16:09:42.246756 0.004998] linkv2 final_delivery now=12011 origin=0x4218 destination=0x4bdc seq=12 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:43.487801 1.241043] linkv2 diag now=13264 kind=5 value=0
+[16:09:43.494746 0.006946] linkv2 diag now=13264 kind=3 value=13
+[16:09:43.500747 0.006002] linkv2 final_delivery now=13264 origin=0x4218 destination=0x4bdc seq=13 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:45.532814 2.032065] linkv2 summary phase=periodic now=15309 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=11 final_duplicates=4 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:45.742801 0.209987] linkv2 diag now=15519 kind=5 value=0
+[16:09:45.749783 0.006984] linkv2 diag now=15519 kind=3 value=15
+[16:09:45.753763 0.003980] linkv2 final_delivery now=15519 origin=0x4218 destination=0x4bdc seq=15 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:46.489814 0.736050] linkv2 diag now=16266 kind=5 value=0
+[16:09:46.496773 0.006960] linkv2 diag now=16266 kind=3 value=16
+[16:09:46.502759 0.005987] linkv2 final_delivery now=16266 origin=0x4218 destination=0x4bdc seq=16 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:47.490819 0.988059] linkv2 diag now=17267 kind=5 value=0
+[16:09:47.497788 0.006970] linkv2 diag now=17267 kind=3 value=17
+[16:09:47.501781 0.003993] linkv2 final_delivery now=17267 origin=0x4218 destination=0x4bdc seq=17 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:48.238806 0.737024] linkv2 diag now=18015 kind=5 value=0
+[16:09:48.245793 0.006988] linkv2 diag now=18015 kind=3 value=18
+[16:09:48.249783 0.003992] linkv2 final_delivery now=18015 origin=0x4218 destination=0x4bdc seq=18 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:49.238834 0.989049] linkv2 diag now=19015 kind=5 value=0
+[16:09:49.244817 0.005983] linkv2 diag now=19015 kind=3 value=19
+[16:09:49.249798 0.004982] linkv2 final_delivery now=19015 origin=0x4218 destination=0x4bdc seq=19 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:50.531850 1.282051] linkv2 summary phase=periodic now=20309 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=16 final_duplicates=6 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:51.241854 0.710005] linkv2 diag now=21018 kind=5 value=0
+[16:09:51.248821 0.006968] linkv2 diag now=21018 kind=3 value=21
+[16:09:51.253829 0.005008] linkv2 final_delivery now=21018 origin=0x4218 destination=0x4bdc seq=21 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:52.242878 0.989049] linkv2 diag now=22019 kind=5 value=0
+[16:09:52.248840 0.005963] linkv2 diag now=22019 kind=3 value=22
+[16:09:52.253822 0.004983] linkv2 final_delivery now=22019 origin=0x4218 destination=0x4bdc seq=22 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:53.749904 1.496078] linkv2 diag now=23526 kind=5 value=0
+[16:09:53.756862 0.006960] linkv2 diag now=23526 kind=3 value=23
+[16:09:53.761845 0.004984] linkv2 final_delivery now=23526 origin=0x4218 destination=0x4bdc seq=23 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:55.498916 1.737069] linkv2 diag now=25275 kind=5 value=0
+[16:09:55.504867 0.005953] linkv2 diag now=25275 kind=3 value=25
+[16:09:55.509866 0.004999] linkv2 final_delivery now=25275 origin=0x4218 destination=0x4bdc seq=25 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:55.531896 0.022028] linkv2 summary phase=periodic now=25309 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=20 final_duplicates=6 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:56.751925 1.220029] linkv2 diag now=26528 kind=5 value=0
+[16:09:56.758895 0.006971] linkv2 diag now=26528 kind=3 value=26
+[16:09:56.763887 0.004993] linkv2 final_delivery now=26528 origin=0x4218 destination=0x4bdc seq=26 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:57.500920 0.737031] linkv2 diag now=27277 kind=5 value=0
+[16:09:57.506891 0.005973] linkv2 diag now=27277 kind=3 value=27
+[16:09:57.511884 0.004993] linkv2 final_delivery now=27277 origin=0x4218 destination=0x4bdc seq=27 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:58.247937 0.736052] linkv2 diag now=28024 kind=5 value=0
+[16:09:58.254917 0.006981] linkv2 diag now=28024 kind=3 value=28
+[16:09:58.259899 0.004982] linkv2 final_delivery now=28024 origin=0x4218 destination=0x4bdc seq=28 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:09:59.248961 0.989061] linkv2 diag now=29025 kind=5 value=0
+[16:09:59.254909 0.005949] linkv2 diag now=29025 kind=3 value=29
+[16:09:59.259911 0.005001] linkv2 final_delivery now=29025 origin=0x4218 destination=0x4bdc seq=29 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:00.250973 0.991062] linkv2 diag now=30027 kind=5 value=0
+[16:10:00.256929 0.005956] linkv2 diag now=30027 kind=3 value=30
+[16:10:00.261907 0.004979] linkv2 final_delivery now=30027 origin=0x4218 destination=0x4bdc seq=30 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:00.531969 0.270060] linkv2 summary phase=periodic now=30309 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=25 final_duplicates=8 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:01.250964 0.718995] linkv2 diag now=31027 kind=5 value=0
+[16:10:01.256980 0.006017] linkv2 diag now=31027 kind=3 value=31
+[16:10:01.261923 0.004944] linkv2 final_delivery now=31027 origin=0x4218 destination=0x4bdc seq=31 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:02.505972 1.244047] linkv2 diag now=32282 kind=5 value=0
+[16:10:02.512955 0.006984] linkv2 diag now=32282 kind=3 value=32
+[16:10:02.517940 0.004986] linkv2 final_delivery now=32282 origin=0x4218 destination=0x4bdc seq=32 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:03.252980 0.735039] linkv2 diag now=33029 kind=5 value=0
+[16:10:03.258946 0.005966] linkv2 diag now=33029 kind=3 value=33
+[16:10:03.263961 0.005016] linkv2 final_delivery now=33029 origin=0x4218 destination=0x4bdc seq=33 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:04.253008 0.989046] linkv2 diag now=34029 kind=5 value=0
+[16:10:04.258964 0.005956] linkv2 diag now=34029 kind=3 value=34
+[16:10:04.263974 0.005010] linkv2 final_delivery now=34029 origin=0x4218 destination=0x4bdc seq=34 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:05.532030 1.268054] linkv2 summary phase=periodic now=35309 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=29 final_duplicates=10 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:05.759017 0.226988] linkv2 diag now=35535 kind=5 value=0
+[16:10:05.765984 0.006968] linkv2 diag now=35535 kind=3 value=35
+[16:10:05.770989 0.005005] linkv2 final_delivery now=35535 origin=0x4218 destination=0x4bdc seq=35 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:08.255033 2.484043] linkv2 diag now=38032 kind=5 value=0
+[16:10:08.262008 0.006976] linkv2 diag now=38032 kind=3 value=38
+[16:10:08.267016 0.005009] linkv2 final_delivery now=38032 origin=0x4218 destination=0x4bdc seq=38 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:09.257022 0.990005] linkv2 diag now=39034 kind=5 value=0
+[16:10:09.264029 0.007007] linkv2 diag now=39034 kind=3 value=39
+[16:10:09.269032 0.005002] linkv2 final_delivery now=39034 origin=0x4218 destination=0x4bdc seq=39 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:10.511061 1.242029] linkv2 diag now=40287 kind=5 value=0
+[16:10:10.518030 0.006970] linkv2 diag now=40287 kind=3 value=40
+[16:10:10.523067 0.005037] linkv2 final_delivery now=40287 origin=0x4218 destination=0x4bdc seq=40 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:10.537060 0.013992] linkv2 summary phase=periodic now=40314 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=33 final_duplicates=11 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:11.258060 0.720999] linkv2 diag now=41034 kind=5 value=0
+[16:10:11.265067 0.007009] linkv2 diag now=41034 kind=3 value=41
+[16:10:11.270037 0.004969] linkv2 final_delivery now=41034 origin=0x4218 destination=0x4bdc seq=41 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:12.258101 0.988063] linkv2 diag now=42035 kind=5 value=0
+[16:10:12.265100 0.007000] linkv2 diag now=42035 kind=3 value=42
+[16:10:12.270090 0.004990] linkv2 final_delivery now=42035 origin=0x4218 destination=0x4bdc seq=42 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:13.260104 0.990012] linkv2 diag now=43036 kind=5 value=0
+[16:10:13.267072 0.006969] linkv2 diag now=43036 kind=3 value=43
+[16:10:13.272075 0.005002] linkv2 final_delivery now=43036 origin=0x4218 destination=0x4bdc seq=43 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:14.513108 1.241032] linkv2 diag now=44290 kind=5 value=0
+[16:10:14.520107 0.007000] linkv2 diag now=44290 kind=3 value=44
+[16:10:14.525084 0.004978] linkv2 final_delivery now=44290 origin=0x4218 destination=0x4bdc seq=44 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:15.537132 1.012045] linkv2 summary phase=periodic now=45314 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=37 final_duplicates=12 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:15.767131 0.230000] linkv2 diag now=45543 kind=5 value=0
+[16:10:15.774097 0.006968] linkv2 diag now=45543 kind=3 value=45
+[16:10:15.779109 0.005011] linkv2 final_delivery now=45543 origin=0x4218 destination=0x4bdc seq=45 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:16.261116 0.482006] linkv2 diag now=46038 kind=5 value=0
+[16:10:16.268131 0.007017] linkv2 diag now=46038 kind=3 value=46
+[16:10:16.273103 0.004973] linkv2 final_delivery now=46038 origin=0x4218 destination=0x4bdc seq=46 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:17.261129 0.988024] linkv2 diag now=47038 kind=5 value=0
+[16:10:17.268101 0.006972] linkv2 diag now=47038 kind=3 value=47
+[16:10:17.273116 0.005016] linkv2 final_delivery now=47038 origin=0x4218 destination=0x4bdc seq=47 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:18.263149 0.990032] linkv2 diag now=48039 kind=5 value=0
+[16:10:18.270117 0.006968] linkv2 diag now=48039 kind=3 value=48
+[16:10:18.275127 0.005011] linkv2 final_delivery now=48039 origin=0x4218 destination=0x4bdc seq=48 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:19.263182 0.988054] linkv2 diag now=49040 kind=5 value=0
+[16:10:19.270139 0.006958] linkv2 diag now=49040 kind=3 value=49
+[16:10:19.275138 0.004999] linkv2 final_delivery now=49040 origin=0x4218 destination=0x4bdc seq=49 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:20.537178 1.262039] linkv2 summary phase=periodic now=50314 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=42 final_duplicates=13 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:20.771191 0.234013] linkv2 diag now=50547 kind=5 value=0
+[16:10:20.778169 0.006978] linkv2 diag now=50547 kind=3 value=50
+[16:10:20.783148 0.004980] linkv2 final_delivery now=50547 origin=0x4218 destination=0x4bdc seq=50 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:21.266210 0.483060] linkv2 diag now=51042 kind=5 value=0
+[16:10:21.273149 0.006941] linkv2 diag now=51042 kind=3 value=51
+[16:10:21.278135 0.004986] linkv2 final_delivery now=51042 origin=0x4218 destination=0x4bdc seq=51 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:22.772209 1.494072] linkv2 diag now=52549 kind=5 value=0
+[16:10:22.779187 0.006978] linkv2 diag now=52549 kind=3 value=52
+[16:10:22.784207 0.005020] linkv2 final_delivery now=52549 origin=0x4218 destination=0x4bdc seq=52 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:23.774205 0.989998] linkv2 diag now=53550 kind=5 value=0
+[16:10:23.781174 0.006970] linkv2 diag now=53550 kind=3 value=53
+[16:10:23.786180 0.005006] linkv2 final_delivery now=53550 origin=0x4218 destination=0x4bdc seq=53 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:25.538230 1.752049] linkv2 summary phase=periodic now=55315 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=46 final_duplicates=13 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:26.777246 1.239015] linkv2 diag now=56553 kind=5 value=0
+[16:10:26.784224 0.006979] linkv2 diag now=56553 kind=3 value=56
+[16:10:26.789218 0.004995] linkv2 final_delivery now=56553 origin=0x4218 destination=0x4bdc seq=56 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:27.271228 0.482010] linkv2 diag now=57048 kind=5 value=0
+[16:10:27.278234 0.007007] linkv2 diag now=57048 kind=3 value=57
+[16:10:27.283226 0.004992] linkv2 final_delivery now=57048 origin=0x4218 destination=0x4bdc seq=57 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:28.273295 0.990068] linkv2 diag now=58049 kind=5 value=0
+[16:10:28.280230 0.006935] linkv2 diag now=58049 kind=3 value=58
+[16:10:28.285261 0.005031] linkv2 final_delivery now=58049 origin=0x4218 destination=0x4bdc seq=58 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:30.527290 2.242028] linkv2 diag now=60304 kind=5 value=0
+[16:10:30.534256 0.006967] linkv2 diag now=60304 kind=3 value=60
+[16:10:30.539243 0.004989] linkv2 final_delivery now=60304 origin=0x4218 destination=0x4bdc seq=60 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:30.553260 0.014015] linkv2 summary phase=periodic now=60330 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=50 final_duplicates=13 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:31.275274 0.722014] linkv2 diag now=61052 kind=5 value=0
+[16:10:31.282267 0.006993] linkv2 diag now=61052 kind=3 value=61
+[16:10:31.287263 0.004997] linkv2 final_delivery now=61052 origin=0x4218 destination=0x4bdc seq=61 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:32.277321 0.990057] linkv2 diag now=62053 kind=5 value=0
+[16:10:32.284291 0.006971] linkv2 diag now=62053 kind=3 value=62
+[16:10:32.289276 0.004984] linkv2 final_delivery now=62053 origin=0x4218 destination=0x4bdc seq=62 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:33.782325 1.493049] linkv2 diag now=63559 kind=5 value=0
+[16:10:33.789289 0.006964] linkv2 diag now=63559 kind=3 value=63
+[16:10:33.793278 0.003991] linkv2 final_delivery now=63559 origin=0x4218 destination=0x4bdc seq=63 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:34.277296 0.484016] linkv2 diag now=64054 kind=5 value=0
+[16:10:34.284285 0.006990] linkv2 diag now=64054 kind=3 value=64
+[16:10:34.290328 0.006042] linkv2 final_delivery now=64054 origin=0x4218 destination=0x4bdc seq=64 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:35.278360 0.988031] linkv2 diag now=65055 kind=5 value=0
+[16:10:35.285307 0.006948] linkv2 diag now=65055 kind=3 value=65
+[16:10:35.289297 0.003991] linkv2 final_delivery now=65055 origin=0x4218 destination=0x4bdc seq=65 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:35.553342 0.264043] linkv2 summary phase=periodic now=65331 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=55 final_duplicates=15 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:37.533371 1.980029] linkv2 diag now=67310 kind=5 value=0
+[16:10:37.540319 0.006950] linkv2 diag now=67310 kind=3 value=67
+[16:10:37.546339 0.006019] linkv2 final_delivery now=67310 origin=0x4218 destination=0x4bdc seq=67 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:38.281383 0.735044] linkv2 diag now=68058 kind=5 value=0
+[16:10:38.288334 0.006951] linkv2 diag now=68058 kind=3 value=68
+[16:10:38.292336 0.004003] linkv2 final_delivery now=68058 origin=0x4218 destination=0x4bdc seq=68 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:39.282369 0.990032] linkv2 diag now=69059 kind=5 value=0
+[16:10:39.289345 0.006977] linkv2 diag now=69059 kind=3 value=69
+[16:10:39.295390 0.006044] linkv2 final_delivery now=69059 origin=0x4218 destination=0x4bdc seq=69 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:40.283365 0.987975] linkv2 diag now=70060 kind=5 value=0
+[16:10:40.290341 0.006976] linkv2 diag now=70060 kind=3 value=70
+[16:10:40.295349 0.005008] linkv2 final_delivery now=70060 origin=0x4218 destination=0x4bdc seq=70 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:40.554420 0.259070] linkv2 summary phase=periodic now=70331 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=59 final_duplicates=16 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:42.539425 1.985004] linkv2 diag now=72316 kind=5 value=0
+[16:10:42.545376 0.005952] linkv2 diag now=72316 kind=3 value=72
+[16:10:42.550382 0.005007] linkv2 final_delivery now=72316 origin=0x4218 destination=0x4bdc seq=72 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:43.286408 0.736025] linkv2 diag now=73063 kind=5 value=0
+[16:10:43.293392 0.006984] linkv2 diag now=73063 kind=3 value=73
+[16:10:43.298422 0.005030] linkv2 final_delivery now=73063 origin=0x4218 destination=0x4bdc seq=73 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:44.287454 0.989032] linkv2 diag now=74064 kind=5 value=0
+[16:10:44.293429 0.005977] linkv2 diag now=74064 kind=3 value=74
+[16:10:44.298415 0.004986] linkv2 final_delivery now=74064 origin=0x4218 destination=0x4bdc seq=74 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:45.542455 1.244038] linkv2 diag now=75319 kind=5 value=0
+[16:10:45.549417 0.006963] linkv2 diag now=75319 kind=3 value=75
+[16:10:45.554411 0.004994] linkv2 final_delivery now=75319 origin=0x4218 destination=0x4bdc seq=75 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:45.568406 0.013995] linkv2 summary phase=periodic now=75346 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=63 final_duplicates=17 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:46.541474 0.973068] linkv2 diag now=76318 kind=5 value=0
+[16:10:46.547416 0.005943] linkv2 diag now=76318 kind=3 value=76
+[16:10:46.552443 0.005026] linkv2 final_delivery now=76318 origin=0x4218 destination=0x4bdc seq=76 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:47.289486 0.737042] linkv2 diag now=77066 kind=5 value=0
+[16:10:47.295424 0.005939] linkv2 diag now=77066 kind=3 value=77
+[16:10:47.300424 0.005000] linkv2 final_delivery now=77066 origin=0x4218 destination=0x4bdc seq=77 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:48.290465 0.990040] linkv2 diag now=78067 kind=5 value=0
+[16:10:48.297441 0.006976] linkv2 diag now=78067 kind=3 value=78
+[16:10:48.302441 0.005000] linkv2 final_delivery now=78067 origin=0x4218 destination=0x4bdc seq=78 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:49.290463 0.988022] linkv2 diag now=79067 kind=5 value=0
+[16:10:49.296445 0.005983] linkv2 diag now=79067 kind=3 value=79
+[16:10:49.301448 0.005003] linkv2 final_delivery now=79067 origin=0x4218 destination=0x4bdc seq=79 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:50.291509 0.990060] linkv2 diag now=80068 kind=5 value=0
+[16:10:50.298466 0.006958] linkv2 diag now=80068 kind=3 value=80
+[16:10:50.303463 0.004996] linkv2 final_delivery now=80068 origin=0x4218 destination=0x4bdc seq=80 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:50.568503 0.265039] linkv2 summary phase=periodic now=80346 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=68 final_duplicates=19 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:51.546531 0.978028] linkv2 diag now=81323 kind=5 value=0
+[16:10:51.553475 0.006945] linkv2 diag now=81323 kind=3 value=81
+[16:10:51.558476 0.005001] linkv2 final_delivery now=81323 origin=0x4218 destination=0x4bdc seq=81 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:52.546534 0.988057] linkv2 diag now=82323 kind=5 value=0
+[16:10:52.552505 0.005971] linkv2 diag now=82323 kind=3 value=82
+[16:10:52.557490 0.004985] linkv2 final_delivery now=82323 origin=0x4218 destination=0x4bdc seq=82 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:53.801547 1.244057] linkv2 diag now=83578 kind=5 value=0
+[16:10:53.808517 0.006970] linkv2 diag now=83578 kind=3 value=83
+[16:10:53.813493 0.004977] linkv2 final_delivery now=83578 origin=0x4218 destination=0x4bdc seq=83 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:54.548550 0.735056] linkv2 diag now=84325 kind=5 value=0
+[16:10:54.554507 0.005959] linkv2 diag now=84325 kind=3 value=84
+[16:10:54.559518 0.005010] linkv2 final_delivery now=84325 origin=0x4218 destination=0x4bdc seq=84 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:55.296535 0.737016] linkv2 diag now=85073 kind=5 value=0
+[16:10:55.302506 0.005973] linkv2 diag now=85073 kind=3 value=85
+[16:10:55.307559 0.005052] linkv2 final_delivery now=85073 origin=0x4218 destination=0x4bdc seq=85 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:55.569565 0.262004] linkv2 summary phase=periodic now=85347 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=73 final_duplicates=21 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:56.297552 0.727988] linkv2 diag now=86074 kind=5 value=0
+[16:10:56.304529 0.006977] linkv2 diag now=86074 kind=3 value=86
+[16:10:56.309523 0.004995] linkv2 final_delivery now=86074 origin=0x4218 destination=0x4bdc seq=86 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:57.299600 0.990075] linkv2 diag now=87076 kind=5 value=0
+[16:10:57.305552 0.005953] linkv2 diag now=87076 kind=3 value=87
+[16:10:57.310551 0.004999] linkv2 final_delivery now=87076 origin=0x4218 destination=0x4bdc seq=87 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:58.300601 0.990049] linkv2 diag now=88077 kind=5 value=0
+[16:10:58.306551 0.005950] linkv2 diag now=88077 kind=3 value=88
+[16:10:58.311556 0.005004] linkv2 final_delivery now=88077 origin=0x4218 destination=0x4bdc seq=88 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:10:59.807598 1.496042] linkv2 diag now=89584 kind=5 value=0
+[16:10:59.814569 0.006972] linkv2 diag now=89584 kind=3 value=89
+[16:10:59.819576 0.005006] linkv2 final_delivery now=89584 origin=0x4218 destination=0x4bdc seq=89 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:00.301591 0.482015] linkv2 diag now=90079 kind=5 value=0
+[16:11:00.308603 0.007011] linkv2 diag now=90079 kind=3 value=90
+[16:11:00.313568 0.004965] linkv2 final_delivery now=90079 origin=0x4218 destination=0x4bdc seq=90 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:00.569638 0.256070] linkv2 summary phase=periodic now=90347 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=78 final_duplicates=24 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:01.303617 0.733979] linkv2 diag now=91080 kind=5 value=0
+[16:11:01.310593 0.006977] linkv2 diag now=91080 kind=3 value=91
+[16:11:01.315576 0.004983] linkv2 final_delivery now=91080 origin=0x4218 destination=0x4bdc seq=91 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:02.555633 1.240056] linkv2 diag now=92333 kind=5 value=0
+[16:11:02.562600 0.006968] linkv2 diag now=92333 kind=3 value=92
+[16:11:02.567587 0.004988] linkv2 final_delivery now=92333 origin=0x4218 destination=0x4bdc seq=92 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:03.305665 0.738077] linkv2 diag now=93082 kind=5 value=0
+[16:11:03.312643 0.006978] linkv2 diag now=93082 kind=3 value=93
+[16:11:03.317590 0.004948] linkv2 final_delivery now=93082 origin=0x4218 destination=0x4bdc seq=93 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:04.305633 0.988042] linkv2 diag now=94083 kind=5 value=0
+[16:11:04.312627 0.006993] linkv2 diag now=94083 kind=3 value=94
+[16:11:04.317624 0.004999] linkv2 final_delivery now=94083 origin=0x4218 destination=0x4bdc seq=94 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:05.570665 1.253040] linkv2 summary phase=periodic now=95348 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=82 final_duplicates=26 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:07.560693 1.990028] linkv2 diag now=97338 kind=5 value=0
+[16:11:07.567647 0.006956] linkv2 diag now=97338 kind=3 value=97
+[16:11:07.572685 0.005038] linkv2 final_delivery now=97338 origin=0x4218 destination=0x4bdc seq=97 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:08.308680 0.735993] linkv2 diag now=98085 kind=5 value=0
+[16:11:08.315665 0.006986] linkv2 diag now=98085 kind=3 value=98
+[16:11:08.320670 0.005005] linkv2 final_delivery now=98085 origin=0x4218 destination=0x4bdc seq=98 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:09.814712 1.494042] linkv2 diag now=99592 kind=5 value=0
+[16:11:09.821670 0.006959] linkv2 diag now=99592 kind=3 value=99
+[16:11:09.826666 0.004996] linkv2 final_delivery now=99592 origin=0x4218 destination=0x4bdc seq=99 app_kind=0x7f app_source=0 app_len=4 peer=18:42:de:52:4a:dd
+[16:11:10.570719 0.744051] linkv2 summary phase=periodic now=100348 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=85 final_duplicates=26 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:15.570779 5.000060] linkv2 summary phase=periodic now=105348 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=85 final_duplicates=26 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:20.570839 5.000059] linkv2 summary phase=periodic now=110348 submit_accepted=0 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=0 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=0 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=85 final_duplicates=26 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0

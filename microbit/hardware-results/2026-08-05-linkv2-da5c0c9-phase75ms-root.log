@@ -1,0 +1,233 @@
+[16:09:29.872648 0.000000] linkv2 summary phase=periodic now=155326 submit_accepted=100 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=44 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=56 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:30.909647 1.036999] 
+[16:09:30.910612 0.000968] 
+[16:09:30.910639 0.000026] microT-Kernel Version 3.00
+[16:09:30.912646 0.002007] 
+[16:09:30.913596 0.000950] tron_ble profile=BALANCED target=ble_link_v2_testbed behavior=LINK_V2_HARNESS candidate=ON identity=18:42:de:52:4a:dd identity_source=CONFIGURED_OVERRIDE role=root
+[16:09:30.927640 0.014042] linkv2 identity field=runtime_ficr adva=18:42:de:52:4a:dd
+[16:09:30.932672 0.005034] linkv2 identity field=effective_local adva=18:42:de:52:4a:dd
+[16:09:30.938632 0.005959] linkv2 identity field=scheduler_copy adva=18:42:de:52:4a:dd
+[16:09:30.943643 0.005012] linkv2 startup poc=link_v2_harness behavior=LINK_V2_HARNESS candidate=ON timer_profile=BALANCED network=1 role=root identity_source=CONFIGURED_OVERRIDE configured_override=18:42:de:52:4a:dd target_uid=9906360200052820cf57b9f988a30e16000000006e052820 inventory_records=2 inventory_full_adva_unique=yes inventory_sid16_unique=yes inventory_sid16_nonreserved=yes inventory_sid8_unique=yes inventory_sid8_nonreserved=yes peer=dc:4b:0a:06:03:f8 initiator=ON interval_ms=1000 transaction_target=100 runtime_ficr=18:42:de:52:4a:dd effective_local=18:42:de:52:4a:dd scheduler_adva=18:42:de:52:4a:dd configured_runtime_equal=yes effective_runtime_equal=yes effective_scheduler_equal=yes sid16=16920 sid8=24 fixed_k=disabled mesh_yield_ms=1 hook.enabled=0 hook.rx_block_adva=NOT_CONFIGURED hook.hack_drop_adva=NOT_CONFIGURED hook.hack_drop_count=0 hook.busy_admission_count=0 hook.collision_peer_adva=NOT_IMPLEMENTED  timer.scheduler_dwell_ms=50 timer.scheduler_relay_spacing_ms=200 timer.scheduler_custody_bypass_max=2 timer.scheduler_poll_max_ms=2 timer.radio_state_timeout_ms=2 timer.radio_tx_event_bound_ms=8 timer.legacy_relay_min_ms=20 timer.legacy_relay_max_ms=120 timer.legacy_dedupe_ms=10000 timer.legacy_ping_interval_ms=2000 timer.legacy_ping_timeout_ms=1500 timer.link_hack_timeout_ms=250 timer.link_max_attempts=3 timer.link_retry_backoff_ms=0 timer.link_tx_scheduler_attempt_bound_ms=30 timer.link_response_window_sum_ms=750 timer.link_no_response_wall_bound_ms=840 timer.link_candidate_resolve_ms=10 timer.link_busy_backoff_ms=500 timer.link_busy_max_responses=3 timer.link_data_deadline_ms=5000 timer.link_data_dedupe_ms=10000 timer.link_flood_dedupe_ms=10000 timer.link_flood_jitter_min_ms=20 timer.link_flood_jitter_max_ms=120 timer.aodv_node_traversal_ms=40 timer.aodv_net_diameter=15 timer.aodv_net_traversal_ms=1200 timer.aodv_path_discovery_ms=2400 timer.aodv_rreq_seen_ms=10000 timer.aodv_rreq_retries=2 timer.aodv_rreq_rate=10 timer.aodv_rerr_rate=10 timer.aodv_active_route_ms=360000 timer.aodv_pending_data_ms=30000 timer.aodv_blacklist_ms=2400 timer.aodv_rrep_dedupe_ms=10000 timer.aodv_rerr_dedupe_ms=10000 timer.aodv_rrep_ack_wait_ms=250 timer.gtt_soft_expiry_ms=150000 timer.gtt_hard_expiry_ms=300000 timer.gtt_departed_ms=600000 timer.gtt_maintenance_ms=25000 timer.hello_change_ms=24000 timer.hello_stable_ms=120000 timer.hello_alpha=0.8 timer.hello_snap_ratio=0.95 timer.hello_dedupe_ms=10000 timer.router_reboot_announce_ms=3000 timer.verification_window_ms=8400 timer.verification_new_cap=4 timer.verification_active_cap=4 timer.mentor_offer_window_ms=2000 timer.mentor_page_timeout_ms=2400 timer.mentor_page_attempts=3 timer.mentor_self_bootstrap_ms=3000 timer.mentor_sync_dedupe_ms=10000 timer.mentor_rssi_weak_magnitude_db=90 timer.mentor_rssi_strong_magnitude_db=30 timer.mentor_rssi_weak_delay_ms=500 timer.mentor_rssi_strong_delay_ms=10 timer.mentor_jitter_min_ms=0 timer.mentor_jitter_max_ms=50 timer.mentor_offer_suppression_ms=10000 timer.metadata_cooldown_ms=5000 timer.tc_uuid_ms=30000 timer.tc_subject_ms=1000 timer.repair_timeout_ms=5300 timer.repair_cooldown_ms=1000 timer.stats_ms=5000 timer.loop_delay_ms=2
+[16:09:31.218652 0.275008] linkv2 diag now=308 kind=0 value=0
+[16:09:31.225608 0.006957] linkv2 diag now=309 kind=4 value=0
+[16:09:31.977659 0.752049] linkv2 event now=1068 type=7 seq=1 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:32.220673 0.243014] linkv2 diag now=1310 kind=4 value=0
+[16:09:32.978675 0.758002] linkv2 event now=2069 type=7 seq=2 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:33.221679 0.243004] linkv2 diag now=2311 kind=4 value=0
+[16:09:33.230618 0.008940] linkv2 event now=2320 type=3 seq=3 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:34.221677 0.991058] linkv2 diag now=3312 kind=4 value=0
+[16:09:34.736668 0.514991] linkv2 event now=3827 type=3 seq=4 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:35.222701 0.486032] linkv2 diag now=4313 kind=4 value=0
+[16:09:35.981687 0.758986] linkv2 event now=5072 type=7 seq=5 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:36.218702 0.237015] linkv2 summary phase=periodic now=5309 submit_accepted=5 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=2 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=3 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:36.272696 0.053995] linkv2 diag now=5314 kind=4 value=0
+[16:09:36.982726 0.710030] linkv2 event now=6073 type=7 seq=6 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:37.225711 0.242984] linkv2 diag now=6315 kind=4 value=0
+[16:09:37.737714 0.512004] linkv2 event now=6828 type=3 seq=7 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:38.225722 0.488008] linkv2 diag now=7316 kind=4 value=0
+[16:09:38.984736 0.759013] linkv2 event now=8075 type=7 seq=8 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:39.227748 0.243012] linkv2 diag now=8317 kind=4 value=0
+[16:09:39.236727 0.008981] linkv2 event now=8326 type=3 seq=9 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:40.227750 0.991021] linkv2 diag now=9318 kind=4 value=0
+[16:09:40.236697 0.008948] linkv2 event now=9327 type=3 seq=10 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:41.218765 0.982066] linkv2 summary phase=periodic now=10309 submit_accepted=10 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=5 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=5 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:41.272721 0.053957] linkv2 diag now=10319 kind=4 value=0
+[16:09:41.987785 0.715064] linkv2 event now=11078 type=7 seq=11 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:42.230771 0.242987] linkv2 diag now=11320 kind=4 value=0
+[16:09:42.239737 0.008960] linkv2 event now=11329 type=3 seq=12 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:43.231792 0.992060] linkv2 diag now=12321 kind=4 value=0
+[16:09:43.989797 0.758005] linkv2 event now=13080 type=7 seq=13 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:44.231808 0.242012] linkv2 diag now=13322 kind=4 value=0
+[16:09:44.990812 0.759004] linkv2 event now=14081 type=7 seq=14 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:45.232800 0.241988] linkv2 diag now=14323 kind=4 value=0
+[16:09:45.991827 0.759027] linkv2 event now=15082 type=7 seq=15 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:46.217799 0.225973] linkv2 summary phase=periodic now=15309 submit_accepted=15 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=6 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=9 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:46.272788 0.054989] linkv2 diag now=15324 kind=4 value=0
+[16:09:46.493801 0.221014] linkv2 event now=15584 type=3 seq=16 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:47.233828 0.740027] linkv2 diag now=16324 kind=4 value=0
+[16:09:47.991833 0.758004] linkv2 event now=17083 type=7 seq=17 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:48.234826 0.242994] linkv2 diag now=17325 kind=4 value=0
+[16:09:48.992846 0.758020] linkv2 event now=18084 type=7 seq=18 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:49.235848 0.243002] linkv2 diag now=18326 kind=4 value=0
+[16:09:49.242851 0.007004] linkv2 event now=18333 type=3 seq=19 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:50.236852 0.994000] linkv2 diag now=19327 kind=4 value=0
+[16:09:50.994874 0.758021] linkv2 event now=20086 type=7 seq=20 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:51.217873 0.223000] linkv2 summary phase=periodic now=20309 submit_accepted=20 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=8 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=12 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:51.271822 0.053949] linkv2 diag now=20328 kind=4 value=0
+[16:09:51.276824 0.005004] linkv2 event now=20335 type=3 seq=21 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:52.238879 0.962054] linkv2 diag now=21329 kind=4 value=0
+[16:09:52.247827 0.008949] linkv2 event now=21338 type=3 seq=22 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:53.239887 0.992059] linkv2 diag now=22330 kind=4 value=0
+[16:09:53.753865 0.513979] linkv2 event now=22845 type=3 seq=23 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:54.239921 0.486054] linkv2 diag now=23331 kind=4 value=0
+[16:09:54.998920 0.759000] linkv2 event now=24090 type=7 seq=24 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:55.241909 0.242989] linkv2 diag now=24332 kind=4 value=0
+[16:09:55.999924 0.758014] linkv2 event now=25091 type=7 seq=25 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:56.217931 0.218008] linkv2 summary phase=periodic now=25309 submit_accepted=25 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=11 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=14 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:09:56.271888 0.053957] linkv2 diag now=25333 kind=4 value=0
+[16:09:57.000926 0.729037] linkv2 event now=26092 type=7 seq=26 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:57.242957 0.242032] linkv2 diag now=26334 kind=4 value=0
+[16:09:58.001927 0.758970] linkv2 event now=27093 type=7 seq=27 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:09:58.243928 0.242001] linkv2 diag now=27335 kind=4 value=0
+[16:09:58.250891 0.006964] linkv2 event now=27342 type=3 seq=28 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:09:59.244955 0.994062] linkv2 diag now=28336 kind=4 value=0
+[16:09:59.759960 0.515005] linkv2 event now=28851 type=3 seq=29 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:00.245958 0.485998] linkv2 diag now=29337 kind=4 value=0
+[16:10:01.004958 0.759001] linkv2 event now=30096 type=7 seq=30 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:01.218970 0.214012] linkv2 summary phase=periodic now=30310 submit_accepted=30 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=13 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=17 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:01.272968 0.053998] linkv2 diag now=30338 kind=4 value=0
+[16:10:01.277950 0.004982] linkv2 event now=30345 type=3 seq=31 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:02.247981 0.970029] linkv2 diag now=31339 kind=4 value=0
+[16:10:02.509974 0.261995] linkv2 event now=31601 type=3 seq=32 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:03.247995 0.738019] linkv2 diag now=32339 kind=4 value=0
+[16:10:04.007018 0.759024] linkv2 event now=33098 type=7 seq=33 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:04.249009 0.241991] linkv2 diag now=33340 kind=4 value=0
+[16:10:04.509018 0.260009] linkv2 event now=33600 type=3 seq=34 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:05.249005 0.739987] linkv2 diag now=34340 kind=4 value=0
+[16:10:06.008030 0.759025] linkv2 event now=35099 type=7 seq=35 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:06.220028 0.211999] linkv2 summary phase=periodic now=35311 submit_accepted=35 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=16 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=19 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:06.272983 0.052955] linkv2 diag now=35341 kind=4 value=0
+[16:10:07.008047 0.735064] linkv2 event now=36100 type=7 seq=36 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:07.251037 0.242990] linkv2 diag now=36342 kind=4 value=0
+[16:10:08.009048 0.758011] linkv2 event now=37101 type=7 seq=37 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:08.252042 0.242994] linkv2 diag now=37343 kind=4 value=0
+[16:10:09.010051 0.758009] linkv2 event now=38102 type=7 seq=38 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:09.253058 0.243007] linkv2 diag now=38344 kind=4 value=0
+[16:10:10.011073 0.758014] linkv2 event now=39103 type=7 seq=39 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:10.254077 0.243004] linkv2 diag now=39345 kind=4 value=0
+[16:10:10.513038 0.258963] linkv2 event now=39605 type=3 seq=40 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:11.219084 0.706044] linkv2 summary phase=periodic now=40311 submit_accepted=40 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=17 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=23 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:11.273053 0.053969] linkv2 diag now=40345 kind=4 value=0
+[16:10:12.012091 0.739039] linkv2 event now=41104 type=7 seq=41 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:12.254093 0.242002] linkv2 diag now=41346 kind=4 value=0
+[16:10:12.263048 0.008956] linkv2 event now=41355 type=3 seq=42 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:13.255096 0.992046] linkv2 diag now=42347 kind=4 value=0
+[16:10:13.515117 0.260021] linkv2 event now=42607 type=3 seq=43 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:14.255107 0.739990] linkv2 diag now=43347 kind=4 value=0
+[16:10:15.014123 0.759017] linkv2 event now=44106 type=7 seq=44 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:15.256131 0.242007] linkv2 diag now=44348 kind=4 value=0
+[16:10:16.015137 0.759007] linkv2 event now=45107 type=7 seq=45 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:16.219144 0.204006] linkv2 summary phase=periodic now=45311 submit_accepted=45 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=19 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=26 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:16.273105 0.053962] linkv2 diag now=45349 kind=4 value=0
+[16:10:16.517144 0.244039] linkv2 event now=45609 type=3 seq=46 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:17.257143 0.739998] linkv2 diag now=46349 kind=4 value=0
+[16:10:18.016203 0.759057] linkv2 event now=47108 type=7 seq=47 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:18.258155 0.241955] linkv2 diag now=47350 kind=4 value=0
+[16:10:18.267143 0.008988] linkv2 event now=47359 type=3 seq=48 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:19.259162 0.992019] linkv2 diag now=48351 kind=4 value=0
+[16:10:20.018183 0.759021] linkv2 event now=49110 type=7 seq=49 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:20.261178 0.242996] linkv2 diag now=49352 kind=4 value=0
+[16:10:21.019181 0.758003] linkv2 event now=50111 type=7 seq=50 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:21.220184 0.201002] linkv2 summary phase=periodic now=50312 submit_accepted=50 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=21 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=29 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:21.274152 0.053969] linkv2 diag now=50353 kind=4 value=0
+[16:10:21.279158 0.005008] linkv2 event now=50362 type=3 seq=51 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:22.263199 0.984038] linkv2 diag now=51354 kind=4 value=0
+[16:10:22.777209 0.514011] linkv2 event now=51869 type=3 seq=52 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:23.263220 0.486011] linkv2 diag now=52355 kind=4 value=0
+[16:10:24.022222 0.759001] linkv2 event now=53114 type=7 seq=53 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:24.264222 0.242001] linkv2 diag now=53356 kind=4 value=0
+[16:10:25.023236 0.759014] linkv2 event now=54115 type=7 seq=54 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:25.265233 0.241997] linkv2 diag now=54357 kind=4 value=0
+[16:10:26.023225 0.757992] linkv2 event now=55116 type=7 seq=55 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:26.220247 0.197023] linkv2 summary phase=periodic now=55312 submit_accepted=55 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=23 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=32 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:26.273198 0.052951] linkv2 diag now=55358 kind=4 value=0
+[16:10:27.024253 0.751055] linkv2 event now=56117 type=7 seq=56 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:27.267257 0.243004] linkv2 diag now=56359 kind=4 value=0
+[16:10:27.276239 0.008983] linkv2 event now=56368 type=3 seq=57 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:28.268260 0.992019] linkv2 diag now=57360 kind=4 value=0
+[16:10:28.276211 0.007953] linkv2 event now=57369 type=3 seq=58 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:29.268278 0.992065] linkv2 diag now=58361 kind=4 value=0
+[16:10:30.027280 0.759002] linkv2 event now=59120 type=7 seq=59 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:30.269298 0.242018] linkv2 diag now=59362 kind=4 value=0
+[16:10:31.028295 0.758997] linkv2 event now=60121 type=7 seq=60 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:31.220302 0.192007] linkv2 summary phase=periodic now=60313 submit_accepted=60 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=25 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=35 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:31.274260 0.053958] linkv2 diag now=60363 kind=4 value=0
+[16:10:32.029335 0.755075] linkv2 event now=61122 type=7 seq=61 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:32.272321 0.242986] linkv2 diag now=61364 kind=4 value=0
+[16:10:33.030334 0.758013] linkv2 event now=62123 type=7 seq=62 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:33.273305 0.242971] linkv2 diag now=62365 kind=4 value=0
+[16:10:34.031326 0.758021] linkv2 event now=63124 type=7 seq=63 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:34.273337 0.242011] linkv2 diag now=63366 kind=4 value=0
+[16:10:34.280322 0.006987] linkv2 event now=63373 type=3 seq=64 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:35.274342 0.994019] linkv2 diag now=64367 kind=4 value=0
+[16:10:36.033361 0.759019] linkv2 event now=65126 type=7 seq=65 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:36.220344 0.186982] linkv2 summary phase=periodic now=65313 submit_accepted=65 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=26 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=39 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:36.276321 0.055978] linkv2 diag now=65368 kind=4 value=0
+[16:10:37.034366 0.758045] linkv2 event now=66127 type=7 seq=66 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:37.277361 0.242996] linkv2 diag now=66369 kind=4 value=0
+[16:10:38.035386 0.758024] linkv2 event now=67128 type=7 seq=67 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:38.277386 0.242000] linkv2 diag now=67370 kind=4 value=0
+[16:10:38.284336 0.006951] linkv2 event now=67377 type=3 seq=68 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:39.278383 0.994046] linkv2 diag now=68371 kind=4 value=0
+[16:10:39.287372 0.008990] linkv2 event now=68380 type=3 seq=69 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:40.279400 0.992027] linkv2 diag now=69372 kind=4 value=0
+[16:10:41.038419 0.759019] linkv2 event now=70131 type=7 seq=70 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:41.220400 0.181981] linkv2 summary phase=periodic now=70313 submit_accepted=70 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=28 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=42 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:41.281396 0.060997] linkv2 diag now=70373 kind=4 value=0
+[16:10:42.039430 0.758034] linkv2 event now=71132 type=7 seq=71 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:42.281409 0.241979] linkv2 diag now=71374 kind=4 value=0
+[16:10:43.040448 0.759039] linkv2 event now=72133 type=7 seq=72 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:43.282427 0.241980] linkv2 diag now=72375 kind=4 value=0
+[16:10:43.289381 0.006955] linkv2 event now=72382 type=3 seq=73 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:44.283452 0.994069] linkv2 diag now=73376 kind=4 value=0
+[16:10:44.292414 0.008964] linkv2 event now=73385 type=3 seq=74 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:45.284442 0.992026] linkv2 diag now=74377 kind=4 value=0
+[16:10:45.546472 0.262031] linkv2 event now=74639 type=3 seq=75 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:46.219451 0.672978] linkv2 summary phase=periodic now=75313 submit_accepted=75 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=31 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=44 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:46.284420 0.064969] linkv2 diag now=75377 kind=4 value=0
+[16:10:47.042454 0.758034] linkv2 event now=76136 type=7 seq=76 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:47.284463 0.242008] linkv2 diag now=76378 kind=4 value=0
+[16:10:48.043483 0.759020] linkv2 event now=77137 type=7 seq=77 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:48.285486 0.242003] linkv2 diag now=77379 kind=4 value=0
+[16:10:49.044502 0.759016] linkv2 event now=78138 type=7 seq=78 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:49.287488 0.242986] linkv2 diag now=78380 kind=4 value=0
+[16:10:49.294496 0.007010] linkv2 event now=78387 type=3 seq=79 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:50.288494 0.993997] linkv2 diag now=79381 kind=4 value=0
+[16:10:50.295462 0.006968] linkv2 event now=79388 type=3 seq=80 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:51.219509 0.924046] linkv2 summary phase=periodic now=80313 submit_accepted=80 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=33 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=47 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:51.289512 0.070003] linkv2 diag now=80382 kind=4 value=0
+[16:10:52.047520 0.758008] linkv2 event now=81141 type=7 seq=81 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:52.289549 0.242028] linkv2 diag now=81383 kind=4 value=0
+[16:10:53.048564 0.759016] linkv2 event now=82142 type=7 seq=82 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:53.291531 0.242967] linkv2 diag now=82384 kind=4 value=0
+[16:10:54.049569 0.758037] linkv2 event now=83143 type=7 seq=83 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:10:54.292563 0.242994] linkv2 diag now=83385 kind=4 value=0
+[16:10:54.804557 0.511995] linkv2 event now=83898 type=3 seq=84 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:55.292554 0.487996] linkv2 diag now=84386 kind=4 value=0
+[16:10:55.299520 0.006968] linkv2 event now=84393 type=3 seq=85 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:56.219569 0.920047] linkv2 summary phase=periodic now=85313 submit_accepted=85 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=35 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=50 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:10:56.293561 0.073992] linkv2 diag now=85387 kind=4 value=0
+[16:10:56.806577 0.513016] linkv2 event now=85900 type=3 seq=86 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:57.294588 0.488011] linkv2 diag now=86388 kind=4 value=0
+[16:10:57.809582 0.514994] linkv2 event now=86903 type=3 seq=87 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:58.295633 0.486052] linkv2 diag now=87389 kind=4 value=0
+[16:10:58.302573 0.006940] linkv2 event now=87396 type=3 seq=88 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:10:59.296612 0.994039] linkv2 diag now=88390 kind=4 value=0
+[16:11:00.055613 0.759001] linkv2 event now=89149 type=7 seq=89 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:00.297613 0.242000] linkv2 diag now=89391 kind=4 value=0
+[16:11:00.306569 0.008957] linkv2 event now=89400 type=3 seq=90 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:11:01.220623 0.914053] linkv2 summary phase=periodic now=90314 submit_accepted=90 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=39 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=51 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:01.298619 0.077997] linkv2 diag now=90392 kind=4 value=0
+[16:11:02.057650 0.759031] linkv2 event now=91151 type=7 seq=91 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:02.299621 0.241971] linkv2 diag now=91393 kind=4 value=0
+[16:11:03.058636 0.759014] linkv2 event now=92152 type=7 seq=92 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:03.300633 0.241997] linkv2 diag now=92394 kind=4 value=0
+[16:11:03.309612 0.008981] linkv2 event now=92403 type=3 seq=93 attempts=1 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:11:04.301688 0.992075] linkv2 diag now=93395 kind=4 value=0
+[16:11:04.816659 0.514971] linkv2 event now=93910 type=3 seq=94 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=1 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:11:05.302694 0.486035] linkv2 diag now=94396 kind=4 value=0
+[16:11:06.060666 0.757972] linkv2 event now=95155 type=7 seq=95 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:06.220677 0.160010] linkv2 summary phase=periodic now=95315 submit_accepted=95 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=41 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=54 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:06.303669 0.082992] linkv2 diag now=95397 kind=4 value=0
+[16:11:07.061682 0.758014] linkv2 event now=96156 type=7 seq=96 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:07.303682 0.242000] linkv2 diag now=96398 kind=4 value=0
+[16:11:07.565659 0.261977] linkv2 event now=96660 type=3 seq=97 attempts=2 requested_mask=0x07 completed_mask=0x07 hack_status=0 local_reason=255 mesh_reason=255 origin=0x4218 destination=0x4bdc
+[16:11:08.303710 0.738050] linkv2 diag now=97398 kind=4 value=0
+[16:11:09.062687 0.758978] linkv2 event now=98157 type=7 seq=98 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:09.304720 0.242032] linkv2 diag now=98399 kind=4 value=0
+[16:11:10.063725 0.759005] linkv2 event now=99158 type=7 seq=99 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:10.305743 0.242018] linkv2 diag now=99400 kind=4 value=0
+[16:11:11.064745 0.758999] linkv2 event now=100159 type=7 seq=100 attempts=3 requested_mask=0x07 completed_mask=0x07 hack_status=255 local_reason=0 mesh_reason=0 origin=0x4218 destination=0x4bdc
+[16:11:11.220758 0.156016] linkv2 summary phase=periodic now=100315 submit_accepted=100 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=42 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=58 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:16.221806 5.001049] linkv2 summary phase=periodic now=105316 submit_accepted=100 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=42 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=58 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0
+[16:11:21.222843 5.001037] linkv2 summary phase=periodic now=110317 submit_accepted=100 submit_rejected=0 submit_no_slot=0 submit_faulted=0 custody_transferred=42 local_tx_not_attempted=0 custody_busy_expired=0 custody_rejected=0 retry_exhausted=58 radio_fault_terminal=0 service_fault_terminal=0 final_deliveries=0 final_duplicates=0 scheduler_radio_fault=0 scheduler_service_fault=0 hook_rx_blocked=0 hook_hack_suppressed=0 hook_busy_forced=0 diagnostic_dropped=0 diag_queue=0 delivery_queue=0 delivery_provisional=0 fault_latched=0 link_hack_enqueue_failed=0

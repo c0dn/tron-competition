@@ -82,7 +82,8 @@
     "microbit/app/ble_link_v2_testbed/",
     "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
     "microbit/build-tavrn-ble.sh",
-    "microbit/tests/protocol/run_tron_ble_build_profile_tests.sh"
+    "microbit/tests/protocol/run_tron_ble_build_profile_tests.sh",
+    "microbit/hardware-results/2026-08-05-linkv2-da5c0c9-failed-hardware.md"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
@@ -179,6 +180,14 @@
           "target": "complete link slice",
           "action": "Code-checker reviews bounds, ACK/idempotency, queue/failure semantics, scheduler ownership, starvation, admission-before-dedupe and legacy compatibility. Code-writer fixes valid findings; checker re-reviews. Commit the green accepted slice, then build clean candidate artifacts.",
           "validation": "Candidate commit clean and immutable; manifest includes full provenance and artifact hashes; no blocker/major remains.",
+          "status": "completed"
+        },
+        {
+          "id": "step-1c2-link-turnaround-correction",
+          "title": "Correct hardware-observed HACK turnaround and republish candidate",
+          "target": "link-v2 HACK scheduling, testbed aggregate RF telemetry, contracts, and replacement immutable artifacts",
+          "action": "Preserve failed da5c0c9 evidence, freeze the correction, author assertion-level RED tests, then source HACK turnaround directly from the existing radio TX-event bound, delay every centralized HACK producer, and add testbed-only aggregate valid-wire/channel plus scheduler counters. Keep the 71-key timer registry, 250/750/840 ms response bounds, legacy behavior, and >=95/100 gate unchanged. Run focused/full regressions and independent checker before committing and publishing a clean replacement candidate.",
+          "validation": "RED evidence fails on immediate HACK eligibility; all HACK producers pass due-1/due/wrap and response-window tests after implementation; telemetry classification rejects invalid frames/channels; all legacy/link/build suites and both firmware builds pass; checker reports no blocker/major; replacement artifacts are clean, hashed, board-bound, and immutable.",
           "status": "in_progress"
         },
         {
@@ -187,7 +196,7 @@
           "target": "two micro:bit v2 boards, routed link-v2 test mode",
           "action": "Flash exact candidate by UID. Run at least 100 transactions, deterministic first-HACK suppression, duplicate acceptance, busy queue hook, 60-second smoke and five-minute stability. Commit logs/summary separately.",
           "validation": "At least 95/100 complete; suppressed HACK causes retry and duplicate HACK with one custody/application acceptance; busy/policy rejection never marks neighbor dead; no reset/stall/corruption.",
-          "status": "draft"
+          "status": "blocked"
         }
       ]
     },
@@ -740,6 +749,13 @@
       "detail": "Resolved: exact selected-target Ninja commands, compile_commands, build.ninja, CMake cache, and generated config sidecars survive publication and are named/hashed/sized in the final manifest.",
       "source": "code-checker final integration gate ses_02f9806afffeuZphzNJhjbJGOT",
       "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Immediate HACK eligibility races the sender's three-channel TX burst",
+      "detail": "Immutable candidate da5c0c9 failed Step 1d: primary five-minute run transferred 43/100 at the sender while the receiver delivered 82 unique DATA. Central enqueue_hack made responses immediately eligible, allowing half-duplex HACK TX before the DATA sender completed channels 37/38/39 and restored RX. Correct with the existing 8 ms radio TX-event bound, prove all HACK producers, and republish a new immutable candidate.",
+      "source": "microbit/hardware-results/2026-08-05-linkv2-da5c0c9-failed-hardware.md; code-checker ses_02f1dd728ffees9Tp7tau46Kle",
+      "status": "open"
     }
   ],
   "notes": [
@@ -774,9 +790,14 @@
     "Phase 1 firmware/build integration lane `ses_02fb040a7ffeHsHYtKjwfpeims` added the dedicated production-radio link-v2 harness, centralized 71-key profile/config generation, strict TSV candidate identity validation, clean-temp artifact publisher, and focused positive/negative profile tests. Parent validation passed the production and RED link suites, all legacy host suites, the new build/profile/publisher suite, and both `./build.sh ble_mesh_node` and `./build.sh ble_link_v2_testbed`. Whole-integration adversarial review remains required before step 1b completion.",
     "Whole integration checker `ses_02f9806afffeuZphzNJhjbJGOT` verified the 71 timer registry, source isolation, fake-route rejection, SID16 runtime, basic publisher hashes/naming, and dirty-candidate rejection, but rejected step 1b on ten High acceptance defects. Entering a narrow fix pass; no commit or hardware action until all major findings are re-reviewed.",
     "Integration re-review resolved queue safety, provisional delivery, exact HACK suppression, app policy, timer authority, target scoping, fleet validation, runtime evidence, and most manifest requirements. One final disjoint fix pass remains for preemptible logger scheduling/pre-poll overrun checking and durable exact build-command sidecars.",
-    "Final integration checker `ses_02f9806afffeuZphzNJhjbJGOT` passed Step 1b with no blocker/critical/high/medium findings. Parent and checker verified host/RED suites, all legacy regressions, immutable timer authority, harness state/poll-gate tests, target/profile/inventory/publisher tests, both firmware builds, durable exact command sidecars, script modes, diff hygiene, and valid workplan structure. Step 1b is complete; Step 1c begins immutable commit and clean candidate publication."
+    "Final integration checker `ses_02f9806afffeuZphzNJhjbJGOT` passed Step 1b with no blocker/critical/high/medium findings. Parent and checker verified host/RED suites, all legacy regressions, immutable timer authority, harness state/poll-gate tests, target/profile/inventory/publisher tests, both firmware builds, durable exact command sidecars, script modes, diff hygiene, and valid workplan structure. Step 1b is complete; Step 1c begins immutable commit and clean candidate publication.",
+    "Step 1c completed from immutable commit da5c0c9 in clean detached worktree `/tmp/opencode/tavrn-linkv2-da5c0c9` with initialized clean submodule 5606cfb. Four BALANCED board-bound publications passed independent manifest/artifact/sidecar verification in `/tmp/opencode/tavrn-linkv2-da5c0c9-artifacts`: root unhooked ELF fea3b76b50cc677b6eb6a62dd5170ca2bdb6a48e065750d23a55c32a5175285b; leaf unhooked 8a621542f008c62f85e2dec455b7c54b745d778825014bbf50009c54f0e9bf8b; leaf HACK-drop bench 616fa9e8827af80ca18259e7d50f7756393472a542415e785a4d7509a0f44f27; leaf BUSY bench 883e20d7ad28279f736226d8f8d3213c9d954901489459400bc26789f4249590. Unhooked artifacts are candidate.eligible=yes; hooked artifacts are candidate.hook_bench_eligible=yes and unhooked acceptance=no. Entering Step 1d UID-targeted serial hardware qualification.",
+    "Step 1d hardware qualification blocked on 2026-08-05 before any device operation: repository-resolved pyOCD 0.45.1 reported `No available debug probes are connected`, and no `/dev/serial/by-id` links existed. No erase/load/reset/flash occurred. Clean commit da5c0c9 and all four verified candidate/bench artifacts remain preserved under `/tmp/opencode/tavrn-linkv2-da5c0c9-artifacts` for UID-targeted continuation when the known root and leaf boards are reconnected.",
+    "Step 1d resumed after both known micro:bit v2 probes reconnected. Exact UID/AdvA, clean source commit/tree/submodule, unhooked manifests, artifact hashes, serial links, and pyOCD targets were verified before sequential flash/reset/capture.",
+    "Immutable candidate da5c0c9 failed unhooked hardware acceptance on 2026-08-05. Post-reset 60-second result was root 25/60 custody transfer and leaf 45 unique deliveries. Five-minute result was root 43/100 transfer with 57 retry exhaustion and leaf 82 unique/28 duplicate, with all fault/reset/queue-remnant indicators zero. Boot-phase diagnostic runs produced 44/100 vs 81 unique and 42/100 vs 85 unique, so simple dwell phase lock was not dominant. Evidence is summarized in microbit/hardware-results/2026-08-05-linkv2-da5c0c9-failed-hardware.md. Hooked runs were deferred.",
+    "User reported a more hostile RF environment and approved the corrective slice. Preserve the >=95/100 gate. First fix the deterministic HACK half-duplex turnaround race with the existing 8 ms radio TX-event bound and add aggregate RF telemetry; do not tune retry, dwell, channel order, timeout, or power policy without replacement-candidate evidence."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-05T07:12:25.349Z"
+  "updatedAt": "2026-08-05T08:33:00.867Z"
 }
