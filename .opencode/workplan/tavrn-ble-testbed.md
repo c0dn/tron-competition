@@ -308,10 +308,10 @@ Hardware fanout rules:
 - Validation: At least 95/100 complete; suppressed HACK causes retry and duplicate HACK with one custody/application acceptance; BUSY defers and later completes without BUSY expiry, rejection, or link-break/fault terminal; no reset/stall/corruption. Neighbor state is not implemented by this non-routing harness.
 
 ### 3. Implement the TAVRN router at naive-AODV feature level <!-- workplan-phase-id: phase-2-aodv-base -->
-- Status: draft
+- Status: in_progress
 - Id: phase-2-aodv-base
 #### 3.1 Author and record failing naive-AODV tests <!-- workplan-step-id: step-2a-aodv-red-tests -->
-- Status: draft
+- Status: completed
 - Id: step-2a-aodv-red-tests
 - Target: pure route table/control codec/deterministic multi-node simulation
 - Action: Write assertion-level red tests for RREQ/RREP/RERR/E_RREP_ACK vectors, request dedupe, reverse/forward routes, destination/request sequence serial arithmetic and half-range policy, reboot/rejoin policy, freshness/ties, expanding ring, expiry, loop prevention, pending DATA, precursors, HACK-triggered failure, two-node direct and three-node chain. Keep link and legacy suites green; save red evidence.
@@ -601,6 +601,8 @@ Hardware fanout rules:
 - Step 1c3 completed at immutable candidate commit `4afe7208f653a417dbfbab3ae3e5c150d33e179b` (tree `13c45934ff18d87770701ee46317007145174b20`) from clean detached worktree `/tmp/opencode/tavrn-linkv2-4afe720` with clean submodule `5606cfba1625350901ad2eb521572b0a3f7735cb`. Four BALANCED UID/AdvA-bound publications under `/tmp/opencode/tavrn-linkv2-4afe720-artifacts` passed sorted/unique manifest, clean source/submodule, exact configuration, role/hook eligibility, and all artifact/evidence hash verification. ELF SHA-256: root unhooked `741bc9cc4d8921010cebe65bd3d3b0c506ac9a68fcaff9897b2fc8d595f758b1`; leaf unhooked `b7cf8edabc0be5c0d3f9976eb30603072a4a85eeb2fbbd321250f8231738e31d`; leaf HACK-drop bench `517b556c3ac070dfc23fc9bf684617fd35884fa42cc9d2c694805b5922f41977`; leaf BUSY bench `96d1eec3783a0abdf7d4f770a4462c68ee1e54ef38f5fcd6362c9376b270fb18`. Step 1d resumes with only the unhooked candidate artifacts; hooked benches remain deferred until the >=95/100 unhooked gate passes.
 - Step 1d and Phase 1 passed on candidate `4afe720`. Smoke completed 59/60 custody transfers with no faults. Five-minute qualification completed 100/100 and remained stable past 305 seconds. Controlled HACK-drop and BUSY runs exercised retry, duplicate custody, and deferred admission successfully. Results are summarized in `microbit/hardware-results/2026-08-05-linkv2-4afe720-passed-hardware.md`.
 - Fresh confirmation runs passed 99/100 and 97/100 unhooked gates plus repeated HACK-drop and BUSY behavior with no terminal faults. Phase 1 is closed; keep future experiments lightweight and prioritize implementation delivery over evidence packaging.
+- Phase 2a started after Phase 1 closure commit 875ebac. Scope is test-only: assertion-level naive-AODV RED coverage and a dedicated runner; production routing implementation, build configuration, and hardware remain unchanged.
+- Step 2a RED gate completed. `cd microbit && ./tests/protocol/run_tavrn_aodv_tests.sh --red` compiles the public AODV core contract with a test-only nonfunctional backend, emits assertion failures for SERIAL-02..04 and AODV-01..07, and exits 1; setup/compile failures exit 2. The production link-v2 suite and legacy packet, dedupe, and PING/PONG suites remain green. Three micro:bit v2 probes are connected for the later direct/forced-chain gate; no Phase 2 firmware has been flashed.
 
 ## Status
 - Overall status: in_progress
