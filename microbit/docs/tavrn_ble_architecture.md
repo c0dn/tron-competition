@@ -1356,8 +1356,9 @@ compiles no full source/header. `FULL_TAVRN` constructs the vtable in
 - GTT observes only committed/semantically accepted frame roles and copied route
   changes. An unresolved DATA candidate, BUSY, or REJECTED decision is not GTT
   evidence. GTT cannot mutate AODV storage.
-- Smart TTL returns only an initial scope. Unknown/stale state returns the
-  caller's full scope; fallback remains AODV-owned.
+- Smart TTL returns only an initial scope. Unknown, hard-expired, or departed
+  state returns the caller's full scope; soft-stale non-departed membership
+  remains eligible under `GTT-06`, and fallback remains AODV-owned.
 - ESC changes type-specific identity encoding through the wire-v2 codec seam,
   never route selection or route storage.
 - Mentorship and maintenance emit typed control actions; the router decides how

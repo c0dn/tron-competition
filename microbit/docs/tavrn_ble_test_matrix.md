@@ -76,7 +76,7 @@ untested.
 | TM-GTT-03 | `GTT-03` | F/FR | Frame-role evidence matrix includes malformed/ambiguous/overheard negative cases. | Directed/flood traffic yields expected membership evidence. |
 | TM-GTT-04 | `GTT-04` | F/FR | Merge/wrap/equal-hop/tombstone/retention/rejoin virtual-time tests. | Leave/rejoin converges without stale serial lockout. |
 | TM-GTT-05 | `GTT-05` | F/FR | Application enumeration and route-expiry independence tests. | Queried active set equals scripted set after convergence. |
-| TM-GTT-06 | `GTT-06` | F/FR | Fresh/stale/zero-hop Smart TTL and mandatory full-fallback simulations. | Known-destination initial scope shrinks; forced miss still discovers. |
+| TM-GTT-06 | `GTT-06` | F/FR | Fresh/soft-stale positive hints, hard-expired/departed/zero-hop negative hints, and mandatory full-fallback simulations. | Known-destination initial scope shrinks; forced miss still discovers. |
 
 ## ESC, mentorship, and maintenance
 

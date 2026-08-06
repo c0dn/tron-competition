@@ -218,6 +218,12 @@ aodv_init_status_t aodv_core_init(aodv_core_t *core,
 aodv_status_t aodv_core_submit_application(aodv_core_t *core,
                                            const tron_application_data_t *data,
                                            uint32_t now_ms);
+/* Starts one hinted first RREQ scope.  If it does not discover a route, the
+ * core's next RREQ uses net_diameter with a fresh request ID.  The ordinary
+ * submit API retains the AODV_ONLY expanding-ring sequence. */
+aodv_status_t aodv_core_submit_application_scoped(
+    aodv_core_t *core, const tron_application_data_t *data,
+    uint8_t initial_scope, uint32_t now_ms);
 aodv_status_t aodv_core_ingest_control(aodv_core_t *core,
                                         const aodv_control_input_t *input,
                                         uint32_t now_ms);

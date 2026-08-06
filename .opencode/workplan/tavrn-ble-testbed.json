@@ -83,7 +83,20 @@
     "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
     "microbit/build-tavrn-ble.sh",
     "microbit/tests/protocol/run_tron_ble_build_profile_tests.sh",
-    "microbit/hardware-results/2026-08-05-linkv2-da5c0c9-failed-hardware.md"
+    "microbit/hardware-results/2026-08-05-linkv2-da5c0c9-failed-hardware.md",
+    "microbit/app/protocol/tavrn_router.h",
+    "microbit/app/protocol/tavrn_router.c",
+    "microbit/app/protocol/tavrn_gtt.h",
+    "microbit/app/protocol/tavrn_gtt.c",
+    "microbit/app/protocol/tavrn_smart_ttl.h",
+    "microbit/app/protocol/tavrn_smart_ttl.c",
+    "microbit/app/protocol/tavrn_full.h",
+    "microbit/app/protocol/tavrn_full.c",
+    "microbit/tests/protocol/test_tavrn_router.c",
+    "microbit/tests/protocol/test_tavrn_gtt.c",
+    "microbit/tests/protocol/test_tavrn_smart_ttl.c",
+    "microbit/tests/protocol/run_tavrn_phase3_tests.sh",
+    "microbit/tests/protocol/test_tavrn_phase3_integration.c"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
@@ -250,38 +263,38 @@
     {
       "id": "phase-3-gtt-smartttl",
       "title": "Add passive GTT, application visibility, and Smart TTL without changing AODV",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-3a-gtt-red-tests",
           "title": "Author and record failing passive-GTT tests",
-          "target": "pure GTT and AODV integration tests",
-          "action": "Write red tests for separate membership/route state, serial freshness/wrap/reboot, passive evidence from all valid frame roles, hop estimates, fixed capacity, departed state, application enumeration, Smart-TTL initial scope, and mandatory full-flood fallback. Exclude HELLO, metadata, expiry verification and mentorship from this phase.",
-          "validation": "Tests fail for absent TAVRN augmentation while AODV_ONLY and lower suites stay green.",
-          "status": "draft"
+          "target": "test_tavrn_router.c, test_tavrn_gtt.c, test_tavrn_smart_ttl.c, test_tavrn_phase3_integration.c, run_tavrn_phase3_tests.sh, generic tavrn_full/router API headers, and AODV_ONLY characterization fixtures",
+          "action": "First characterize the existing AODV_ONLY no-hint RREQ TTL/request-ID traces. Then add assertion-level RED coverage for GTT-01..06: fixed capacity/self protection/replacement/no-victim behavior; serial wrap/equality/tombstone/rejoin; deterministic active enumeration including self; route-expiry independence; table-driven positive and negative passive evidence for the Phase-3-enabled DATA, HACK, FLOOD, E_RREQ, E_RREP, E_RERR, and E_RREP_ACK roles; and Smart-TTL traces where a fresh or soft-stale positive-hop hint emits min(hop+2,diameter) then full diameter, while hard-expired/departed/zero/absent hints preserve ordinary AODV expanding rings. Add one real host integration fixture that binds link-v2, the one AODV core, GTT, generic router hooks, and tavrn_full; require committed DATA/control/HACK/FLOOD event reachability, no SID16-to-AdvA synthesis, actual router-scoped submission, AODV-owned full fallback, and route/GTT independence. Exclude HELLO, SYNC, TC, metadata, mentorship, maintenance, repair, SID8, and over-air reboot claims.",
+          "validation": "run_tavrn_phase3_tests.sh --red exits 1 only on missing Phase 3 behavior; AODV_ONLY characterization and all legacy/link/AODV/build suites stay green.",
+          "status": "completed"
         },
         {
           "id": "step-3b-gtt-implementation",
           "title": "Implement passive GTT and Smart TTL as AODV augmentation",
-          "target": "tavrn_gtt and full-feature orchestration hooks",
-          "action": "Code-writer adds passive fixed-size GTT and application query API around the existing AODV engine. FULL_TAVRN consults fresh hop estimates for discovery scope and falls back; AODV route table and forwarding logic are unchanged.",
-          "validation": "GTT/Smart-TTL tests pass; AODV_ONLY outputs/tests remain unchanged; no active GTT transmissions exist yet.",
-          "status": "draft"
+          "target": "tavrn_router.{h,c}, tavrn_gtt.{h,c}, tavrn_smart_ttl.{h,c}, tavrn_full.{h,c}, aodv_core optional scope seam, routed main binding, and FULL_TAVRN build/manifest/publisher integration",
+          "action": "Extract the current main-to-link/AODV orchestration into tavrn_router without changing AODV_ONLY behavior. Add a generic optional initial-discovery-scope command to the one AODV core; the core includes no GTT/FULL header and retains full-diameter fallback. Implement a passive fixed-capacity GTT, deterministic application snapshot API, and FULL-only binder/hooks. Enable a manifested pre-ESC FULL_TAVRN prefix that remains SID16/I=0 and compiles no HELLO, SYNC, TC, metadata, mentorship, maintenance, repair, patient, or SID8 behavior. Add copied nonblocking GTT and per-RREQ telemetry plus only the manifest-recorded test hook needed to prove Smart-TTL fallback.",
+          "validation": "Phase 3 tests pass; exact AODV_ONLY action/wire/route characterization remains unchanged; FULL uses one AODV core/route table, GTT sends nothing and owns no timer, and fresh-hint discovery follows Smart-TTL then mandatory full-diameter fallback.",
+          "status": "in_progress"
         },
         {
           "id": "step-3c-gtt-checker-candidate",
           "title": "Check and commit GTT/Smart-TTL candidate",
-          "target": "passive GTT slice and all profile regressions",
-          "action": "Checker reviews freshness, capacity, passive ownership, fallback, route/GTT separation and feature-level isolation. Fix/re-review, commit accepted candidate and build clean artifacts.",
-          "validation": "No blocker/major; provenance complete; lower modes green.",
+          "target": "router extraction, passive GTT/Smart-TTL slice, feature-level isolation, build manifests, and all regressions",
+          "action": "Checker reviews exact AODV_ONLY parity, one-route-table ownership, passive evidence admission, freshness/capacity/enumeration, fallback, SID16 pre-ESC isolation, source lists, and telemetry/test-hook boundaries. Fix and re-review blocker/major findings, then commit the accepted slice and build clean UID/inventory-bound AODV_ONLY and FULL_TAVRN artifacts.",
+          "validation": "No blocker/major; legacy/link/AODV/Phase-3/build/profile/firmware suites green; AODV_ONLY has no FULL dependency; FULL source and manifest contain only the accepted pre-ESC Phase 3 prefix.",
           "status": "draft"
         },
         {
           "id": "step-3d-gtt-hardware",
           "title": "Prove passive membership and scoped discovery",
-          "target": "three/four boards",
-          "action": "Run scripted active sets and traffic. Compare AODV_ONLY and FULL_TAVRN GTT/Smart-TTL artifacts on identical topology; query each node and compare RREQ transmissions for known versus unknown destinations.",
-          "validation": "Observed active set equals scripted set at every node after convergence, precision=recall=1.0; Smart TTL reduces initial scope/transmissions and fallback completes within manifest formula.",
+          "target": "three-board RF-clique membership and forced two-hop Smart-TTL/fallback gates",
+          "action": "For passive membership, make all three boards emit accepted evidence in an RF clique and query deterministic snapshots; require join-only active sets including self and defer leave convergence to Phase 5. For Smart TTL, first acquire a fresh positive hint, then force A-B-C and compare cumulative origin+relay RREQ transmissions against AODV_ONLY. Suppress one manifested Smart-TTL attempt and require the next request to use full diameter with a fresh request ID; also prove absent-hint discovery retains ordinary expanding rings.",
+          "validation": "Join-only snapshots equal the scripted three-board set with precision=recall=1.0; fresh-hint first TTL is min(hop+2,15), cumulative RREQ transmissions improve for the forced topology, suppressed Smart TTL falls back to TTL 15 within 2*aodv_path_discovery_ms, absent-hint traces match AODV_ONLY, and delivery remains exactly once.",
           "status": "draft"
         }
       ]
@@ -818,9 +831,12 @@
     "Step 2b reached GREEN and immediate hardware smoke. The fixed-capacity AODV core, link control adapter, and `tavrn_routed_node` AODV_ONLY target pass focused AODV/link, legacy protocol, profile/build, and all three firmware builds. Focused checker `ses_02c725d58ffeX2gmrpMO3lZQeZ` found no blocker/major for direct/three-node PoC use.",
     "Rapid hardware loop passed without evidence packaging: direct A->C delivered fresh sequences 1..20 with 20/20 source custody; forced A->B->C delivered fresh sequences 1..20 with A 20/20 custody, B 20 forwards/20 custody, active A<->C RX blocks, and zero retry exhaustion, scheduler faults, local faults, or AODV backpressure. Temporary UART captures remain outside the repository.",
     "Step 2c closes as a working PoC checkpoint: focused checker found no blocker/major, all host/build gates passed, and direct plus forced-chain hardware smokes succeeded before commit. Per user direction, this rapid-iteration checkpoint intentionally omits clean-candidate/evidence packaging. Step 2d continues with higher-volume discovery, expiry/rediscovery, and ACK-loss hardware iteration.",
-    "2026-08-06 Step 2d hardware gate passed on three micro:bit v2 boards. Twenty independent direct cold boots all completed route discovery; 19/20 delivered the diagnostic payload, with one post-discovery DATA HACK loss. The direct 100-transaction run delivered 100/100 exactly once from A to C; A confirmed 99/100 custody because one receiver-accepted payload's HACK was missed, emitted RERR, and rediscovered without duplicate delivery. The forced A-B-C run delivered 99/100 exactly once; A confirmed 100/100 A-to-B custody, B confirmed 99/100 B-to-C custody, and the one missing payload was sequence 60 after a B-to-C HACK retry exhaustion; RERR and rediscovery recovered subsequent traffic. A settled-endpoint expiry run sent two transactions 40 seconds apart, performed two distinct RREQ/RREP discoveries across the 36-second active-route lifetime, and delivered/transferred custody for both. Natural RREP_ACK loss produced bounded blacklist actions and later recovery. No scheduler fault, mesh fault, AODV backpressure, pending-data failure, reset, stall, or duplicate final delivery occurred. Raw UART captures remain temporary under /tmp/opencode and are not committed."
+    "2026-08-06 Step 2d hardware gate passed on three micro:bit v2 boards. Twenty independent direct cold boots all completed route discovery; 19/20 delivered the diagnostic payload, with one post-discovery DATA HACK loss. The direct 100-transaction run delivered 100/100 exactly once from A to C; A confirmed 99/100 custody because one receiver-accepted payload's HACK was missed, emitted RERR, and rediscovered without duplicate delivery. The forced A-B-C run delivered 99/100 exactly once; A confirmed 100/100 A-to-B custody, B confirmed 99/100 B-to-C custody, and the one missing payload was sequence 60 after a B-to-C HACK retry exhaustion; RERR and rediscovery recovered subsequent traffic. A settled-endpoint expiry run sent two transactions 40 seconds apart, performed two distinct RREQ/RREP discoveries across the 36-second active-route lifetime, and delivered/transferred custody for both. Natural RREP_ACK loss produced bounded blacklist actions and later recovery. No scheduler fault, mesh fault, AODV backpressure, pending-data failure, reset, stall, or duplicate final delivery occurred. Raw UART captures remain temporary under /tmp/opencode and are not committed.",
+    "2026-08-06 Phase 3 scope correction approved after repository-grounded plan review: extract the architecture-required tavrn_router seam before integrating GTT. Phase 3 FULL_TAVRN is a manifested pre-ESC SID16/I=0 prefix only. AODV_ONLY behavior must be characterized before extraction and remain byte/action/route equivalent afterward; the only permitted FULL routing difference is a generic initial discovery-scope hint followed by AODV-owned full-diameter fallback.",
+    "2026-08-06 Phase 3 RED contract review resolved ambiguous 'stale' wording by applying sole-authority GTT-06: soft-stale, non-departed entries remain membership and may provide Smart-TTL hints; hard-expired entries do not. RERR unreachable entries remain AODV route-error facts and are not GTT liveness/departure evidence. The Phase 5 MAINT-06 hard-expired verification wording remains deferred for explicit reconciliation before maintenance implementation.",
+    "2026-08-06 Step 3a RED contract accepted by adversarial checker `ses_02a658946ffensnzSIIq6EtMHu`. `run_tavrn_phase3_tests.sh --red` compiles four binaries and exits exactly 1 on assertion-level GTT-01..06 failures with AODV-04 unchanged. All AODV/link/scheduler/legacy/profile host suites and legacy/link-v2/AODV_ONLY FAST_TEST firmware builds remain green. RED now forces real link/router/AODV/GTT/FULL event binding, typed evidence roles, no SID16-to-AdvA synthesis, wrap-safe freshness/replacement/tombstones, route/GTT independence, Smart-TTL scope/fallback, and ordinary no-hint rings."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-05T20:46:47.698Z"
+  "updatedAt": "2026-08-06T06:41:28.960Z"
 }

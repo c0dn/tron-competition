@@ -157,6 +157,7 @@ typedef struct tavrn_link_counters {
     uint32_t rx_additional_data_busy;
     uint32_t rx_committed_duplicate;
     uint32_t rx_control;
+    uint32_t rx_flood_committed;
     uint32_t rx_malformed;
     uint32_t rx_wrong_next_hop;
     uint32_t rx_identity_conflict;
