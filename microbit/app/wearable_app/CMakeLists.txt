@@ -10,13 +10,15 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sound.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fusion.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ble_emit.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/imu.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/mic.c
+)
+
+target_link_libraries(wearable_app PRIVATE
+  microbit_driver_ble_radio
+  microbit_driver_imu
+  microbit_driver_mic
+  mind_wire_contract
 )
 
 target_include_directories(wearable_app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/../drivers
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../../shared   # shared BLE beacon contract (schema.h)
 )

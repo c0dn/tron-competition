@@ -4,12 +4,14 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/config
   APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/imu.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/mic.c
+)
+
+target_link_libraries(ble_beacon PRIVATE
+  microbit_driver_ble_radio
+  microbit_driver_imu
+  microbit_driver_mic
 )
 
 target_include_directories(ble_beacon PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/../drivers
 )

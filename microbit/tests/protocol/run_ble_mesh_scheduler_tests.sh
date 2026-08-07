@@ -15,7 +15,7 @@ mkdir -p "$BUILD_DIR"
   -Werror \
   -DBLE_RADIO_HOST_TEST \
   -I"$MICROBIT_DIR/app/protocol" \
-  -I"$MICROBIT_DIR/app/drivers" \
+  -I"$MICROBIT_DIR/lib/drivers" \
   "$MICROBIT_DIR/app/protocol/ble_mesh_scheduler.c" \
   "$SCRIPT_DIR/test_ble_mesh_scheduler.c" \
   -o "$BUILD_DIR/test_ble_mesh_scheduler"
@@ -27,8 +27,8 @@ mkdir -p "$BUILD_DIR"
   -Werror \
   -DBLE_RADIO_HOST_TEST \
   -DTEST_BLE_RADIO_DRIVER \
-  -I"$MICROBIT_DIR/app/drivers" \
-  "$MICROBIT_DIR/app/drivers/ble_radio.c" \
+  -I"$MICROBIT_DIR/lib/drivers" \
+  "$MICROBIT_DIR/lib/drivers/ble_radio.c" \
   "$SCRIPT_DIR/test_ble_mesh_scheduler.c" \
   -o "$BUILD_DIR/test_ble_radio_driver"
 
