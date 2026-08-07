@@ -14,10 +14,9 @@
  *   shout then fall -> the fall resolves onto a live shout, emitted directly
  *                      as FALL_AND_SHOUT (one event).
  *   fall then shout -> the fall is emitted immediately (never delay an alarm),
- *                      then upgraded to FALL_AND_SHOUT by a second event with a
- *                      fresh seq. The observer de-dups on
- *                      (device_id, event_type, seq), so the upgrade is a
- *                      distinct record and needs no observer-side change.
+ *                      then upgraded to FALL_AND_SHOUT by a second event with
+ *                      its own id, so the upgrade is a distinct record on the
+ *                      wire and needs no receiver-side change.
  *
  * A fused pair is consumed so it cannot fire twice.
  */
@@ -25,8 +24,6 @@
 #include "fusion.h"
 #include "app_config.h"
 #include "schema.h"
-
-static UB seq;
 
 /* Latched sources. *_ms are valid only while *_live is TRUE. */
 static fall_event_t  last_fall;
@@ -40,7 +37,6 @@ static BOOL          shout_live;
 
 void fusion_init(void)
 {
-    seq = 0;
     last_fall = FALL_EVT_NONE;
     last_fall_ms = 0;
     last_fall_svm = 0;
@@ -121,6 +117,7 @@ BOOL fusion_update(fall_event_t fe, sound_event_t se,
     out->confidence = (UB)conf;
     out->accel_svm  = svm;
     out->mic_level  = mic;
-    out->seq        = seq++;
+    /* Identity is assigned by the caller, from the single id space shared
+     * with heartbeats, so it is not set here. */
     return TRUE;
 }

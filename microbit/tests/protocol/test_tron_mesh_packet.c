@@ -361,10 +361,64 @@ static int run_test(const test_case_t *test)
     return result;
 }
 
+/*
+ * The wearable rides the mesh by carrying shared/schema.h's 7-byte payload as
+ * msg_type MIND_EVENT. This pins the two properties that makes that legal:
+ * the frame fits the 31-byte advertising cap, and the payload survives the
+ * round trip byte for byte.
+ */
+static int test_mind_event_round_trip(void)
+{
+    /* mind_adv_payload_t laid out by hand so this test does not depend on the
+     * struct's packing: version, type, confidence, svm LE, mic, seq. */
+    static const uint8_t mind_payload[7] = {
+        0x01, 0x05, 0x4B, 0x1F, 0x1A, 0x7D, 0x2A
+    };
+    tron_mesh_packet_t in;
+    tron_mesh_packet_t out;
+    uint8_t adv[TRON_MESH_ADV_MAX_LEN];
+    size_t adv_len = 0u;
+    size_t i;
+
+    memset(&in, 0, sizeof(in));
+    in.net_id = 0x01u;
+    in.ttl = TRON_MESH_TTL_MAX;
+    in.src = 0x0101u;                   /* wearable range: 0x0100 + device id */
+    in.seq24 = 0x0ABCDEu;
+    in.msg_type = TRON_MESH_MSG_TYPE_MIND_EVENT;
+    in.payload_len = (uint8_t)sizeof(mind_payload);
+    memcpy(in.payload, mind_payload, sizeof(mind_payload));
+
+    ASSERT_EQ_U32(TRON_MESH_PACKET_OK,
+                  tron_mesh_packet_encode(&in, adv, sizeof(adv), &adv_len));
+
+    /* 19 bytes of framing + 7 of payload, with 5 to spare under the cap. */
+    ASSERT_EQ_U32(26u, (uint32_t)adv_len);
+    ASSERT_TRUE(adv_len <= TRON_MESH_ADV_MAX_LEN);
+
+    ASSERT_EQ_U32(TRON_MESH_PACKET_OK,
+                  tron_mesh_packet_decode(adv, adv_len, &out));
+
+    ASSERT_EQ_U32(TRON_MESH_MSG_TYPE_MIND_EVENT, out.msg_type);
+    ASSERT_EQ_U32(0x0101u, out.src);
+    ASSERT_EQ_U32(0x0ABCDEu, out.seq24);
+    ASSERT_EQ_U32(TRON_MESH_TTL_MAX, out.ttl);
+    ASSERT_EQ_U32((uint32_t)sizeof(mind_payload), out.payload_len);
+
+    for (i = 0u; i < sizeof(mind_payload); i++) {
+        ASSERT_EQ_U32(mind_payload[i], out.payload[i]);
+    }
+
+    /* MIND_EVENT must not be confused with the dummy status type. */
+    ASSERT_TRUE(TRON_MESH_MSG_TYPE_MIND_EVENT != TRON_MESH_MSG_TYPE_DUMMY_STATUS);
+    return 0;
+}
+
 int main(void)
 {
     static const test_case_t tests[] = {
         { "round trip", test_round_trip },
+        { "MIND event round trip", test_mind_event_round_trip },
         { "network admission", test_network_admission },
         { "zero-length payload", test_zero_length_payload },
         { "max payload length", test_max_payload_length },

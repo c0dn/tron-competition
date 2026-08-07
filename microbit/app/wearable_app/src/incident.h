@@ -30,13 +30,20 @@ typedef int      BOOL;
 #include <tk/tkernel.h>
 #endif
 
-/* Projection to the Plan 02 wire payload (identity rides AdvA / mesh src). */
+/* Projection to the Plan 02 wire payload (identity rides the mesh src field).
+ *
+ * event_id is the transport identity and the thing receivers deduplicate on.
+ * It is assigned once, when the message is created, and every retransmitted
+ * copy carries it unchanged - that is what lets a relay collapse a spray into
+ * one forward. It is 32-bit here and masked to 24 on air; seq keeps the
+ * low 8 bits so the schema-v1 payload field stays meaningful. */
 typedef struct {
     UB  event_type;
     UB  confidence;
     UW  accel_svm;      /* milli-g */
     UB  mic_level;      /* 0-255 */
     UB  seq;
+    UW  event_id;
 } incident_state_t;
 
 #endif /* INCIDENT_H */

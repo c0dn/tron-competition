@@ -14,8 +14,37 @@
 
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
+#include "schema.h"
 #include "tron_mesh_dedupe.h"
 #include "tron_mesh_packet.h"
+
+/* Local byte copy rather than <string.h>: newlib's string.h drags in stddef's
+ * size_t (unsigned int), which collides with the kernel's SZ (long int) in
+ * tk/syslib.h. ble_mesh_scheduler.c carries the same helper. */
+static void node_copy_bytes(void *dst, const void *src, uint8_t len)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+
+    while (len > 0u) {
+        *d++ = *s++;
+        len--;
+    }
+}
+
+/* Short labels for the wearable's incident types, for the serial log. */
+static const char *mind_event_name(uint8_t event_type)
+{
+    switch (event_type) {
+    case MIND_EVT_HEARTBEAT:         return "heartbeat";
+    case MIND_EVT_MOTION:            return "motion";
+    case MIND_EVT_POSSIBLE_FALL:     return "possible-fall";
+    case MIND_EVT_CONFIRMED_FALL:    return "CONFIRMED-FALL";
+    case MIND_EVT_POSSIBLE_DISTRESS: return "shout";
+    case MIND_EVT_FALL_AND_SHOUT:    return "FALL+SHOUT";
+    default:                         return "?";
+    }
+}
 
 #define FICR_DEVICEADDR0          0x100000A4UL
 
@@ -287,20 +316,50 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
         return;
     }
 
-    if (packet.msg_type != TRON_MESH_MSG_TYPE_DUMMY_STATUS) {
-        tm_printf((UB *)"mesh non-dummy msg_type=0x%02x ignored src=0x%04x seq=%lu\n",
+    switch (packet.msg_type) {
+    case TRON_MESH_MSG_TYPE_DUMMY_STATUS:
+        tm_printf((UB *)"mesh rx dummy src=0x%04x seq=%lu ttl=%u rssi=-%u dBm payload=%s\n",
+                  packet.src,
+                  (UW)packet.seq24,
+                  (UINT)packet.ttl,
+                  (UINT)event->rssi_dbm,
+                  payload_hex(&packet));
+        break;
+
+    case TRON_MESH_MSG_TYPE_MIND_EVENT: {
+        mind_adv_payload_t p;
+
+        if (packet.payload_len < (uint8_t)MIND_PAYLOAD_SIZE) {
+            tm_printf((UB *)"mesh rx event TRUNCATED src=0x%04x seq=%lu len=%u\n",
+                      packet.src, (UW)packet.seq24, (UINT)packet.payload_len);
+            return;
+        }
+        node_copy_bytes(&p, packet.payload, (uint8_t)MIND_PAYLOAD_SIZE);
+
+        tm_printf((UB *)"mesh rx event src=0x%04x seq=%lu ttl=%u rssi=-%u dBm "
+                        "type=%u(%s) conf=%u svm=%u mic=%u\n",
+                  packet.src,
+                  (UW)packet.seq24,
+                  (UINT)packet.ttl,
+                  (UINT)event->rssi_dbm,
+                  (UINT)p.event_type,
+                  mind_event_name(p.event_type),
+                  (UINT)p.confidence,
+                  (UINT)p.accel_svm,
+                  (UINT)p.mic_level);
+        break;
+    }
+
+    default:
+        /* Unknown types are not relayed: forwarding something this build
+         * cannot parse would spend other nodes' airtime on traffic no one in
+         * this network can act on. */
+        tm_printf((UB *)"mesh unknown msg_type=0x%02x ignored src=0x%04x seq=%lu\n",
                   (UINT)packet.msg_type,
                   packet.src,
                   (UW)packet.seq24);
         return;
     }
-
-    tm_printf((UB *)"mesh rx dummy src=0x%04x seq=%lu ttl=%u rssi=-%u dBm payload=%s\n",
-              packet.src,
-              (UW)packet.seq24,
-              (UINT)packet.ttl,
-              (UINT)event->rssi_dbm,
-              payload_hex(&packet));
 
     maybe_schedule_relay(sched, &packet, self, now);
 }

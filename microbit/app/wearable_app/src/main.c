@@ -39,7 +39,23 @@ static struct {
     UW              fall_peak;      /* peak SVM of the last fall window    */
     UB              sound_level;    /* scaled loudness of the last shout  */
     tx_adapter_t    tx;             /* live events + heartbeat scheduling  */
+    UW              next_msg_id;    /* one id space for events + heartbeats */
 } g;
+
+/* One counter for everything this device originates.
+ *
+ * There used to be two - fusion's seq for events and advertise_task's hb_seq
+ * for heartbeats - both written into the same one-byte payload field, so the
+ * pair only stayed distinguishable because receivers happened to include
+ * event_type in their dedup key. A single space removes that coupling, and it
+ * is what lands in the mesh seq24, where 24 bits make collisions a non-issue
+ * instead of something that recurs every 256 messages.
+ *
+ * Assigned once per logical message; retransmissions reuse it. */
+static UW next_msg_id(void)
+{
+    return g.next_msg_id++;
+}
 
 static void lock(void)   { tk_loc_mtx(g_mtx, TMO_FEVR); }
 static void unlock(void) { tk_unl_mtx(g_mtx); }
@@ -139,6 +155,8 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         }
 
         lock();
+        inc.event_id = next_msg_id();
+        inc.seq = (UB)(inc.event_id & 0xFFu);
         admitted = tx_adapter_admit(&g.tx, &inc, now_ms());
         active = tx_adapter_active(&g.tx);
         unlock();
@@ -163,8 +181,6 @@ LOCAL void fusion_task(INT stacd, void *exinf)
  */
 LOCAL void advertise_task(INT stacd, void *exinf)
 {
-    UB hb_seq = 0;
-
     while (1) {
         incident_state_t out;
         tx_adapter_send_t what;
@@ -172,11 +188,14 @@ LOCAL void advertise_task(INT stacd, void *exinf)
         lock();
         what = tx_adapter_next(&g.tx, now_ms(), &out);
         if (what == TX_ADAPTER_SEND_HEARTBEAT) {
+            UW id = next_msg_id();
+
             out.event_type = MIND_EVT_HEARTBEAT;
             out.confidence = 0;
             out.accel_svm = g.cur_svm;
             out.mic_level = 0;
-            out.seq = hb_seq++;
+            out.event_id = id;
+            out.seq = (UB)(id & 0xFFu);
         }
         unlock();
 

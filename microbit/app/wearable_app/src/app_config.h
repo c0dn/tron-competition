@@ -12,6 +12,19 @@
 /* Per-unit id, baked in at flash time; used in the fixed AdvA (Plan 02 2.3). */
 #define DEVICE_ID               0x01
 
+/* --- Mesh identity ------------------------------------------------------- */
+/* The wearable originates onto the same mesh the relay nodes run, so it needs
+ * an address that cannot collide with them. Relay nodes are provisioned from
+ * the low end (0x0001 upwards, and 0 means "derive from FICR"), so wearables
+ * are based at 0x0100 and indexed by DEVICE_ID. */
+/* The origin TTL is TRON_MESH_TTL_MAX, taken in ble_emit.c rather than here:
+ * tron_mesh_packet.h only skips <stddef.h> once <tk/tkernel.h> has been seen,
+ * and app_config.h is included by translation units that have not pulled the
+ * kernel headers in yet, where stddef's size_t collides with the kernel's. */
+#define MIND_MESH_NET_ID        0x01u
+#define MIND_MESH_SRC_BASE      0x0100u
+#define MIND_MESH_SRC           (MIND_MESH_SRC_BASE + DEVICE_ID)
+
 /* Accelerometer: +/-8g so impacts don't clip. IMU_COUNTS_PER_G is the
  * rest-SVM calibration knob (imu.h: ~4096 counts/g at +/-8g). */
 #define IMU_FULLSCALE_G         8
