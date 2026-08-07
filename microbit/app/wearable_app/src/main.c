@@ -22,6 +22,7 @@
 #include "fall.h"
 #include "sound.h"
 #include "fusion.h"
+#include "tx_adapter.h"
 #include "ble_emit.h"
 #include "imu.h"        /* LSM303AGR_WHOAMI */
 
@@ -37,8 +38,7 @@ static struct {
     sound_event_t   sound_evt;      /* pending shout event                */
     UW              fall_peak;      /* peak SVM of the last fall window    */
     UB              sound_level;    /* scaled loudness of the last shout  */
-    incident_state_t incident;      /* current incident to burst-advertise */
-    INT             burst_remaining;/* remaining burst adverts (>0 = burst)*/
+    tx_adapter_t    tx;             /* live events + heartbeat scheduling  */
 } g;
 
 static void lock(void)   { tk_loc_mtx(g_mtx, TMO_FEVR); }
@@ -118,6 +118,8 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         UW asvm, peak, cur;
         UB mlvl;
         incident_state_t inc;
+        BOOL admitted;
+        UB active;
 
         tk_wai_flg(g_flg, FLG_FALL | FLG_SOUND,
                    TWF_ORW | TWF_CLR, &ptn, TMO_FEVR);
@@ -137,42 +139,51 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         }
 
         lock();
-        g.incident = inc;
-        g.burst_remaining = BURST_COUNT;
+        admitted = tx_adapter_admit(&g.tx, &inc, now_ms());
+        active = tx_adapter_active(&g.tx);
         unlock();
 
-        tm_printf((UB *)"EVENT type=%u conf=%u svm=%u mic=%u seq=%u\n",
+        tm_printf((UB *)"EVENT type=%u conf=%u svm=%u mic=%u seq=%u %s active=%u\n",
                   inc.event_type, inc.confidence, inc.accel_svm,
-                  inc.mic_level, inc.seq);
+                  inc.mic_level, inc.seq,
+                  admitted ? (UB *)"admitted" : (UB *)"DROPPED", active);
     }
 }
 
-/* ---- advertise_task: adaptive cadence, schema-v1 emit ------------------- */
+/* ---- advertise_task: fixed-tick poll, schema-v1 emit -------------------- */
+/*
+ * The cadence lives in tx_adapter, which schedules against absolute deadlines.
+ * This task only polls it at a fixed tick and puts whatever it returns on air.
+ *
+ * The tick is deliberately uniform rather than "sleep until the next thing is
+ * due": tk_dly_tsk() quantises to CNF_TIMER_PERIOD (10 ms here) and may
+ * overshoot by a full tick, so a chain of variable sleeps accumulates error
+ * across a burst. Polling on a fixed tick and comparing absolute deadlines
+ * keeps the drift bounded to one tick no matter how long the burst runs.
+ */
 LOCAL void advertise_task(INT stacd, void *exinf)
 {
     UB hb_seq = 0;
 
     while (1) {
         incident_state_t out;
-        BOOL burst;
+        tx_adapter_send_t what;
 
         lock();
-        if (g.burst_remaining > 0) {
-            out = g.incident;
-            g.burst_remaining--;
-            burst = TRUE;
-        } else {
+        what = tx_adapter_next(&g.tx, now_ms(), &out);
+        if (what == TX_ADAPTER_SEND_HEARTBEAT) {
             out.event_type = MIND_EVT_HEARTBEAT;
             out.confidence = 0;
             out.accel_svm = g.cur_svm;
             out.mic_level = 0;
             out.seq = hb_seq++;
-            burst = FALSE;
         }
         unlock();
 
-        ble_emit_advertise(&out);
-        tk_dly_tsk(burst ? BURST_INTERVAL_MS : HEARTBEAT_INTERVAL_MS);
+        if (what != TX_ADAPTER_SEND_NONE) {
+            ble_emit_advertise(&out);
+        }
+        tk_dly_tsk(TX_TICK_MS);
     }
 }
 
@@ -213,6 +224,8 @@ EXPORT INT usermain(void)
     fall_init();
     sound_init();
     fusion_init();
+    tx_adapter_init(&g.tx, EVENT_TX_BUDGET_MS, EVENT_TX_INTERVAL_MS,
+                    EVENT_TX_MIN_COUNT, HEARTBEAT_INTERVAL_MS, now_ms());
 
     g_mtx = tk_cre_mtx(&cmtx);
     g_flg = tk_cre_flg(&cflg);

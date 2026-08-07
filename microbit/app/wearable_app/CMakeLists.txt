@@ -10,6 +10,7 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sound.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fusion.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ble_emit.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tx_adapter.c
 )
 
 target_link_libraries(wearable_app PRIVATE

@@ -6,18 +6,10 @@
 #define FUSION_H
 
 #include <tk/tkernel.h>
+#include "incident.h"   /* incident_state_t */
 #include "sensors.h"
 #include "fall.h"
 #include "sound.h"
-
-/* Projection to the Plan 02 wire payload (identity rides AdvA). */
-typedef struct {
-    UB  event_type;
-    UB  confidence;
-    UW  accel_svm;      /* milli-g */
-    UB  mic_level;      /* 0-255 */
-    UB  seq;
-} incident_state_t;
 
 void fusion_init(void);
 

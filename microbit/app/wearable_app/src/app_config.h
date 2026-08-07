@@ -84,7 +84,25 @@
 
 /* --- Advertising cadence (Plan 01 5) ------------------------------------- */
 #define HEARTBEAT_INTERVAL_MS   1500    /* slow alive beacon                  */
-#define BURST_INTERVAL_MS       120     /* fast re-broadcast on an event      */
-#define BURST_COUNT             50      /* ~6 s of burst per event            */
+
+/* Event retransmission, managed by tx_adapter.
+ *
+ * An event is re-sent for EVENT_TX_BUDGET_MS because the mesh receiver
+ * time-slices one radio (ble_mesh_scheduler dwells ~50 ms per advertising
+ * channel and drops RX during its TX windows), so a single advertisement can
+ * land entirely inside a deaf period. The budget is wall-clock rather than a
+ * packet count because the number of transmit opportunities in a window is not
+ * fixed; EVENT_TX_MIN_COUNT is a floor for the case where a coarse tick or
+ * several concurrent events starve a slot of copies.
+ *
+ * TX_TICK_MS is the poll cadence, not the per-event spacing. It has to divide
+ * EVENT_TX_INTERVAL_MS finely enough that N concurrent events can each still
+ * hit their own interval: at 30 ms, four events interleave at ~120 ms apiece,
+ * which clears the floor inside the budget. It cannot usefully go below
+ * CNF_TIMER_PERIOD (10 ms here) since tk_dly_tsk() quantises to it. */
+#define EVENT_TX_BUDGET_MS      1000    /* how long one event keeps spraying  */
+#define EVENT_TX_INTERVAL_MS    100     /* spacing between copies of an event */
+#define EVENT_TX_MIN_COUNT      8       /* floor on copies before retiring    */
+#define TX_TICK_MS              30      /* advertise_task poll cadence        */
 
 #endif /* APP_CONFIG_H */
