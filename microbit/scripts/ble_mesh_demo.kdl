@@ -1,0 +1,56 @@
+// Zellij layout for the three-node BLE flood-mesh demo.
+//
+// Run from the microbit/ directory; paths below are relative to it:
+//
+//   zellij -n scripts/ble_mesh_demo.kdl -s tron-ble-mesh-demo
+//
+// Use -n (--new-session-with-layout), not -l/--layout: with -s, -l means
+// "add these panes as a tab to an existing session" and fails if none exists.
+//
+// If you start this detached (e.g. wrapped in `script` so it gets a pty),
+// kill that bootstrap client once the panes are up:
+//
+//   pkill -f ble_mesh_demo.kdl
+//
+// Zellij sizes panes to the SMALLEST attached client, so an 80x24 bootstrap
+// pty left running will pin the whole session to 80x24 no matter how large
+// the window you later attach with.
+//
+// Topology (forced in firmware, see --block-direct-peer):
+//
+//   NODE-A 0x0001  <-- ignores direct frames from 0x0003
+//        |
+//   RELAY  0x0002  <-- blocks nobody, hears both endpoints at full TTL
+//        |
+//   NODE-C 0x0003  <-- ignores direct frames from 0x0001
+//
+// Panes are stacked in rows because the status lines are wide.
+
+layout {
+    pane_template name="monitor" {
+        command "python3"
+    }
+
+    pane split_direction="horizontal" {
+        monitor name="NODE-A 0x0001" {
+            args "scripts/ble_mesh_demo_monitor.py" \
+                 "--role" "endpoint" \
+                 "--label" "NODE-A" \
+                 "--peer" "0x0003" \
+                 "--device" "/dev/ttyACM1"
+        }
+        monitor name="RELAY 0x0002" {
+            args "scripts/ble_mesh_demo_monitor.py" \
+                 "--role" "relay" \
+                 "--label" "RELAY" \
+                 "--device" "/dev/ttyACM2"
+        }
+        monitor name="NODE-C 0x0003" {
+            args "scripts/ble_mesh_demo_monitor.py" \
+                 "--role" "endpoint" \
+                 "--label" "NODE-C" \
+                 "--peer" "0x0001" \
+                 "--device" "/dev/ttyACM3"
+        }
+    }
+}

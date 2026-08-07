@@ -9,6 +9,13 @@
 
 #include "ble_radio.h"
 
+#ifdef BLE_RADIO_HOST_TEST
+extern UW ble_radio_host_in_w(UW addr);
+extern void ble_radio_host_out_w(UW addr, UW value);
+#define in_w ble_radio_host_in_w
+#define out_w ble_radio_host_out_w
+#endif
+
 /* --- nRF52833 RADIO peripheral (base 0x40001000) --- */
 #define RADIO_BASE          0x40001000UL
 #define R(off)              (RADIO_BASE + (off))
@@ -64,18 +71,40 @@ static const UB adv_white[3] = { 37, 38, 39 };
    PACKETPTR. payload = AdvA(6) + AdvData. */
 static UB pkt[2 + 6 + BLE_ADV_MAX_DATA] __attribute__((aligned(4)));
 
+static UINT rx_active;
+static UINT rx_channel = 37;
+
+static UB radio_channel(UINT channel)
+{
+    return (channel == 37 || channel == 39) ? (UB)channel : 38u;
+}
+
+static UB radio_channel_frequency(UB channel)
+{
+    return (channel == 37u) ? 2u : (channel == 39u) ? 80u : 26u;
+}
+
 static void radio_disable(void)
 {
     if (in_w(RADIO_STATE) != 0) {       /* 0 == Disabled */
-        out_w(RADIO_EVENTS_DISABLED, 0);
         out_w(RADIO_TASKS_DISABLE, 1);
-        while (in_w(RADIO_EVENTS_DISABLED) == 0) {}
+        while (in_w(RADIO_STATE) != 0) {}
     }
+    out_w(RADIO_EVENTS_DISABLED, 0);
+}
+
+void ble_radio_idle(void)
+{
+    radio_disable();
+    out_w(RADIO_SHORTS, 0);
+    rx_active = 0;
 }
 
 void ble_radio_init(void)
 {
     radio_disable();
+    rx_active = 0;
+    rx_channel = 37;
 
     out_w(RADIO_MODE, 3);               /* Ble_1Mbit */
     out_w(RADIO_TXPOWER, 0);            /* 0 dBm */
@@ -105,6 +134,9 @@ static void tx_on_channel(INT ch)
     out_w(RADIO_DATAWHITEIV, adv_white[ch]);
     out_w(RADIO_PACKETPTR, (UW)pkt);
 
+    /* TX must not rely on the shortcut state left by init, idle, or RX. */
+    out_w(RADIO_SHORTS, SHORT_READY_START | SHORT_END_DISABLE);
+
     out_w(RADIO_EVENTS_READY, 0);
     out_w(RADIO_EVENTS_END, 0);
     out_w(RADIO_EVENTS_DISABLED, 0);
@@ -112,10 +144,9 @@ static void tx_on_channel(INT ch)
     while (in_w(RADIO_EVENTS_DISABLED) == 0) {}   /* shorts: ready->start->end->disable */
 }
 
-void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
+static void prepare_adv_packet(const UB *adv, UINT adv_len, const UB *addr6)
 {
     UINT i;
-    INT ch;
 
     if (adv_len > BLE_ADV_MAX_DATA) {
         adv_len = BLE_ADV_MAX_DATA;
@@ -143,48 +174,100 @@ void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
     for (i = 0; i < adv_len; i++) {
         pkt[8 + i] = adv[i];
     }
+}
+
+void ble_radio_advertise_channels(const UB *adv, UINT adv_len, const UB *addr6,
+                                  UINT channel_mask)
+{
+    INT ch;
+
+    radio_disable();
+    rx_active = 0;
+
+    prepare_adv_packet(adv, adv_len, addr6);
+
+    if ((channel_mask & BLE_RADIO_ADV_CH_ALL) == 0) {
+        channel_mask = BLE_RADIO_ADV_CH_ALL;
+    }
 
     for (ch = 0; ch < 3; ch++) {
-        tx_on_channel(ch);
+        if ((channel_mask & (1u << ch)) != 0) {
+            tx_on_channel(ch);
+        }
     }
+}
+
+void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
+{
+    ble_radio_advertise_channels(adv, adv_len, addr6, BLE_RADIO_ADV_CH_ALL);
 }
 
 /* --- Observer (passive scan) side --- */
 
 static UB rx_pkt[BLE_RX_MAX] __attribute__((aligned(4)));
 
-void ble_radio_listen(UINT channel)
+static void start_rx_on_channel(UINT channel, UW shorts)
 {
-    UB freq = (channel == 37) ? 2 : (channel == 39) ? 80 : 26;
+    rx_channel = radio_channel(channel);
 
     radio_disable();
-    out_w(RADIO_FREQUENCY, freq);
-    out_w(RADIO_DATAWHITEIV, channel);
+    rx_active = 0;
+    out_w(RADIO_FREQUENCY, radio_channel_frequency((UB)rx_channel));
+    out_w(RADIO_DATAWHITEIV, rx_channel);
     out_w(RADIO_PACKETPTR, (UW)rx_pkt);
-    /* ready->start, sample RSSI on address match, auto-restart after each
-       packet to stay in continuous receive */
-    out_w(RADIO_SHORTS,
-          SHORT_READY_START | SHORT_ADDRESS_RSSISTART | SHORT_END_START);
+    out_w(RADIO_SHORTS, shorts);
 
     out_w(RADIO_EVENTS_END, 0);
+    out_w(RADIO_EVENTS_DISABLED, 0);
     out_w(RADIO_TASKS_RXEN, 1);
+    rx_active = 1;
 }
 
-int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
+void ble_radio_listen(UINT channel)
+{
+    /* ready->start, sample RSSI on address match, auto-restart after each
+       packet to stay in continuous receive */
+    start_rx_on_channel(channel,
+                        SHORT_READY_START |
+                        SHORT_ADDRESS_RSSISTART |
+                        SHORT_END_START);
+}
+
+void ble_radio_listen_once(UINT channel)
+{
+    /* One-shot RX: END disables the radio so rx_pkt is stable for snapshot
+       polling until the caller explicitly restores RX. */
+    start_rx_on_channel(channel,
+                        SHORT_READY_START |
+                        SHORT_ADDRESS_RSSISTART |
+                        SHORT_END_DISABLE);
+}
+
+int ble_radio_poll_snapshot(UB *buf, UINT *len, UINT *rssi_dbm)
 {
     UINT n, i;
 
     if (in_w(RADIO_EVENTS_END) == 0) {
         return 0;                        /* nothing received yet */
     }
+
+    /* Snapshot-safe callers use ble_radio_listen_once(), where END already
+       disables RX. radio_disable() is still used to settle any in-flight state
+       before copying and to preserve the idle-on-consume contract. */
+    radio_disable();
+    rx_active = 0;
     out_w(RADIO_EVENTS_END, 0);
+
+    if ((in_w(RADIO_CRCSTATUS) & 1) == 0) {
+        return -1;                       /* CRC error - drop */
+    }
+
+    if (buf == NULL || len == NULL || rssi_dbm == NULL) {
+        return -1;
+    }
 
     /* RSSISAMPLE is positive; actual power = -RSSISAMPLE dBm */
     *rssi_dbm = in_w(RADIO_RSSISAMPLE) & 0x7F;
-
-    if ((in_w(RADIO_CRCSTATUS) & 1) == 0) {
-        return 0;                        /* CRC error - drop */
-    }
 
     n = (UINT)rx_pkt[1] + 2;             /* S0 + LENGTH + payload(LENGTH) */
     if (n > BLE_RX_MAX) {
@@ -195,4 +278,17 @@ int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
     }
     *len = n;
     return 1;
+}
+
+int ble_radio_poll(UB *buf, UINT *len, UINT *rssi_dbm)
+{
+    UINT channel = rx_channel;
+    int was_listening = (rx_active != 0);
+    int got = ble_radio_poll_snapshot(buf, len, rssi_dbm);
+
+    if (was_listening && rx_active == 0) {
+        ble_radio_listen(channel);
+    }
+
+    return (got > 0) ? 1 : 0;
 }
