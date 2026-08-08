@@ -124,6 +124,29 @@ LOCAL void sound_task(INT stacd, void *exinf)
     }
 }
 
+/* Assign this device's next id to an incident and hand it to the transmit
+ * adapter. Shared so that injected test events take exactly the same path as
+ * detected ones - a test hook that bypassed admission would not be exercising
+ * the thing it claims to test. */
+static void admit_incident(incident_state_t *inc, const char *origin)
+{
+    BOOL admitted;
+    UB active;
+
+    lock();
+    inc->event_id = next_msg_id();
+    inc->seq = (UB)(inc->event_id & 0xFFu);
+    admitted = tx_adapter_admit(&g.tx, inc, now_ms());
+    active = tx_adapter_active(&g.tx);
+    unlock();
+
+    tm_printf((UB *)"EVENT %s type=%u conf=%u svm=%u mic=%u seq=%u %s active=%u\n",
+              (UB *)origin,
+              inc->event_type, inc->confidence, inc->accel_svm,
+              inc->mic_level, inc->seq,
+              admitted ? (UB *)"admitted" : (UB *)"DROPPED", active);
+}
+
 /* ---- fusion_task: combine the two event sources ------------------------- */
 LOCAL void fusion_task(INT stacd, void *exinf)
 {
@@ -134,8 +157,6 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         UW asvm, peak, cur;
         UB mlvl;
         incident_state_t inc;
-        BOOL admitted;
-        UB active;
 
         tk_wai_flg(g_flg, FLG_FALL | FLG_SOUND,
                    TWF_ORW | TWF_CLR, &ptn, TMO_FEVR);
@@ -154,19 +175,94 @@ LOCAL void fusion_task(INT stacd, void *exinf)
             continue;           /* latch updated, nothing new to advertise */
         }
 
-        lock();
-        inc.event_id = next_msg_id();
-        inc.seq = (UB)(inc.event_id & 0xFFu);
-        admitted = tx_adapter_admit(&g.tx, &inc, now_ms());
-        active = tx_adapter_active(&g.tx);
-        unlock();
-
-        tm_printf((UB *)"EVENT type=%u conf=%u svm=%u mic=%u seq=%u %s active=%u\n",
-                  inc.event_type, inc.confidence, inc.accel_svm,
-                  inc.mic_level, inc.seq,
-                  admitted ? (UB *)"admitted" : (UB *)"DROPPED", active);
+        admit_incident(&inc, "detected");
     }
 }
+
+/* ---- inject_task: scripted events for bench validation ------------------ */
+/*
+ * Off unless WEARABLE_TEST_INJECT is built non-zero. The detectors need real
+ * physical stimulus - the fall FSM wants free-fall then impact then stillness,
+ * and the shout detector wants a sustained loud window - which makes the
+ * transmit path awkward to exercise deliberately, and impossible to exercise
+ * reproducibly. This drives incidents straight into the same admission path a
+ * detected event takes, so the burst, interleave and duplicate-suppression
+ * behaviour can be observed on demand.
+ *
+ * It fabricates incidents only. Nothing downstream of admission is stubbed, so
+ * what goes on air is byte-for-byte what a real detection would send.
+ */
+#ifndef WEARABLE_TEST_INJECT
+#define WEARABLE_TEST_INJECT 0
+#endif
+
+#if WEARABLE_TEST_INJECT
+
+#ifndef WEARABLE_TEST_INJECT_PERIOD_MS
+#define WEARABLE_TEST_INJECT_PERIOD_MS 8000
+#endif
+
+static incident_state_t mk_incident(UB type, UB conf, UW svm, UB mic)
+{
+    incident_state_t i;
+
+    i.event_type = type;
+    i.confidence = conf;
+    i.accel_svm = svm;
+    i.mic_level = mic;
+    i.seq = 0;          /* assigned by admit_incident */
+    i.event_id = 0;
+    return i;
+}
+
+LOCAL void inject_task(INT stacd, void *exinf)
+{
+    UW phase = 0;
+
+    /* Let the heartbeat cadence establish itself first, so the log shows the
+     * contrast between a single heartbeat and a sprayed event. */
+    tk_dly_tsk(4000);
+
+    while (1) {
+        incident_state_t a;
+        incident_state_t b;
+
+        switch (phase % 4u) {
+        case 0:
+            tm_printf((UB *)"INJECT lone shout\n");
+            a = mk_incident(MIND_EVT_POSSIBLE_DISTRESS, 50, 990, 120);
+            admit_incident(&a, "injected");
+            break;
+
+        case 1:
+            tm_printf((UB *)"INJECT lone confirmed fall\n");
+            a = mk_incident(MIND_EVT_CONFIRMED_FALL, 75, 2400, 0);
+            admit_incident(&a, "injected");
+            break;
+
+        case 2:
+            /* Two at once: the case the old single-slot burst could not do,
+             * where the second event overwrote the first. Both should reach
+             * their own budget, interleaved. */
+            tm_printf((UB *)"INJECT concurrent pair (fall + shout)\n");
+            a = mk_incident(MIND_EVT_POSSIBLE_FALL, 50, 2100, 0);
+            admit_incident(&a, "injected");
+            b = mk_incident(MIND_EVT_POSSIBLE_DISTRESS, 50, 1000, 130);
+            admit_incident(&b, "injected");
+            break;
+
+        default:
+            tm_printf((UB *)"INJECT fused fall+shout\n");
+            a = mk_incident(MIND_EVT_FALL_AND_SHOUT, 100, 6600, 125);
+            admit_incident(&a, "injected");
+            break;
+        }
+
+        phase++;
+        tk_dly_tsk(WEARABLE_TEST_INJECT_PERIOD_MS);
+    }
+}
+#endif /* WEARABLE_TEST_INJECT */
 
 /* ---- advertise_task: fixed-tick poll, schema-v1 emit -------------------- */
 /*
@@ -259,6 +355,11 @@ EXPORT INT usermain(void)
     make_task((FP)sensor_task,    4);
     make_task((FP)sound_task,     5);
     make_task((FP)advertise_task, 6);
+#if WEARABLE_TEST_INJECT
+    tm_printf((UB *)"wearable_app: TEST EVENT INJECTION ENABLED (period %u ms)\n",
+              (UINT)WEARABLE_TEST_INJECT_PERIOD_MS);
+    make_task((FP)inject_task,    7);
+#endif
 
     tk_slp_tsk(TMO_FEVR);
     return 0;

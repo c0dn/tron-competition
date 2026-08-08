@@ -1,3 +1,6 @@
+set(WEARABLE_TEST_INJECT "0" CACHE STRING "bench only: periodically inject synthetic incidents to exercise the transmit path; 0 disables")
+set(WEARABLE_TEST_INJECT_PERIOD_MS "8000" CACHE STRING "period between injected test incidents, ms")
+
 mtkernel_add_microbit_firmware(
   TARGET wearable_app
   CONFIG_DIR
@@ -19,6 +22,11 @@ target_link_libraries(wearable_app PRIVATE
   microbit_driver_imu
   microbit_driver_mic
   mind_wire_contract
+)
+
+target_compile_definitions(wearable_app PRIVATE
+  WEARABLE_TEST_INJECT=${WEARABLE_TEST_INJECT}
+  WEARABLE_TEST_INJECT_PERIOD_MS=${WEARABLE_TEST_INJECT_PERIOD_MS}
 )
 
 target_include_directories(wearable_app PRIVATE
