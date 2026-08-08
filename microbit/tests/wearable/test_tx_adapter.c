@@ -28,7 +28,7 @@ static void check(int cond, const char *what)
 #define BUDGET_MS     1000u
 #define INTERVAL_MS    100u
 #define MIN_TX           8u
-#define HB_MS         1500u
+#define HB_MS          500u
 #define TICK_MS         30u
 
 static incident_state_t mk(UB type, UB seq)

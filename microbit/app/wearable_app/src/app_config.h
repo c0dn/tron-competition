@@ -96,7 +96,16 @@
 #define FUSION_COINCIDENCE_MS   3000
 
 /* --- Advertising cadence (Plan 01 5) ------------------------------------- */
-#define HEARTBEAT_INTERVAL_MS   1500    /* slow alive beacon                  */
+/* Heartbeats go out once each, with no retransmission, so every one that
+ * lands in a receiver's deaf window is simply lost - measured at roughly a
+ * fifth to a quarter of them against a live mesh node. At the old 1500 ms a
+ * couple of consecutive losses left a >4 s hole in the liveness signal.
+ *
+ * 500 ms costs little: during a burst the adapter gives the heartbeat one
+ * emit slot when it falls due, and events pace at EVENT_TX_INTERVAL_MS with
+ * TX_TICK_MS to spare, so they lose at most one opportunity in five. Three
+ * consecutive losses are now needed to open the same size hole. */
+#define HEARTBEAT_INTERVAL_MS   500     /* alive beacon, single-shot          */
 
 /* Event retransmission, managed by tx_adapter.
  *
