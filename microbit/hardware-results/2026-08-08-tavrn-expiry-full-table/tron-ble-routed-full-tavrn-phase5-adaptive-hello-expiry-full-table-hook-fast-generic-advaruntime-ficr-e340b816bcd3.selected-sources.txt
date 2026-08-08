@@ -1,0 +1,17 @@
+app/drivers/ble_radio.c
+app/protocol/aodv_core.c
+app/protocol/ble_mesh_scheduler.c
+app/protocol/ble_mesh_tx_queue.c
+app/protocol/tavrn_esc.c
+app/protocol/tavrn_full.c
+app/protocol/tavrn_full_maintenance_binding.c
+app/protocol/tavrn_gtt.c
+app/protocol/tavrn_link_v2.c
+app/protocol/tavrn_maintenance.c
+app/protocol/tavrn_mentorship.c
+app/protocol/tavrn_router.c
+app/protocol/tavrn_smart_ttl.c
+app/protocol/tavrn_wire_v2.c
+app/tavrn_routed_node/src/main.c
+app/tavrn_routed_node/src/routed_cycle.c
+app/tavrn_routed_node/src/routed_full_telemetry.c

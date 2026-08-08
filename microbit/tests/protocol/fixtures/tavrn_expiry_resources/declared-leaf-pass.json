@@ -1,0 +1,19 @@
+{
+  "root": "routed_mesh_task",
+  "edges": [
+    {"from": "routed_mesh_task", "to": "kernel_wrapper", "kind": "call", "when": "always"}
+  ],
+  "graph": {
+    "routed_mesh_task": ["kernel_wrapper"],
+    "kernel_wrapper": ["prebuilt_leaf"],
+    "prebuilt_leaf": []
+  },
+  "frames": [
+    {"source": "mesh.c", "function": "routed_mesh_task", "bytes": 16},
+    {"source": "kernel.c", "function": "kernel_wrapper", "bytes": 24}
+  ],
+  "declared_leaves": [
+    {"symbol": "prebuilt_leaf", "frame_bytes": 40, "evidence": {"kind": "library_archive", "path": "/fixture/lib.a", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}}
+  ],
+  "expected_path": ["routed_mesh_task", "kernel_wrapper", "prebuilt_leaf"]
+}

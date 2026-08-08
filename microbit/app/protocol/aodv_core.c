@@ -10,6 +10,10 @@
 #define AODV_RERR_SEEN_CAPACITY 16u
 #define AODV_BLACKLIST_CAPACITY TAVRN_AODV_RREP_ACK_WAIT_CAPACITY
 
+#define AODV_RREQ_REPORT_STATE_NOT_REPORTED 0u
+#define AODV_RREQ_REPORT_STATE_NOT_ADMITTED 1u
+#define AODV_RREQ_REPORT_STATE_ADMITTED 2u
+
 #define AODV_PDU_PREFIX_LEN 5u
 #define AODV_PDU_FLAGS_OFFSET 5u
 #define AODV_PDU_TTL_HOPS_OFFSET 6u
@@ -56,11 +60,18 @@ typedef struct aodv_rerr_seen_entry {
 
 typedef struct aodv_discovery_entry {
     uint32_t next_attempt_ms;
+    uint32_t discovery_correlation;
+    uint32_t action_created_at_ms[AODV_DISCOVERY_REQUEST_CAPACITY];
+    uint32_t last_link_enqueue_at_ms[AODV_DISCOVERY_REQUEST_CAPACITY];
     uint16_t destination;
     uint16_t request_ids[AODV_DISCOVERY_REQUEST_CAPACITY];
+    aodv_rreq_scope_source_t scope_source;
     uint8_t occupied;
     uint8_t next_ring;
     uint8_t request_count;
+    uint8_t initial_scope;
+    uint8_t scoped;
+    uint8_t enqueue_state[AODV_DISCOVERY_REQUEST_CAPACITY];
 } aodv_discovery_entry_t;
 
 typedef struct aodv_pending_entry {
@@ -106,6 +117,7 @@ typedef struct aodv_core_state {
     aodv_deferred_rerr_t deferred;
     uint32_t rreq_window_started_ms;
     uint32_t rerr_window_started_ms;
+    uint32_t next_discovery_correlation;
     uint16_t next_request_id;
     uint16_t next_rerr_sequence;
     uint16_t next_action_token;
@@ -160,6 +172,23 @@ static int peer_is_valid_for_core(const aodv_core_t *core,
     return peer != NULL && local_width_is_valid(core) &&
         peer->logical_id.width == core->config.local_peer.logical_id.width &&
         id_is_unicast(peer->logical_id.width, peer->logical_id.value);
+}
+
+static int data_input_is_valid_for_core(const aodv_core_t *core,
+                                        const aodv_data_input_t *input)
+{
+    return core != NULL && input != NULL &&
+        peer_is_valid_for_core(core, &input->transmitter) &&
+        input->data.origin.width == core->config.local_peer.logical_id.width &&
+        input->data.final_destination.width ==
+            core->config.local_peer.logical_id.width &&
+        id_is_unicast(input->data.origin.width, input->data.origin.value) &&
+        id_is_unicast(input->data.final_destination.width,
+                      input->data.final_destination.value) &&
+        input->data.ttl <= 15u && input->data.hops <= 15u &&
+        input->data.urgent <= 1u && input->data.app_len <= TAVRN_LINK_APP_BYTES &&
+        (input->data.ownership == TAVRN_DATA_ORIGINATED ||
+         input->data.ownership == TAVRN_DATA_TRANSIT);
 }
 
 static int peer_equal(const tavrn_direct_peer_t *left,
@@ -513,6 +542,24 @@ static uint16_t next_nonzero(uint16_t *value)
     return result;
 }
 
+static uint32_t next_nonzero_u32(uint32_t *value)
+{
+    uint32_t result = *value;
+
+    (*value)++;
+    if (*value == 0u) {
+        *value = 1u;
+    }
+    if (result == 0u) {
+        result = *value;
+        (*value)++;
+        if (*value == 0u) {
+            *value = 1u;
+        }
+    }
+    return result;
+}
+
 static uint8_t ring_ttl(const aodv_core_t *core, uint8_t ring)
 {
     static const uint8_t rings[AODV_RREQ_RING_COUNT] = {
@@ -523,6 +570,158 @@ static uint8_t ring_ttl(const aodv_core_t *core, uint8_t ring)
         return rings[ring];
     }
     return core->config.net_diameter;
+}
+
+static int discovery_has_attempt_remaining(
+    const aodv_core_t *core, const aodv_discovery_entry_t *discovery)
+{
+    if (discovery->request_count == AODV_DISCOVERY_REQUEST_CAPACITY) {
+        return 0;
+    }
+    if (discovery->scoped != 0u) {
+        /* A scoped request gets one full-diameter fallback followed by the
+         * ordinary configured retry budget, all at full diameter. */
+        return (uint16_t)discovery->next_ring <
+            (uint16_t)core->config.rreq_retries + 2u;
+    }
+    return discovery->next_ring <
+        (uint8_t)(AODV_RREQ_RING_COUNT + core->config.rreq_retries);
+}
+
+static uint8_t discovery_ttl(const aodv_core_t *core,
+                             const aodv_discovery_entry_t *discovery)
+{
+    if (discovery->scoped != 0u) {
+        return discovery->next_ring == 0u ? discovery->initial_scope :
+            core->config.net_diameter;
+    }
+    return ring_ttl(core, discovery->next_ring);
+}
+
+static uint8_t discovery_ttl_for_ring(
+    const aodv_core_t *core, const aodv_discovery_entry_t *discovery,
+    uint8_t ring_ordinal)
+{
+    if (discovery->scoped != 0u) {
+        return ring_ordinal == 0u ? discovery->initial_scope :
+            core->config.net_diameter;
+    }
+    return ring_ttl(core, ring_ordinal);
+}
+
+static void discovery_attempt(const aodv_core_t *core,
+                              const aodv_discovery_entry_t *discovery,
+                              uint16_t request_id, uint8_t ring_ordinal,
+                              aodv_rreq_attempt_t *attempt_out)
+{
+    memset(attempt_out, 0, sizeof(*attempt_out));
+    attempt_out->discovery_correlation = discovery->discovery_correlation;
+    attempt_out->origin = core->config.local_peer.logical_id;
+    attempt_out->destination.width = core->config.local_peer.logical_id.width;
+    attempt_out->destination.value = discovery->destination;
+    attempt_out->request_id = request_id;
+    attempt_out->initial_scope = discovery->initial_scope;
+    attempt_out->current_scope = discovery_ttl_for_ring(core, discovery,
+                                                         ring_ordinal);
+    attempt_out->ring_ordinal = ring_ordinal;
+}
+
+static int rreq_attempt_equal(const aodv_rreq_attempt_t *left,
+                              const aodv_rreq_attempt_t *right)
+{
+    return left->discovery_correlation == right->discovery_correlation &&
+        left->origin.width == right->origin.width &&
+        left->origin.value == right->origin.value &&
+        left->destination.width == right->destination.width &&
+        left->destination.value == right->destination.value &&
+        left->request_id == right->request_id &&
+        left->initial_scope == right->initial_scope &&
+        left->current_scope == right->current_scope &&
+        left->ring_ordinal == right->ring_ordinal;
+}
+
+static aodv_rreq_truth_t rreq_truth(int value)
+{
+    return value != 0 ? AODV_RREQ_TRUTH_TRUE : AODV_RREQ_TRUTH_FALSE;
+}
+
+static void rreq_lifecycle_record(
+    const aodv_core_t *core, const aodv_discovery_entry_t *discovery,
+    const aodv_rreq_attempt_t *attempt, uint32_t action_created_at_ms,
+    aodv_rreq_lifecycle_stage_t stage, uint32_t link_enqueue_at_ms,
+    aodv_rreq_enqueue_outcome_t enqueue_outcome,
+    aodv_rreq_lifecycle_record_t *record_out)
+{
+    memset(record_out, 0, sizeof(*record_out));
+    record_out->attempt = *attempt;
+    record_out->action_created_at_ms = action_created_at_ms;
+    record_out->stage = stage;
+    record_out->scope_source = discovery->scope_source;
+    record_out->action_created_at_state = AODV_RREQ_VALUE_KNOWN;
+    record_out->ordinary = rreq_truth(discovery->scope_source ==
+                                      AODV_RREQ_SCOPE_ORDINARY);
+    record_out->scoped = rreq_truth(discovery->scope_source !=
+                                    AODV_RREQ_SCOPE_ORDINARY);
+    record_out->hint_used = rreq_truth(discovery->scope_source ==
+                                           AODV_RREQ_SCOPE_ROUTER_HINT &&
+                                       attempt->ring_ordinal == 0u);
+    record_out->fallback = rreq_truth(discovery->scope_source ==
+                                          AODV_RREQ_SCOPE_ROUTER_HINT &&
+                                      discovery->initial_scope <
+                                          core->config.net_diameter &&
+                                      attempt->ring_ordinal == 1u);
+    record_out->full_diameter = rreq_truth(attempt->current_scope ==
+                                            core->config.net_diameter);
+    record_out->action_outcome = AODV_RREQ_ACTION_CREATED;
+    if (stage == AODV_RREQ_STAGE_ACTION_CREATED) {
+        record_out->link_enqueue_at_state = AODV_RREQ_VALUE_NOT_APPLICABLE;
+        record_out->enqueue_outcome = AODV_RREQ_ENQUEUE_NOT_APPLICABLE;
+        return;
+    }
+    record_out->link_enqueue_at_ms = link_enqueue_at_ms;
+    record_out->link_enqueue_at_state = AODV_RREQ_VALUE_KNOWN;
+    record_out->enqueue_outcome = enqueue_outcome;
+}
+
+static void emit_rreq_lifecycle(aodv_core_t *core,
+                                const aodv_rreq_lifecycle_record_t *record)
+{
+    aodv_rreq_telemetry_config_t telemetry = core->rreq_telemetry;
+
+    if (telemetry.on_lifecycle != NULL) {
+        telemetry.on_lifecycle(telemetry.context, record);
+    }
+}
+
+static aodv_discovery_entry_t *discovery_attempt_find(
+    aodv_core_t *core, const aodv_rreq_attempt_t *attempt,
+    uint8_t *ring_ordinal_out)
+{
+    aodv_core_state_t *state = state_of(core);
+    uint8_t i;
+
+    for (i = 0u; i < AODV_DISCOVERY_CAPACITY; i++) {
+        aodv_discovery_entry_t *discovery = &state->discoveries[i];
+        uint8_t ring_ordinal;
+
+        if (discovery->occupied == 0u ||
+            discovery->discovery_correlation != attempt->discovery_correlation) {
+            continue;
+        }
+        for (ring_ordinal = 0u; ring_ordinal < discovery->request_count;
+             ring_ordinal++) {
+            aodv_rreq_attempt_t candidate;
+
+            discovery_attempt(core, discovery,
+                              discovery->request_ids[ring_ordinal],
+                              ring_ordinal, &candidate);
+            if (rreq_attempt_equal(&candidate, attempt)) {
+                *ring_ordinal_out = ring_ordinal;
+                return discovery;
+            }
+        }
+    }
+    return NULL;
 }
 
 static int emit_rreq(aodv_core_t *core, aodv_discovery_entry_t *discovery,
@@ -537,12 +736,12 @@ static int emit_rreq(aodv_core_t *core, aodv_discovery_entry_t *discovery,
     uint8_t destination_sequence_offset = (uint8_t)(9u + 2u * width_len);
     uint8_t origin_sequence_offset = (uint8_t)(11u + 2u * width_len);
     aodv_route_entry_t *route;
+    aodv_rreq_lifecycle_record_t record;
     uint16_t request_id;
     uint8_t ttl;
+    uint8_t ring_ordinal;
 
-    if (discovery->next_ring >=
-        (uint8_t)(AODV_RREQ_RING_COUNT + core->config.rreq_retries) ||
-        discovery->request_count == AODV_DISCOVERY_REQUEST_CAPACITY ||
+    if (!discovery_has_attempt_remaining(core, discovery) ||
         !action_space(state, 1u) || !rreq_rate_allowed(core, now_ms)) {
         return 0;
     }
@@ -552,7 +751,7 @@ static int emit_rreq(aodv_core_t *core, aodv_discovery_entry_t *discovery,
     control = &action.detail.control.control;
     begin_control(control, TAVRN_WIRE_E_RREQ,
                   (uint8_t)(13u + 2u * width_len), core);
-    ttl = ring_ttl(core, discovery->next_ring);
+    ttl = discovery_ttl(core, discovery);
     control->pdu[AODV_PDU_TTL_HOPS_OFFSET] = (uint8_t)(ttl << 4);
     pdu_put_id(control->pdu, 7u, width, core->config.local_peer.logical_id.value);
     request_id = next_nonzero(&state->next_request_id);
@@ -569,12 +768,25 @@ static int emit_rreq(aodv_core_t *core, aodv_discovery_entry_t *discovery,
     state->local_origin_sequence++;
     pdu_put_u16(control->pdu, origin_sequence_offset,
                 state->local_origin_sequence);
+    ring_ordinal = discovery->next_ring;
+    discovery_attempt(core, discovery, request_id, ring_ordinal,
+                      &action.detail.control.rreq_attempt);
+    action.detail.control.rreq_attempt_present = AODV_RREQ_ATTEMPT_PRESENT;
     if (!enqueue_action(core, &action)) {
         return 0;
     }
-    discovery->request_ids[discovery->request_count++] = request_id;
+    discovery->request_ids[ring_ordinal] = request_id;
+    discovery->action_created_at_ms[ring_ordinal] = now_ms;
+    discovery->last_link_enqueue_at_ms[ring_ordinal] = 0u;
+    discovery->enqueue_state[ring_ordinal] =
+        AODV_RREQ_REPORT_STATE_NOT_REPORTED;
+    discovery->request_count++;
     discovery->next_ring++;
     discovery->next_attempt_ms = now_ms + core->config.path_discovery_ms;
+    rreq_lifecycle_record(core, discovery, &action.detail.control.rreq_attempt,
+                          now_ms, AODV_RREQ_STAGE_ACTION_CREATED, 0u,
+                          AODV_RREQ_ENQUEUE_NOT_APPLICABLE, &record);
+    emit_rreq_lifecycle(core, &record);
     return 1;
 }
 
@@ -771,6 +983,15 @@ static int ack_wait_has_space(const aodv_core_t *core)
 static void ack_wait_cancel(aodv_rrep_ack_wait_t *wait)
 {
     memset(wait, 0, sizeof(*wait));
+}
+
+static int ack_wait_references_peer(const aodv_rrep_ack_wait_t *wait,
+                                    const tavrn_direct_peer_t *peer)
+{
+    return wait != NULL && peer != NULL && wait->occupied != 0u &&
+        (peer_equal(&wait->expected_peer, peer) ||
+         wait->destination == peer->logical_id.value ||
+         wait->origin == peer->logical_id.value);
 }
 
 static int enqueue_rrep_ack(aodv_core_t *core,
@@ -1135,10 +1356,13 @@ static aodv_status_t ingest_rrep(aodv_core_t *core,
     hops = (uint8_t)(control->pdu[AODV_PDU_TTL_HOPS_OFFSET] & 0x0fu);
     ack_required = (control->pdu[AODV_PDU_FLAGS_OFFSET] &
                     AODV_FLAG_RREP_ACK_REQUIRED) != 0u;
-    if (immediate_receiver != core->config.local_peer.logical_id.value ||
+    if (!id_is_unicast(width, immediate_receiver) ||
         !id_is_unicast(width, destination) || !id_is_unicast(width, origin) ||
         lifetime == 0u) {
         return AODV_STATUS_INVALID;
+    }
+    if (immediate_receiver != core->config.local_peer.logical_id.value) {
+        return AODV_STATUS_UNMATCHED;
     }
     if (peer_is_blacklisted(core, &input->transmitter, now_ms)) {
         return AODV_STATUS_BUSY;
@@ -1386,15 +1610,43 @@ aodv_init_status_t aodv_core_init(aodv_core_t *core,
         config->initial_rerr_sequence;
     state->next_action_token = 1u;
     state->next_data_sequence = 1u;
+    state->next_discovery_correlation = 1u;
     state->local_origin_sequence = config->initial_origin_sequence;
     state->rreq_window_started_ms = now_ms;
     state->rerr_window_started_ms = now_ms;
     return AODV_INIT_OK;
 }
 
-aodv_status_t aodv_core_submit_application(aodv_core_t *core,
-                                           const tron_application_data_t *data,
-                                           uint32_t now_ms)
+aodv_init_status_t aodv_core_reconfigure_identity(
+    aodv_core_t *core, const tavrn_direct_peer_t *local_peer,
+    uint32_t now_ms)
+{
+    aodv_core_config_t config;
+    aodv_rreq_telemetry_config_t telemetry;
+    aodv_init_status_t status;
+
+    if (core == NULL || local_peer == NULL) {
+        return AODV_INIT_INVALID_ARGUMENT;
+    }
+    config = core->config;
+    telemetry = core->rreq_telemetry;
+    config.local_peer = *local_peer;
+    status = aodv_core_init(core, &config, now_ms);
+    if (status != AODV_INIT_OK) {
+        return status;
+    }
+    if (telemetry.on_lifecycle != NULL &&
+        aodv_core_set_rreq_telemetry(core, &telemetry) != AODV_RREQ_TELEMETRY_OK) {
+        return AODV_INIT_INVALID_CONFIG;
+    }
+    return AODV_INIT_OK;
+}
+
+static aodv_status_t submit_application(aodv_core_t *core,
+                                         const tron_application_data_t *data,
+                                         aodv_rreq_scope_source_t scope_source,
+                                         uint8_t initial_scope,
+                                         uint32_t now_ms)
 {
     aodv_core_state_t *state;
     aodv_route_entry_t *route;
@@ -1460,9 +1712,102 @@ aodv_status_t aodv_core_submit_application(aodv_core_t *core,
     memset(discovery, 0, sizeof(*discovery));
     discovery->occupied = 1u;
     discovery->destination = data->final_destination.value;
+    discovery->discovery_correlation =
+        next_nonzero_u32(&state->next_discovery_correlation);
+    discovery->scope_source = scope_source;
+    discovery->scoped = scope_source != AODV_RREQ_SCOPE_ORDINARY;
+    discovery->initial_scope = initial_scope;
     discovery->next_attempt_ms = now_ms;
     (void)emit_rreq(core, discovery, now_ms);
     return AODV_STATUS_QUEUED;
+}
+
+aodv_status_t aodv_core_submit_application(aodv_core_t *core,
+                                            const tron_application_data_t *data,
+                                            uint32_t now_ms)
+{
+    return submit_application(core, data, AODV_RREQ_SCOPE_ORDINARY, 1u, now_ms);
+}
+
+aodv_status_t aodv_core_submit_application_scoped(
+    aodv_core_t *core, const tron_application_data_t *data,
+    uint8_t initial_scope, uint32_t now_ms)
+{
+    return aodv_core_submit_application_scoped_ex(
+        core, data, initial_scope, AODV_RREQ_SCOPE_APPLICATION_SCOPED, now_ms);
+}
+
+aodv_status_t aodv_core_submit_application_scoped_ex(
+    aodv_core_t *core, const tron_application_data_t *data,
+    uint8_t initial_scope, aodv_rreq_scope_source_t scope_source,
+    uint32_t now_ms)
+{
+    if (core == NULL || initial_scope == 0u ||
+        initial_scope > core->config.net_diameter ||
+        (scope_source != AODV_RREQ_SCOPE_APPLICATION_SCOPED &&
+         scope_source != AODV_RREQ_SCOPE_ROUTER_HINT)) {
+        return AODV_STATUS_INVALID;
+    }
+    return submit_application(core, data, scope_source, initial_scope, now_ms);
+}
+
+aodv_rreq_telemetry_status_t aodv_core_set_rreq_telemetry(
+    aodv_core_t *core,
+    const aodv_rreq_telemetry_config_t *config_or_null)
+{
+    if (core == NULL) {
+        return AODV_RREQ_TELEMETRY_INVALID;
+    }
+    if (config_or_null == NULL) {
+        memset(&core->rreq_telemetry, 0, sizeof(core->rreq_telemetry));
+    } else {
+        core->rreq_telemetry = *config_or_null;
+    }
+    return AODV_RREQ_TELEMETRY_OK;
+}
+
+aodv_rreq_telemetry_status_t aodv_core_report_rreq_link_enqueue(
+    aodv_core_t *core, const aodv_rreq_link_enqueue_t *enqueue)
+{
+    aodv_discovery_entry_t *discovery;
+    aodv_rreq_lifecycle_record_t record;
+    uint8_t ring_ordinal;
+    uint8_t enqueue_state;
+
+    if (core == NULL || enqueue == NULL ||
+        (enqueue->outcome != AODV_RREQ_ENQUEUE_ADMITTED &&
+         enqueue->outcome != AODV_RREQ_ENQUEUE_NOT_ADMITTED)) {
+        return AODV_RREQ_TELEMETRY_INVALID;
+    }
+    discovery = discovery_attempt_find(core, &enqueue->attempt, &ring_ordinal);
+    if (discovery == NULL ||
+        !time_due(enqueue->link_enqueue_at_ms,
+                  discovery->action_created_at_ms[ring_ordinal])) {
+        return AODV_RREQ_TELEMETRY_INVALID;
+    }
+    enqueue_state = discovery->enqueue_state[ring_ordinal];
+    if (enqueue_state == AODV_RREQ_REPORT_STATE_ADMITTED ||
+        (enqueue_state == AODV_RREQ_REPORT_STATE_NOT_ADMITTED &&
+         (!time_due(enqueue->link_enqueue_at_ms,
+                    discovery->last_link_enqueue_at_ms[ring_ordinal]) ||
+          (enqueue->outcome == AODV_RREQ_ENQUEUE_NOT_ADMITTED &&
+           enqueue->link_enqueue_at_ms ==
+               discovery->last_link_enqueue_at_ms[ring_ordinal])))) {
+        return AODV_RREQ_TELEMETRY_INVALID;
+    }
+    discovery->last_link_enqueue_at_ms[ring_ordinal] =
+        enqueue->link_enqueue_at_ms;
+    discovery->enqueue_state[ring_ordinal] =
+        enqueue->outcome == AODV_RREQ_ENQUEUE_ADMITTED ?
+        AODV_RREQ_REPORT_STATE_ADMITTED :
+        AODV_RREQ_REPORT_STATE_NOT_ADMITTED;
+    rreq_lifecycle_record(core, discovery, &enqueue->attempt,
+                          discovery->action_created_at_ms[ring_ordinal],
+                          AODV_RREQ_STAGE_ROUTER_LINK_ENQUEUE,
+                          enqueue->link_enqueue_at_ms, enqueue->outcome,
+                          &record);
+    emit_rreq_lifecycle(core, &record);
+    return AODV_RREQ_TELEMETRY_OK;
 }
 
 aodv_status_t aodv_core_ingest_control(aodv_core_t *core,
@@ -1486,6 +1831,34 @@ aodv_status_t aodv_core_ingest_control(aodv_core_t *core,
     }
 }
 
+aodv_status_t aodv_core_probe_data(const aodv_core_t *core,
+                                    const aodv_data_input_t *input,
+                                    uint32_t now_ms)
+{
+    const aodv_route_entry_t *route;
+
+    if (!data_input_is_valid_for_core(core, input)) {
+        return AODV_STATUS_INVALID;
+    }
+    if (input->data.final_destination.value ==
+        core->config.local_peer.logical_id.value) {
+        return action_space(const_state_of(core), 1u) ? AODV_STATUS_OK :
+                                                        AODV_STATUS_BUSY;
+    }
+    if (input->data.ttl == 0u || input->data.hops >= 15u) {
+        return AODV_STATUS_INVALID;
+    }
+    if (!action_space(const_state_of(core), 1u)) {
+        return AODV_STATUS_BUSY;
+    }
+    route = const_route_find(core, input->data.final_destination.value);
+    if (route == NULL || route->state != AODV_ROUTE_VALID ||
+        time_due(now_ms, route->expires_at_ms)) {
+        return AODV_STATUS_NOT_FOUND;
+    }
+    return AODV_STATUS_OK;
+}
+
 aodv_status_t aodv_core_ingest_data(aodv_core_t *core,
                                      const aodv_data_input_t *input,
                                      uint32_t now_ms)
@@ -1493,19 +1866,17 @@ aodv_status_t aodv_core_ingest_data(aodv_core_t *core,
     aodv_route_entry_t *route;
     aodv_action_t action;
     tavrn_link_data_t data;
+    aodv_status_t probe_status;
 
-    if (core == NULL || input == NULL || !peer_is_valid_for_core(core, &input->transmitter) ||
-        input->data.origin.width != core->config.local_peer.logical_id.width ||
-        input->data.final_destination.width != core->config.local_peer.logical_id.width ||
-        !id_is_unicast(input->data.origin.width, input->data.origin.value) ||
-        !id_is_unicast(input->data.final_destination.width,
-                       input->data.final_destination.value) ||
-        input->data.app_len > TAVRN_LINK_APP_BYTES) {
-        return AODV_STATUS_INVALID;
-    }
-    if (!action_space(state_of(core), 1u)) {
-        core->counters.action_backpressure++;
-        return AODV_STATUS_BUSY;
+    probe_status = aodv_core_probe_data(core, input, now_ms);
+    if (probe_status != AODV_STATUS_OK) {
+        if (core != NULL && probe_status == AODV_STATUS_BUSY) {
+            core->counters.action_backpressure++;
+        } else if (core != NULL && probe_status == AODV_STATUS_NOT_FOUND) {
+            route = route_find(core, input->data.final_destination.value);
+            (void)route_is_valid_at(core, route, now_ms);
+        }
+        return probe_status;
     }
     if (input->data.final_destination.value == core->config.local_peer.logical_id.value) {
         memset(&action, 0, sizeof(action));
@@ -1514,13 +1885,7 @@ aodv_status_t aodv_core_ingest_data(aodv_core_t *core,
         (void)enqueue_action(core, &action);
         return AODV_STATUS_OK;
     }
-    if (input->data.ttl == 0u) {
-        return AODV_STATUS_INVALID;
-    }
     route = route_find(core, input->data.final_destination.value);
-    if (!route_is_valid_at(core, route, now_ms)) {
-        return AODV_STATUS_NOT_FOUND;
-    }
     data = input->data;
     data.ttl--;
     data.hops++;
@@ -1555,6 +1920,31 @@ aodv_status_t aodv_core_mark_action_sent(aodv_core_t *core,
                 now_ms + core->config.rrep_ack_wait_ms;
             return AODV_STATUS_OK;
         }
+    }
+    return AODV_STATUS_NOT_FOUND;
+}
+
+aodv_status_t aodv_core_cancel_unsent_action(aodv_core_t *core,
+                                              uint16_t action_token)
+{
+    aodv_core_state_t *state;
+    uint8_t i;
+
+    if (core == NULL || action_token == 0u) {
+        return AODV_STATUS_INVALID;
+    }
+    state = state_of(core);
+    for (i = 0u; i < TAVRN_AODV_RREP_ACK_WAIT_CAPACITY; i++) {
+        aodv_rrep_ack_wait_t *wait = &state->ack_waits[i];
+
+        if (wait->occupied == 0u || wait->token != action_token) {
+            continue;
+        }
+        if (wait->sent != 0u) {
+            return AODV_STATUS_BUSY;
+        }
+        ack_wait_cancel(wait);
+        return AODV_STATUS_OK;
     }
     return AODV_STATUS_NOT_FOUND;
 }
@@ -1600,8 +1990,15 @@ static void advance_discoveries(aodv_core_t *core, uint32_t now_ms)
             continue;
         }
         if (time_due(now_ms, discovery->next_attempt_ms)) {
-            if (discovery->next_ring <
-                (uint8_t)(AODV_RREQ_RING_COUNT + core->config.rreq_retries)) {
+            if (discovery->scoped != 0u) {
+                if (discovery_has_attempt_remaining(core, discovery)) {
+                    (void)emit_rreq(core, discovery, now_ms);
+                } else {
+                    discovery->occupied = 0u;
+                }
+            } else if (discovery->next_ring <
+                       (uint8_t)(AODV_RREQ_RING_COUNT +
+                                 core->config.rreq_retries)) {
                 (void)emit_rreq(core, discovery, now_ms);
             } else {
                 discovery->occupied = 0u;
@@ -1707,6 +2104,81 @@ aodv_route_query_status_t aodv_core_route_snapshot(
 const aodv_counters_t *aodv_core_counters(const aodv_core_t *core)
 {
     return core == NULL ? NULL : &core->counters;
+}
+
+tavrn_aodv_subject_demand_snapshot_t aodv_core_subject_demand_snapshot(
+    const aodv_core_t *core, const tavrn_logical_id_t *subject,
+    const tavrn_adva_t *canonical_subject, uint32_t now_ms)
+{
+    tavrn_aodv_subject_demand_snapshot_t snapshot;
+    const aodv_core_state_t *state;
+    uint8_t index;
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (core == NULL || subject == NULL || canonical_subject == NULL ||
+        subject->width != core->config.local_peer.logical_id.width ||
+        !id_is_unicast(subject->width, subject->value)) {
+        return snapshot;
+    }
+    state = const_state_of(core);
+    snapshot.snapshot_available = 1u;
+    for (index = 0u; index < TAVRN_AODV_ROUTE_CAPACITY; index++) {
+        const aodv_route_entry_t *route = &state->routes[index];
+        uint8_t precursor_index;
+
+        if (route->occupied == 0u || route->state != AODV_ROUTE_VALID ||
+            time_due(now_ms, route->expires_at_ms)) {
+            continue;
+        }
+        if (route->destination == subject->value) {
+            snapshot.reason_mask |= TAVRN_MAINT_DEMAND_VALID_ROUTE_TO_SUBJECT;
+            snapshot.valid_route_to_subject = 1u;
+        }
+        if (route->next_hop.logical_id.value == subject->value &&
+            route->next_hop.logical_id.width == subject->width &&
+            memcmp(route->next_hop.adva.bytes, canonical_subject->bytes,
+                   TAVRN_ADVA_LEN) == 0) {
+            snapshot.reason_mask |= TAVRN_MAINT_DEMAND_VALID_ROUTE_VIA_SUBJECT;
+        }
+        for (precursor_index = 0u; precursor_index < route->precursor_count;
+             precursor_index++) {
+            if (route->precursors[precursor_index] == subject->value) {
+                snapshot.reason_mask |= TAVRN_MAINT_DEMAND_PRECURSOR;
+                break;
+            }
+        }
+    }
+    for (index = 0u; index < TAVRN_AODV_PENDING_DATA_CAPACITY; index++) {
+        const aodv_pending_entry_t *pending = &state->pending[index];
+
+        if (pending->occupied != 0u && !time_due(now_ms, pending->expires_at_ms) &&
+            pending->data.final_destination.width == subject->width &&
+            pending->data.final_destination.value == subject->value) {
+            snapshot.reason_mask |= TAVRN_MAINT_DEMAND_PENDING_DATA;
+        }
+    }
+    if (state->deferred.active != 0u && state->deferred.destination == subject->value) {
+        snapshot.reason_mask |= TAVRN_MAINT_DEMAND_DEFERRED_REPAIR;
+    }
+    for (index = 0u; index < state->action_count; index++) {
+        const aodv_action_t *action =
+            &state->actions[(uint8_t)((state->action_head + index) % TAVRN_AODV_ACTION_CAPACITY)];
+
+        if (action->type == AODV_ACTION_FORWARD_DATA ||
+            action->type == AODV_ACTION_DELIVER_DATA) {
+            if (action->detail.data.data.final_destination.width == subject->width &&
+                action->detail.data.data.final_destination.value == subject->value) {
+                snapshot.reason_mask |= TAVRN_MAINT_DEMAND_QUEUED_DATA;
+            }
+            if (action->detail.data.next_hop.logical_id.width == subject->width &&
+                action->detail.data.next_hop.logical_id.value == subject->value &&
+                memcmp(action->detail.data.next_hop.adva.bytes, canonical_subject->bytes,
+                       TAVRN_ADVA_LEN) == 0) {
+                snapshot.reason_mask |= TAVRN_MAINT_DEMAND_QUEUED_DATA;
+            }
+        }
+    }
+    return snapshot;
 }
 
 static void sort_routes(aodv_route_entry_t *routes[], uint8_t count)
@@ -1883,5 +2355,382 @@ aodv_failure_status_t aodv_core_finish_deferred_rerr(
     build_rerr_action(core, &action, routes, 1u);
     (void)enqueue_action(core, &action);
     memset(&state->deferred, 0, sizeof(state->deferred));
+    return AODV_FAILURE_OK;
+}
+
+static int control_references_peer(const tavrn_validated_control_t *control,
+                                   const tavrn_direct_peer_t *peer)
+{
+    tavrn_identity_width_t width;
+    uint8_t width_len;
+
+    if (control == NULL || peer == NULL || control->pdu_len < 7u) {
+        return 0;
+    }
+    width = (control->pdu[AODV_PDU_FLAGS_OFFSET] & AODV_FLAG_IDENTITY_SID8) != 0u ?
+        TAVRN_IDENTITY_SID8 : TAVRN_IDENTITY_SID16;
+    width_len = width_bytes(width);
+    if (width != peer->logical_id.width) {
+        return 0;
+    }
+#define CONTROL_ID_IS_PEER(at) \
+    ((uint32_t)(at) + (uint32_t)width_len <= control->pdu_len && \
+     pdu_id(control->pdu, (at), width) == peer->logical_id.value)
+    switch (control->type) {
+    case TAVRN_WIRE_E_RREQ:
+        return CONTROL_ID_IS_PEER(7u) ||
+            CONTROL_ID_IS_PEER((uint8_t)(9u + width_len));
+    case TAVRN_WIRE_E_RREP:
+        return CONTROL_ID_IS_PEER(7u) ||
+            CONTROL_ID_IS_PEER((uint8_t)(7u + width_len)) ||
+            CONTROL_ID_IS_PEER((uint8_t)(9u + 2u * width_len));
+    case TAVRN_WIRE_E_RREP_ACK:
+        return CONTROL_ID_IS_PEER(6u) ||
+            CONTROL_ID_IS_PEER((uint8_t)(6u + width_len)) ||
+            CONTROL_ID_IS_PEER((uint8_t)(8u + 2u * width_len));
+    case TAVRN_WIRE_E_RERR:
+        /* A locally-originated RERR is a required notification even when one
+         * unreachable entry names the rebooted peer.  Only a stale peer as
+         * reporter (or the action's direct next hop below) owns this work. */
+        return CONTROL_ID_IS_PEER(7u);
+    default:
+        return 0;
+    }
+#undef CONTROL_ID_IS_PEER
+}
+
+static int action_references_peer(const aodv_action_t *action,
+                                  const tavrn_direct_peer_t *peer)
+{
+    if (action == NULL || peer == NULL) {
+        return 0;
+    }
+    switch (action->type) {
+    case AODV_ACTION_SEND_RREQ:
+    case AODV_ACTION_SEND_RREP:
+    case AODV_ACTION_FORWARD_RREP:
+    case AODV_ACTION_SEND_RERR:
+    case AODV_ACTION_SEND_RREP_ACK:
+        return peer_equal(&action->detail.control.next_hop, peer) ||
+            control_references_peer(&action->detail.control.control, peer);
+    case AODV_ACTION_FORWARD_DATA:
+    case AODV_ACTION_DELIVER_DATA:
+        return peer_equal(&action->detail.data.next_hop, peer) ||
+            action->detail.data.data.origin.value == peer->logical_id.value ||
+            action->detail.data.data.final_destination.value ==
+                peer->logical_id.value;
+    case AODV_ACTION_PENDING_DATA_FAILED:
+    case AODV_ACTION_BLACKLIST_NEIGHBOR:
+        return peer_equal(&action->detail.failure.peer, peer) ||
+            action->detail.failure.destination.value == peer->logical_id.value;
+    default:
+        return 0;
+    }
+}
+
+static uint16_t action_control_token(const aodv_action_t *action)
+{
+    if (action == NULL) {
+        return 0u;
+    }
+    switch (action->type) {
+    case AODV_ACTION_SEND_RREQ:
+    case AODV_ACTION_SEND_RREP:
+    case AODV_ACTION_FORWARD_RREP:
+    case AODV_ACTION_SEND_RERR:
+    case AODV_ACTION_SEND_RREP_ACK:
+        return action->detail.control.token;
+    default:
+        return 0u;
+    }
+}
+
+static aodv_status_t unsent_action_token_status(const aodv_core_t *core,
+                                                 uint16_t action_token)
+{
+    const aodv_core_state_t *state;
+    uint8_t index;
+
+    if (core == NULL || action_token == 0u) {
+        return AODV_STATUS_INVALID;
+    }
+    state = const_state_of(core);
+    for (index = 0u; index < TAVRN_AODV_RREP_ACK_WAIT_CAPACITY; index++) {
+        const aodv_rrep_ack_wait_t *wait = &state->ack_waits[index];
+
+        if (wait->occupied != 0u && wait->token == action_token) {
+            return wait->sent != 0u ? AODV_STATUS_BUSY : AODV_STATUS_OK;
+        }
+    }
+    /* A previous idempotent purge may already have released this reservation. */
+    return AODV_STATUS_NOT_FOUND;
+}
+
+static aodv_failure_status_t remove_peer_actions(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer)
+{
+    aodv_core_state_t *state = state_of(core);
+    uint8_t original_count = state->action_count;
+    uint8_t read_offset;
+    uint8_t kept_count = 0u;
+
+    /* Reject an impossible sent reservation before modifying either the action
+     * queue or any ACK wait.  This keeps an unsent queue from silently losing
+     * a tracked token. */
+    for (read_offset = 0u; read_offset < original_count; read_offset++) {
+        uint8_t read_index = (uint8_t)((state->action_head + read_offset) %
+                                       TAVRN_AODV_ACTION_CAPACITY);
+        const aodv_action_t *action = &state->actions[read_index];
+        uint16_t token;
+        aodv_status_t token_status;
+
+        if (!action_references_peer(action, peer)) {
+            continue;
+        }
+        token = action_control_token(action);
+        if (token == 0u) {
+            continue;
+        }
+        token_status = unsent_action_token_status(core, token);
+        if (token_status != AODV_STATUS_OK && token_status != AODV_STATUS_NOT_FOUND) {
+            return AODV_FAILURE_INVALID;
+        }
+    }
+    for (read_offset = 0u; read_offset < original_count; read_offset++) {
+        uint8_t read_index = (uint8_t)((state->action_head + read_offset) %
+                                        TAVRN_AODV_ACTION_CAPACITY);
+        aodv_action_t *action = &state->actions[read_index];
+
+        if (!action_references_peer(action, peer)) {
+            uint8_t write_index = (uint8_t)((state->action_head + kept_count) %
+                                              TAVRN_AODV_ACTION_CAPACITY);
+
+            if (write_index != read_index) {
+                state->actions[write_index] = *action;
+            }
+            kept_count++;
+        } else {
+            uint16_t token = action_control_token(action);
+
+            if (token != 0u) {
+                aodv_status_t cancel_status =
+                    aodv_core_cancel_unsent_action(core, token);
+
+                if (cancel_status != AODV_STATUS_OK &&
+                    cancel_status != AODV_STATUS_NOT_FOUND) {
+                    return AODV_FAILURE_INVALID;
+                }
+            }
+        }
+    }
+    for (read_offset = kept_count; read_offset < original_count; read_offset++) {
+        uint8_t clear_index = (uint8_t)((state->action_head + read_offset) %
+                                        TAVRN_AODV_ACTION_CAPACITY);
+
+        memset(&state->actions[clear_index], 0, sizeof(state->actions[clear_index]));
+    }
+    state->action_count = kept_count;
+    return AODV_FAILURE_OK;
+}
+
+static void clear_peer_incarnation_freshness(aodv_core_t *core,
+                                              const tavrn_direct_peer_t *peer)
+{
+    aodv_core_state_t *state = state_of(core);
+    uint16_t logical = peer->logical_id.value;
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_AODV_RREQ_SEEN_CAPACITY; index++) {
+        if (state->rreq_seen[index].occupied != 0u &&
+            state->rreq_seen[index].origin == logical) {
+            memset(&state->rreq_seen[index], 0, sizeof(state->rreq_seen[index]));
+        }
+    }
+    for (index = 0u; index < AODV_RREP_SEEN_CAPACITY; index++) {
+        if (state->rrep_seen[index].occupied != 0u &&
+            (state->rrep_seen[index].destination == logical ||
+             state->rrep_seen[index].origin == logical)) {
+            memset(&state->rrep_seen[index], 0, sizeof(state->rrep_seen[index]));
+        }
+    }
+    for (index = 0u; index < AODV_RERR_SEEN_CAPACITY; index++) {
+        if (state->rerr_seen[index].occupied != 0u &&
+            state->rerr_seen[index].reporter == logical) {
+            memset(&state->rerr_seen[index], 0, sizeof(state->rerr_seen[index]));
+        }
+    }
+    for (index = 0u; index < AODV_DISCOVERY_CAPACITY; index++) {
+        if (state->discoveries[index].occupied != 0u &&
+            state->discoveries[index].destination == logical) {
+            memset(&state->discoveries[index], 0, sizeof(state->discoveries[index]));
+        }
+    }
+    for (index = 0u; index < TAVRN_AODV_PENDING_DATA_CAPACITY; index++) {
+        if (state->pending[index].occupied != 0u &&
+            (state->pending[index].data.origin.value == logical ||
+             state->pending[index].data.final_destination.value == logical)) {
+            memset(&state->pending[index], 0, sizeof(state->pending[index]));
+        }
+    }
+    for (index = 0u; index < TAVRN_AODV_RREP_ACK_WAIT_CAPACITY; index++) {
+        if (ack_wait_references_peer(&state->ack_waits[index], peer)) {
+            memset(&state->ack_waits[index], 0, sizeof(state->ack_waits[index]));
+        }
+    }
+    for (index = 0u; index < AODV_BLACKLIST_CAPACITY; index++) {
+        if (state->blacklist[index].occupied != 0u &&
+            peer_equal(&state->blacklist[index].peer, peer)) {
+            memset(&state->blacklist[index], 0, sizeof(state->blacklist[index]));
+        }
+    }
+}
+
+static aodv_failure_status_t queue_peer_incarnation_failure(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer, uint32_t now_ms)
+{
+    aodv_core_state_t *state = state_of(core);
+    aodv_route_entry_t *affected[TAVRN_AODV_ROUTE_CAPACITY];
+    uint8_t affected_count = 0u;
+    uint8_t maximum = core->config.local_peer.logical_id.width ==
+            TAVRN_IDENTITY_SID16 ? TAVRN_AODV_RERR_SID16_PER_ACTION :
+                                   TAVRN_AODV_RERR_SID8_PER_ACTION;
+    uint8_t required;
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_AODV_ROUTE_CAPACITY; index++) {
+        aodv_route_entry_t *route = &state->routes[index];
+
+        if (route->occupied != 0u && route->state == AODV_ROUTE_VALID &&
+            (route->destination == peer->logical_id.value ||
+             peer_equal(&route->next_hop, peer))) {
+            affected[affected_count++] = route;
+        }
+    }
+    required = (uint8_t)((affected_count + maximum - 1u) / maximum);
+    if (!action_space(state, required)) {
+        core->counters.action_backpressure++;
+        return AODV_FAILURE_BUSY;
+    }
+    if (required != 0u && !rerr_rate_allowed(core, now_ms)) {
+        return AODV_FAILURE_BUSY;
+    }
+
+    /* Commit work starts only after every fallible reservation check succeeds.
+     * The RERR is built before invalidation so it retains the old incarnation's
+     * sorted destination-sequence facts. */
+    if (remove_peer_actions(core, peer) != AODV_FAILURE_OK) {
+        return AODV_FAILURE_INVALID;
+    }
+    sort_routes(affected, affected_count);
+    for (index = 0u; index < affected_count; index = (uint8_t)(index + maximum)) {
+        aodv_action_t action;
+        uint8_t count = (uint8_t)(affected_count - index);
+
+        if (count > maximum) {
+            count = maximum;
+        }
+        build_rerr_action(core, &action, &affected[index], count);
+        (void)enqueue_action(core, &action);
+    }
+    for (index = 0u; index < affected_count; index++) {
+        aodv_route_entry_t *route = affected[index];
+
+        route->state = AODV_ROUTE_INVALID;
+        if (route->destination == peer->logical_id.value) {
+            route->destination_sequence = 0u;
+            route->sequence_valid = 0u;
+        } else if (route->sequence_valid != 0u) {
+            route->destination_sequence++;
+        } else {
+            route->sequence_valid = 1u;
+        }
+    }
+    /* An older invalid direct-destination entry must not reject a new
+     * sequence-1 route even when it had no valid route to report. */
+    for (index = 0u; index < TAVRN_AODV_ROUTE_CAPACITY; index++) {
+        aodv_route_entry_t *route = &state->routes[index];
+
+        if (route->occupied != 0u &&
+            route->destination == peer->logical_id.value) {
+            route->state = AODV_ROUTE_INVALID;
+            route->destination_sequence = 0u;
+            route->sequence_valid = 0u;
+        }
+    }
+    clear_peer_incarnation_freshness(core, peer);
+    return AODV_FAILURE_OK;
+}
+
+aodv_failure_status_t aodv_core_reset_peer_incarnation(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer, uint32_t now_ms)
+{
+    if (core == NULL || !peer_is_valid_for_core(core, peer)) {
+        return AODV_FAILURE_INVALID;
+    }
+    return queue_peer_incarnation_failure(core, peer, now_ms);
+}
+
+aodv_failure_status_t aodv_core_quarantine_peer_incarnation(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer)
+{
+    aodv_core_state_t *state;
+    uint8_t index;
+
+    if (core == NULL || !peer_is_valid_for_core(core, peer)) {
+        return AODV_FAILURE_INVALID;
+    }
+    state = state_of(core);
+    if (remove_peer_actions(core, peer) != AODV_FAILURE_OK) {
+        return AODV_FAILURE_INVALID;
+    }
+    for (index = 0u; index < TAVRN_AODV_RREP_ACK_WAIT_CAPACITY; index++) {
+        if (ack_wait_references_peer(&state->ack_waits[index], peer)) {
+            memset(&state->ack_waits[index], 0, sizeof(state->ack_waits[index]));
+        }
+    }
+    return AODV_FAILURE_OK;
+}
+
+aodv_failure_status_t aodv_core_peer_incarnation_snapshot(
+    const aodv_core_t *core, const tavrn_direct_peer_t *peer,
+    aodv_peer_incarnation_snapshot_t *snapshot_out)
+{
+    const aodv_core_state_t *state;
+    uint8_t index;
+
+    if (core == NULL || !peer_is_valid_for_core(core, peer) ||
+        snapshot_out == NULL) {
+        return AODV_FAILURE_INVALID;
+    }
+    memset(snapshot_out, 0, sizeof(*snapshot_out));
+    state = const_state_of(core);
+    for (index = 0u; index < TAVRN_AODV_ROUTE_CAPACITY; index++) {
+        if (state->routes[index].occupied != 0u &&
+            state->routes[index].state == AODV_ROUTE_VALID &&
+            (state->routes[index].destination == peer->logical_id.value ||
+             peer_equal(&state->routes[index].next_hop, peer))) {
+            snapshot_out->valid_route_count++;
+        }
+    }
+    for (index = 0u; index < TAVRN_AODV_RREQ_SEEN_CAPACITY; index++) {
+        if (state->rreq_seen[index].occupied != 0u &&
+            state->rreq_seen[index].origin == peer->logical_id.value) {
+            snapshot_out->control_dedupe_count++;
+        }
+    }
+    for (index = 0u; index < AODV_RREP_SEEN_CAPACITY; index++) {
+        if (state->rrep_seen[index].occupied != 0u &&
+            (state->rrep_seen[index].destination == peer->logical_id.value ||
+             state->rrep_seen[index].origin == peer->logical_id.value)) {
+            snapshot_out->control_dedupe_count++;
+            snapshot_out->freshness_count++;
+        }
+    }
+    for (index = 0u; index < AODV_RERR_SEEN_CAPACITY; index++) {
+        if (state->rerr_seen[index].occupied != 0u &&
+            state->rerr_seen[index].reporter == peer->logical_id.value) {
+            snapshot_out->control_dedupe_count++;
+        }
+    }
     return AODV_FAILURE_OK;
 }

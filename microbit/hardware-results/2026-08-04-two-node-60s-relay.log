@@ -1,0 +1,170 @@
+[0.000000 0.000000] mesh own dummy queued src=0x0002 seq=484 ttl=3
+[0.478973 0.478973] mesh rx dummy src=0x0001 seq=32 ttl=3 rssi=-68 dBm payload=44554d5920000003
+[0.484991 0.006018] mesh relay queued src=0x0001 seq=32 ttl=2 backoff=106ms
+[1.000988 0.515997] mesh own dummy queued src=0x0002 seq=485 ttl=3
+[1.479978 0.478990] mesh rx dummy src=0x0001 seq=33 ttl=3 rssi=-65 dBm payload=44554d5921000003
+[1.486006 0.006027] mesh relay queued src=0x0001 seq=33 ttl=2 backoff=109ms
+[2.002011 0.516005] mesh own dummy queued src=0x0002 seq=486 ttl=3
+[2.480983 0.478972] mesh rx dummy src=0x0001 seq=34 ttl=3 rssi=-68 dBm payload=44554d5922000003
+[2.487003 0.006021] mesh relay queued src=0x0001 seq=34 ttl=2 backoff=96ms
+[3.002001 0.514998] mesh own dummy queued src=0x0002 seq=487 ttl=3
+[3.484992 0.482991] mesh rx dummy src=0x0001 seq=35 ttl=3 rssi=-67 dBm payload=44554d5923000003
+[3.491042 0.006050] mesh relay queued src=0x0001 seq=35 ttl=2 backoff=99ms
+[4.002998 0.511956] mesh own dummy queued src=0x0002 seq=488 ttl=3
+[4.486012 0.483014] mesh rx dummy src=0x0001 seq=36 ttl=3 rssi=-72 dBm payload=44554d5924000003
+[4.492030 0.006018] mesh relay queued src=0x0001 seq=36 ttl=2 backoff=107ms
+[4.605008 0.112978] mesh counters id=0x0002 rx_ok=65 tx_ok=521 decode_error=28163 duplicate_drop=33 ttl_drop=0 queue_drop=0 relay_scheduled=32 relay_rate_limited=0 blocked_direct=0
+[5.002995 0.397988] mesh own dummy queued src=0x0002 seq=489 ttl=3
+[5.485008 0.482013] mesh rx dummy src=0x0001 seq=37 ttl=3 rssi=-70 dBm payload=44554d5925000003
+[5.492025 0.007017] mesh relay queued src=0x0001 seq=37 ttl=2 backoff=73ms
+[6.004030 0.512005] mesh own dummy queued src=0x0002 seq=490 ttl=3
+[7.005025 1.000995] mesh own dummy queued src=0x0002 seq=491 ttl=3
+[7.487019 0.481994] mesh rx dummy src=0x0001 seq=39 ttl=3 rssi=-70 dBm payload=44554d5927000003
+[7.494037 0.007018] mesh relay queued src=0x0001 seq=39 ttl=2 backoff=47ms
+[8.006042 0.512005] mesh own dummy queued src=0x0002 seq=492 ttl=3
+[9.007029 1.000987] mesh own dummy queued src=0x0002 seq=493 ttl=3
+[9.606045 0.599016] mesh counters id=0x0002 rx_ok=68 tx_ok=528 decode_error=28425 duplicate_drop=34 ttl_drop=0 queue_drop=0 relay_scheduled=34 relay_rate_limited=0 blocked_direct=0
+[10.007037 0.400993] mesh own dummy queued src=0x0002 seq=494 ttl=3
+[10.492026 0.484989] mesh rx dummy src=0x0001 seq=42 ttl=3 rssi=-72 dBm payload=44554d592a000003
+[10.499061 0.007035] mesh relay queued src=0x0001 seq=42 ttl=2 backoff=23ms
+[11.008046 0.508985] mesh own dummy queued src=0x0002 seq=495 ttl=3
+[11.496059 0.488013] mesh rx dummy src=0x0001 seq=43 ttl=3 rssi=-71 dBm payload=44554d592b000003
+[11.503097 0.007038] mesh relay queued src=0x0001 seq=43 ttl=2 backoff=22ms
+[12.009055 0.505958] mesh own dummy queued src=0x0002 seq=496 ttl=3
+[12.497060 0.488005] mesh rx dummy src=0x0001 seq=44 ttl=3 rssi=-69 dBm payload=44554d592c000003
+[12.504050 0.006990] mesh relay queued src=0x0001 seq=44 ttl=2 backoff=106ms
+[13.010050 0.506000] mesh own dummy queued src=0x0002 seq=497 ttl=3
+[13.498065 0.488015] mesh rx dummy src=0x0001 seq=45 ttl=3 rssi=-70 dBm payload=44554d592d000003
+[13.505126 0.007061] mesh relay queued src=0x0001 seq=45 ttl=2 backoff=33ms
+[14.011064 0.505938] mesh own dummy queued src=0x0002 seq=498 ttl=3
+[14.499058 0.487994] mesh rx dummy src=0x0001 seq=46 ttl=3 rssi=-71 dBm payload=44554d592e000003
+[14.506100 0.007042] mesh relay queued src=0x0001 seq=46 ttl=2 backoff=78ms
+[14.607099 0.100999] mesh counters id=0x0002 rx_ok=76 tx_ok=538 decode_error=28665 duplicate_drop=37 ttl_drop=0 queue_drop=0 relay_scheduled=39 relay_rate_limited=0 blocked_direct=0
+[15.011090 0.403991] mesh own dummy queued src=0x0002 seq=499 ttl=3
+[15.502052 0.490963] mesh rx dummy src=0x0001 seq=47 ttl=3 rssi=-70 dBm payload=44554d592f000003
+[15.509091 0.007039] mesh relay queued src=0x0001 seq=47 ttl=2 backoff=80ms
+[16.012070 0.502979] mesh own dummy queued src=0x0002 seq=500 ttl=3
+[16.503074 0.491004] mesh rx dummy src=0x0001 seq=48 ttl=3 rssi=-65 dBm payload=44554d5930000003
+[16.510106 0.007032] mesh relay queued src=0x0001 seq=48 ttl=2 backoff=103ms
+[17.013091 0.502985] mesh own dummy queued src=0x0002 seq=501 ttl=3
+[17.504078 0.490987] mesh rx dummy src=0x0001 seq=49 ttl=3 rssi=-72 dBm payload=44554d5931000003
+[17.511089 0.007011] mesh relay queued src=0x0001 seq=49 ttl=2 backoff=77ms
+[18.014096 0.503008] mesh own dummy queued src=0x0002 seq=502 ttl=3
+[18.505096 0.491000] mesh rx dummy src=0x0001 seq=50 ttl=3 rssi=-66 dBm payload=44554d5932000003
+[18.512079 0.006983] mesh relay queued src=0x0001 seq=50 ttl=2 backoff=55ms
+[19.015107 0.503028] mesh own dummy queued src=0x0002 seq=503 ttl=3
+[19.509108 0.494000] mesh rx dummy src=0x0001 seq=51 ttl=3 rssi=-65 dBm payload=44554d5933000003
+[19.516134 0.007026] mesh relay queued src=0x0001 seq=51 ttl=2 backoff=114ms
+[19.607176 0.091042] mesh counters id=0x0002 rx_ok=85 tx_ok=547 decode_error=28950 duplicate_drop=41 ttl_drop=0 queue_drop=0 relay_scheduled=44 relay_rate_limited=0 blocked_direct=0
+[20.015350 0.408174] mesh own dummy queued src=0x0002 seq=504 ttl=3
+[21.016133 1.000784] mesh own dummy queued src=0x0002 seq=505 ttl=3
+[21.513115 0.496982] mesh rx dummy src=0x0001 seq=53 ttl=3 rssi=-66 dBm payload=44554d5935000003
+[21.520119 0.007004] mesh relay queued src=0x0001 seq=53 ttl=2 backoff=68ms
+[22.017146 0.497027] mesh own dummy queued src=0x0002 seq=506 ttl=3
+[22.511170 0.494024] mesh rx dummy src=0x0001 seq=54 ttl=3 rssi=-66 dBm payload=44554d5936000003
+[22.518115 0.006945] mesh relay queued src=0x0001 seq=54 ttl=2 backoff=75ms
+[23.018153 0.500038] mesh own dummy queued src=0x0002 seq=507 ttl=3
+[23.515117 0.496964] mesh rx dummy src=0x0001 seq=55 ttl=3 rssi=-65 dBm payload=44554d5937000003
+[23.522140 0.007023] mesh relay queued src=0x0001 seq=55 ttl=2 backoff=84ms
+[24.019151 0.497011] mesh own dummy queued src=0x0002 seq=508 ttl=3
+[24.516145 0.496994] mesh rx dummy src=0x0001 seq=56 ttl=3 rssi=-67 dBm payload=44554d5938000003
+[24.523168 0.007022] mesh relay queued src=0x0001 seq=56 ttl=2 backoff=93ms
+[24.608153 0.084985] mesh counters id=0x0002 rx_ok=92 tx_ok=556 decode_error=29232 duplicate_drop=44 ttl_drop=0 queue_drop=0 relay_scheduled=48 relay_rate_limited=0 blocked_direct=0
+[25.019152 0.410999] mesh own dummy queued src=0x0002 seq=509 ttl=3
+[26.020151 1.000999] mesh own dummy queued src=0x0002 seq=510 ttl=3
+[26.520146 0.499995] mesh rx dummy src=0x0001 seq=58 ttl=3 rssi=-67 dBm payload=44554d593a000003
+[26.527139 0.006993] mesh relay queued src=0x0001 seq=58 ttl=2 backoff=72ms
+[27.021162 0.494023] mesh own dummy queued src=0x0002 seq=511 ttl=3
+[27.521176 0.500014] mesh rx dummy src=0x0001 seq=59 ttl=3 rssi=-68 dBm payload=44554d593b000003
+[27.528140 0.006964] mesh relay queued src=0x0001 seq=59 ttl=2 backoff=106ms
+[28.022170 0.494030] mesh own dummy queued src=0x0002 seq=512 ttl=3
+[28.522405 0.500235] mesh rx dummy src=0x0001 seq=60 ttl=3 rssi=-65 dBm payload=44554d593c000003
+[28.529153 0.006747] mesh relay queued src=0x0001 seq=60 ttl=2 backoff=97ms
+[29.023202 0.494049] mesh own dummy queued src=0x0002 seq=513 ttl=3
+[29.610188 0.586987] mesh counters id=0x0002 rx_ok=99 tx_ok=565 decode_error=29515 duplicate_drop=48 ttl_drop=0 queue_drop=0 relay_scheduled=51 relay_rate_limited=0 blocked_direct=0
+[30.023214 0.413025] mesh own dummy queued src=0x0002 seq=514 ttl=3
+[31.024182 1.000968] mesh own dummy queued src=0x0002 seq=515 ttl=3
+[31.527181 0.502999] mesh rx dummy src=0x0001 seq=63 ttl=3 rssi=-67 dBm payload=44554d593f000003
+[31.534161 0.006980] mesh relay queued src=0x0001 seq=63 ttl=2 backoff=86ms
+[32.025188 0.491027] mesh own dummy queued src=0x0002 seq=516 ttl=3
+[32.528222 0.503034] mesh rx dummy src=0x0001 seq=64 ttl=3 rssi=-67 dBm payload=44554d5940000003
+[32.535176 0.006954] mesh relay queued src=0x0001 seq=64 ttl=2 backoff=111ms
+[33.026204 0.491029] mesh own dummy queued src=0x0002 seq=517 ttl=3
+[33.529196 0.502991] mesh rx dummy src=0x0001 seq=65 ttl=3 rssi=-68 dBm payload=44554d5941000003
+[33.536209 0.007013] mesh relay queued src=0x0001 seq=65 ttl=2 backoff=84ms
+[34.027226 0.491017] mesh own dummy queued src=0x0002 seq=518 ttl=3
+[34.533221 0.505995] mesh rx dummy src=0x0001 seq=66 ttl=3 rssi=-66 dBm payload=44554d5942000003
+[34.540180 0.006959] mesh relay queued src=0x0001 seq=66 ttl=2 backoff=76ms
+[34.611233 0.071053] mesh counters id=0x0002 rx_ok=107 tx_ok=574 decode_error=29800 duplicate_drop=52 ttl_drop=0 queue_drop=0 relay_scheduled=55 relay_rate_limited=0 blocked_direct=0
+[35.027219 0.415985] mesh own dummy queued src=0x0002 seq=519 ttl=3
+[35.533258 0.506040] mesh rx dummy src=0x0001 seq=67 ttl=3 rssi=-62 dBm payload=44554d5943000003
+[35.540204 0.006945] mesh relay queued src=0x0001 seq=67 ttl=2 backoff=107ms
+[36.028223 0.488020] mesh own dummy queued src=0x0002 seq=520 ttl=3
+[37.029243 1.001019] mesh own dummy queued src=0x0002 seq=521 ttl=3
+[37.538244 0.509002] mesh rx dummy src=0x0001 seq=69 ttl=3 rssi=-64 dBm payload=44554d5945000003
+[37.545191 0.006946] mesh relay queued src=0x0001 seq=69 ttl=2 backoff=98ms
+[38.030255 0.485065] mesh own dummy queued src=0x0002 seq=522 ttl=3
+[38.539249 0.508994] mesh rx dummy src=0x0001 seq=70 ttl=3 rssi=-62 dBm payload=44554d5946000003
+[38.546197 0.006948] mesh relay queued src=0x0001 seq=70 ttl=2 backoff=89ms
+[39.031277 0.485080] mesh own dummy queued src=0x0002 seq=523 ttl=3
+[39.540256 0.508979] mesh rx dummy src=0x0001 seq=71 ttl=3 rssi=-64 dBm payload=44554d5947000003
+[39.547264 0.007007] mesh relay queued src=0x0001 seq=71 ttl=2 backoff=87ms
+[39.611250 0.063986] mesh counters id=0x0002 rx_ok=115 tx_ok=582 decode_error=30057 duplicate_drop=56 ttl_drop=0 queue_drop=0 relay_scheduled=59 relay_rate_limited=0 blocked_direct=0
+[40.031242 0.419992] mesh own dummy queued src=0x0002 seq=524 ttl=3
+[41.032276 1.001034] mesh own dummy queued src=0x0002 seq=525 ttl=3
+[41.544294 0.512018] mesh rx dummy src=0x0001 seq=73 ttl=3 rssi=-67 dBm payload=44554d5949000003
+[41.550329 0.006035] mesh relay queued src=0x0001 seq=73 ttl=2 backoff=71ms
+[42.033275 0.482945] mesh own dummy queued src=0x0002 seq=526 ttl=3
+[42.545255 0.511981] mesh rx dummy src=0x0001 seq=74 ttl=3 rssi=-65 dBm payload=44554d594a000003
+[42.551300 0.006045] mesh relay queued src=0x0001 seq=74 ttl=2 backoff=88ms
+[43.034273 0.482972] mesh own dummy queued src=0x0002 seq=527 ttl=3
+[43.546262 0.511990] mesh rx dummy src=0x0001 seq=75 ttl=3 rssi=-65 dBm payload=44554d594b000003
+[43.552307 0.006045] mesh relay queued src=0x0001 seq=75 ttl=2 backoff=82ms
+[44.035281 0.482974] mesh own dummy queued src=0x0002 seq=528 ttl=3
+[44.547270 0.511989] mesh rx dummy src=0x0001 seq=76 ttl=3 rssi=-68 dBm payload=44554d594c000003
+[44.553314 0.006044] mesh relay queued src=0x0001 seq=76 ttl=2 backoff=94ms
+[44.612277 0.058963] mesh counters id=0x0002 rx_ok=123 tx_ok=591 decode_error=30307 duplicate_drop=60 ttl_drop=0 queue_drop=0 relay_scheduled=63 relay_rate_limited=0 blocked_direct=0
+[45.035292 0.423015] mesh own dummy queued src=0x0002 seq=529 ttl=3
+[45.550270 0.514978] mesh rx dummy src=0x0001 seq=77 ttl=3 rssi=-69 dBm payload=44554d594d000003
+[45.556315 0.006045] mesh relay queued src=0x0001 seq=77 ttl=2 backoff=119ms
+[46.036308 0.479992] mesh own dummy queued src=0x0002 seq=530 ttl=3
+[46.551293 0.514986] mesh rx dummy src=0x0001 seq=78 ttl=3 rssi=-66 dBm payload=44554d594e000003
+[46.557333 0.006039] mesh relay queued src=0x0001 seq=78 ttl=2 backoff=39ms
+[47.037314 0.479981] mesh own dummy queued src=0x0002 seq=531 ttl=3
+[47.552314 0.514999] mesh rx dummy src=0x0001 seq=79 ttl=3 rssi=-68 dBm payload=44554d594f000003
+[47.558318 0.006004] mesh relay queued src=0x0001 seq=79 ttl=2 backoff=32ms
+[48.038304 0.479986] mesh own dummy queued src=0x0002 seq=532 ttl=3
+[48.553298 0.514994] mesh rx dummy src=0x0001 seq=80 ttl=3 rssi=-67 dBm payload=44554d5950000003
+[48.559345 0.006047] mesh relay queued src=0x0001 seq=80 ttl=2 backoff=45ms
+[49.039312 0.479966] mesh own dummy queued src=0x0002 seq=533 ttl=3
+[49.614371 0.575059] mesh counters id=0x0002 rx_ok=130 tx_ok=601 decode_error=30577 duplicate_drop=63 ttl_drop=0 queue_drop=0 relay_scheduled=67 relay_rate_limited=0 blocked_direct=0
+[50.039320 0.424949] mesh own dummy queued src=0x0002 seq=534 ttl=3
+[50.557310 0.517990] mesh rx dummy src=0x0001 seq=82 ttl=3 rssi=-66 dBm payload=44554d5952000003
+[50.563333 0.006023] mesh relay queued src=0x0001 seq=82 ttl=2 backoff=22ms
+[51.040330 0.476997] mesh own dummy queued src=0x0002 seq=535 ttl=3
+[51.561305 0.520975] mesh rx dummy src=0x0001 seq=83 ttl=3 rssi=-68 dBm payload=44554d5953000003
+[51.567343 0.006039] mesh relay queued src=0x0001 seq=83 ttl=2 backoff=75ms
+[52.041346 0.474003] mesh own dummy queued src=0x0002 seq=536 ttl=3
+[52.559353 0.518007] mesh rx dummy src=0x0001 seq=84 ttl=3 rssi=-67 dBm payload=44554d5954000003
+[52.565358 0.006005] mesh relay queued src=0x0001 seq=84 ttl=2 backoff=107ms
+[53.042404 0.477046] mesh own dummy queued src=0x0002 seq=537 ttl=3
+[53.563324 0.520920] mesh rx dummy src=0x0001 seq=85 ttl=3 rssi=-68 dBm payload=44554d5955000003
+[53.569368 0.006043] mesh relay queued src=0x0001 seq=85 ttl=2 backoff=107ms
+[54.042323 0.472955] mesh own dummy queued src=0x0002 seq=538 ttl=3
+[54.564357 0.522034] mesh rx dummy src=0x0001 seq=86 ttl=3 rssi=-66 dBm payload=44554d5956000003
+[54.570369 0.006012] mesh relay queued src=0x0001 seq=86 ttl=2 backoff=45ms
+[54.614327 0.043958] mesh counters id=0x0002 rx_ok=140 tx_ok=611 decode_error=30832 duplicate_drop=68 ttl_drop=0 queue_drop=0 relay_scheduled=72 relay_rate_limited=0 blocked_direct=0
+[55.042333 0.428006] mesh own dummy queued src=0x0002 seq=539 ttl=3
+[55.566328 0.523995] mesh rx dummy src=0x0001 seq=87 ttl=3 rssi=-67 dBm payload=44554d5957000003
+[55.573371 0.007043] mesh relay queued src=0x0001 seq=87 ttl=2 backoff=82ms
+[56.043340 0.469969] mesh own dummy queued src=0x0002 seq=540 ttl=3
+[56.567354 0.524014] mesh rx dummy src=0x0001 seq=88 ttl=3 rssi=-66 dBm payload=44554d5958000003
+[56.574380 0.007026] mesh relay queued src=0x0001 seq=88 ttl=2 backoff=37ms
+[57.044381 0.470001] mesh own dummy queued src=0x0002 seq=541 ttl=3
+[57.568403 0.524022] mesh rx dummy src=0x0001 seq=89 ttl=3 rssi=-67 dBm payload=44554d5959000003
+[57.575350 0.006948] mesh relay queued src=0x0001 seq=89 ttl=2 backoff=93ms
+[58.045375 0.470025] mesh own dummy queued src=0x0002 seq=542 ttl=3
+[58.572386 0.527011] mesh rx dummy src=0x0001 seq=90 ttl=3 rssi=-64 dBm payload=44554d595a000003
+[58.579388 0.007003] mesh relay queued src=0x0001 seq=90 ttl=2 backoff=98ms
+[59.046401 0.467012] mesh own dummy queued src=0x0002 seq=543 ttl=3
+[59.615383 0.568982] mesh counters id=0x0002 rx_ok=148 tx_ok=620 decode_error=31094 duplicate_drop=72 ttl_drop=0 queue_drop=0 relay_scheduled=76 relay_rate_limited=0 blocked_direct=0

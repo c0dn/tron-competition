@@ -34,6 +34,8 @@ static int first_for(const char *requirement)
 
 static const uint8_t adva_a[6] = { 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu };
 static const uint8_t adva_b[6] = { 0xdcu, 0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u };
+static const uint8_t adva_c[6] = { 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u };
+static const uint8_t adva_d[6] = { 0x21u, 0x32u, 0x43u, 0x54u, 0x65u, 0xc2u };
 
 static const uint8_t data16[] = {
     0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
@@ -93,6 +95,18 @@ static tavrn_link_data_t make_data(uint16_t sequence)
     data.app_len = 7u;
     memcpy(data.app_bytes, &data16[24], 7u);
     data.ownership = TAVRN_DATA_ORIGINATED;
+    return data;
+}
+
+static tavrn_link_data_t make_transit_data(
+    const uint8_t origin[6], const uint8_t final_destination[6],
+    uint16_t sequence)
+{
+    tavrn_link_data_t data = make_data(sequence);
+
+    data.origin = make_peer(origin).logical_id;
+    data.final_destination = make_peer(final_destination).logical_id;
+    data.ownership = TAVRN_DATA_TRANSIT;
     return data;
 }
 
@@ -312,6 +326,82 @@ static void make_tx_event(ble_mesh_sched_event_t *event,
     event->tx_token = token;
     event->tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
     event->tx_completed_channel_mask = completed_mask;
+}
+
+static int admit_transit_data(tavrn_link_v2_t *link,
+                              const tavrn_link_data_t *data,
+                              const uint8_t transmitter[6], uint32_t now_ms)
+{
+    tavrn_codec_config_t codec;
+    tavrn_decoded_frame_t frame;
+    ble_mesh_sched_event_t event;
+    tavrn_link_event_t output;
+    size_t encoded_len = 0u;
+
+    memset(&codec, 0, sizeof(codec));
+    codec.network_id = link->config.network_id;
+    codec.local_peer = link->config.local_peer;
+    memset(&frame, 0, sizeof(frame));
+    frame.type = TAVRN_WIRE_DATA;
+    frame.network_id = link->config.network_id;
+    frame.transmitter = make_peer(transmitter);
+    frame.detail.data.immediate_receiver = link->config.local_peer.logical_id;
+    frame.detail.data.data = *data;
+    memset(&event, 0, sizeof(event));
+    event.type = BLE_MESH_SCHED_EVENT_RX_ADV;
+    memcpy(event.adv_addr, transmitter, 6u);
+    if (tavrn_wire_v2_encode(&codec, &frame, event.adv_data,
+                             sizeof(event.adv_data), &encoded_len) !=
+            TAVRN_CODEC_OK ||
+        encoded_len > BLE_ADV_MAX_DATA) {
+        return 0;
+    }
+    event.adv_len = (uint8_t)encoded_len;
+    if (tavrn_link_v2_on_scheduler_event(link, &event, now_ms, &output) !=
+            TAVRN_LINK_STEP_EVENT ||
+        output.type != TAVRN_LINK_EVENT_RX_DATA_CANDIDATE) {
+        return 0;
+    }
+    return tavrn_link_v2_resolve_rx(link, output.detail.candidate.token,
+                                    TAVRN_RX_ACCEPTED, now_ms, &output) ==
+        TAVRN_LINK_RESOLVE_OK;
+}
+
+static int data_dedupe_contains(const tavrn_link_v2_t *link,
+                                const tavrn_link_data_t *data)
+{
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_LINK_DATA_DEDUPE_CAPACITY; index++) {
+        const tavrn_data_dedupe_entry_t *entry = &link->data_dedupe[index];
+
+        if (entry->valid != 0u &&
+            entry->origin.width == data->origin.width &&
+            entry->origin.value == data->origin.value &&
+            entry->data_seq == data->data_seq &&
+            entry->app_kind == data->app_kind &&
+            entry->app_source == data->app_source) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void remove_queued_hacks_for_origin(ble_mesh_scheduler_t *scheduler,
+                                           uint16_t origin)
+{
+    uint8_t index;
+
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        ble_mesh_tx_queue_entry_t *entry = &scheduler->routed_tx_queue.entries[index];
+
+        if (entry->occupied != 0u && entry->item.adv_len >= 17u &&
+            entry->item.adv_data[11] == TAVRN_WIRE_HACK &&
+            ((uint16_t)entry->item.adv_data[15] |
+             ((uint16_t)entry->item.adv_data[16] << 8)) == origin) {
+            (void)ble_mesh_tx_queue_remove(&scheduler->routed_tx_queue, index, NULL);
+        }
+    }
 }
 
 static tavrn_link_step_status_t start_two_peer_data(
@@ -559,6 +649,105 @@ static void test_link_02_candidate_resolution_and_containment(void)
     CHECK("LINK-02", queued_hack_status(&scheduler, TAVRN_HACK_ACCEPTED) &&
                        scheduler.routed_tx_queue.count == BLE_MESH_TX_QUEUE_CAPACITY &&
                        !queue_has_token(&scheduler, 0x41u));
+}
+
+static void test_link_02_candidate_match_seam(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    ble_mesh_sched_event_t event;
+    tavrn_link_event_t output;
+    tavrn_rx_data_candidate_t candidate;
+    tavrn_link_counters_t counters_before;
+    uint8_t directed[sizeof(data16)];
+    uint8_t i;
+
+    if (!setup_link(&link, &scheduler, 100u)) {
+        return;
+    }
+    memcpy(directed, data16, sizeof(directed));
+    directed[14] = adva_a[0];
+    directed[15] = adva_a[1];
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 100u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_EVENT &&
+                       output.type == TAVRN_LINK_EVENT_RX_DATA_CANDIDATE);
+    candidate = output.detail.candidate;
+    counters_before = link.counters;
+    CHECK("LINK-02", tavrn_link_v2_rx_candidate_matches(&link, &candidate) &&
+                       link.candidate_valid != 0u &&
+                       memcmp(&link.counters, &counters_before,
+                              sizeof(link.counters)) == 0);
+
+    candidate.token ^= 0x0001u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.transmitter.logical_id.width = TAVRN_IDENTITY_SID8;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.transmitter.logical_id.value ^= 0x0001u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    for (i = 0u; i < TAVRN_ADVA_LEN; i++) {
+        candidate = output.detail.candidate;
+        candidate.transmitter.adva.bytes[i] ^= 0x01u;
+        CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    }
+    candidate = output.detail.candidate;
+    candidate.rssi_magnitude_db++;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+
+    candidate = output.detail.candidate;
+    candidate.data.origin.width = TAVRN_IDENTITY_SID8;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.origin.value ^= 0x0001u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.final_destination.width = TAVRN_IDENTITY_SID8;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.final_destination.value ^= 0x0001u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.data_seq ^= 0x0001u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.ttl++;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.hops++;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.app_kind ^= 0x01u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.app_source ^= 0x01u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.urgent ^= 0x01u;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.data.app_len--;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    for (i = 0u; i < TAVRN_LINK_APP_BYTES; i++) {
+        candidate = output.detail.candidate;
+        candidate.data.app_bytes[i] ^= 0x01u;
+        CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    }
+    candidate = output.detail.candidate;
+    candidate.data.ownership = TAVRN_DATA_ORIGINATED;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    candidate = output.detail.candidate;
+    candidate.deadline_ms++;
+    CHECK("LINK-02", !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
+    CHECK("LINK-02", tavrn_link_v2_rx_candidate_matches(&link,
+                                                           &output.detail.candidate));
+    candidate = output.detail.candidate;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, candidate.token,
+                                                 TAVRN_RX_REJECTED, 100u,
+                                                 &output) == TAVRN_LINK_RESOLVE_OK &&
+                       !tavrn_link_v2_rx_candidate_matches(&link, &candidate));
 }
 
 static void test_link_03_busy_rejected_and_exact_correlation(void)
@@ -965,12 +1154,17 @@ static void test_link_06_directed_data_and_controlled_flood(void)
                        scheduler.routed_tx_queue.entries[0].item.not_before_ms >= 21u &&
                        scheduler.routed_tx_queue.entries[0].item.not_before_ms <= 121u);
     CHECK("LINK-06", link.counters.hack_accepted == 0u &&
-                       link.custody[0].phase == TAVRN_CUSTODY_FREE);
+                       link.custody[0].phase == TAVRN_CUSTODY_FREE &&
+                       link.counters.rx_flood_committed == 1u &&
+                       link.counters.rx_flood_duplicate == 0u);
     make_rx_event(&event, flood16, (uint8_t)sizeof(flood16), adva_b);
     CHECK("LINK-06", tavrn_link_v2_on_scheduler_event(&link, &event, 2u,
                                                         &output) ==
                        TAVRN_LINK_STEP_NO_EVENT);
-    CHECK("LINK-06", link.flood_dedupe[0].valid == 1u);
+    CHECK("LINK-06", link.flood_dedupe[0].valid == 1u &&
+                       link.counters.rx_flood_committed == 1u &&
+                       link.counters.rx_flood_duplicate == 1u &&
+                       scheduler.routed_tx_queue.count == 1u);
     memcpy(ttl_zero, flood16, sizeof(ttl_zero));
     ttl_zero[13] = 0x0fu;
     ttl_zero[16] = 0x03u;
@@ -1136,10 +1330,11 @@ static void test_link_02_dedupe_replacement(void)
     link.data_dedupe[0].expires_at_ms = now_ms;
     make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
     CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, now_ms,
-                                                         &output) ==
-                       TAVRN_LINK_STEP_NO_EVENT);
+                                                          &output) ==
+                       TAVRN_LINK_STEP_DATA_DEDUPE_BUSY);
     hack = queued_hack_item(&scheduler, TAVRN_HACK_BUSY);
     CHECK("LINK-02", link.candidate_valid == 0u && hack != NULL &&
+                       tavrn_link_v2_counters(&link)->rx_data_dedupe_busy == 1u &&
                        hack->adv_data[13] == adva_b[0] &&
                        hack->adv_data[14] == adva_b[1] &&
                        link.data_dedupe[0].custody_pinned == 1u &&
@@ -1288,8 +1483,9 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     seed_full_data_dedupe(&link, 600u, 1u);
     make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
     CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 600u,
-                                                         &output) ==
-                       TAVRN_LINK_STEP_NO_EVENT);
+                                                          &output) ==
+                       TAVRN_LINK_STEP_DATA_DEDUPE_BUSY &&
+                       tavrn_link_v2_counters(&link)->rx_data_dedupe_busy == 1u);
     check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 600u + turnaround_ms);
 
     if (!setup_link(&link, &scheduler, UINT32_MAX - 3u)) {
@@ -1470,11 +1666,111 @@ static void test_link_07_best_effort_aodv_control_send(void)
                        link.custody[0].phase == TAVRN_CUSTODY_FREE);
 }
 
+static void test_serial_04_peer_cleanup_owns_transit_data_by_endpoints(void)
+{
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    tavrn_link_event_t output;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tavrn_link_data_t unrelated = make_transit_data(adva_c, adva_d, 0x7100u);
+    uint8_t pass;
+
+    if (!setup_link(&link, &scheduler, 0u) ||
+        !admit_transit_data(&link, &unrelated, adva_c, 1u)) {
+        CHECK("LINK-03", 0);
+        return;
+    }
+    CHECK("LINK-03", data_dedupe_contains(&link, &unrelated) &&
+                       link.data_dedupe[0].custody_pinned != 0u);
+
+    for (pass = 0u; pass < 3u; pass++) {
+        tavrn_link_data_t b_owned[4];
+        tavrn_link_data_t candidate;
+        uint8_t index;
+
+        b_owned[0] = make_transit_data(adva_b, adva_d,
+                                        (uint16_t)(0x7200u + 4u * pass));
+        b_owned[1] = make_transit_data(adva_d, adva_b,
+                                        (uint16_t)(0x7201u + 4u * pass));
+        b_owned[2] = make_transit_data(adva_b, adva_d,
+                                        (uint16_t)(0x7202u + 4u * pass));
+        b_owned[3] = make_transit_data(adva_d, adva_b,
+                                        (uint16_t)(0x7203u + 4u * pass));
+        for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+            CHECK("LINK-03", admit_transit_data(&link, &b_owned[index], adva_c,
+                                                   (uint32_t)(10u + 8u * pass + index)) &&
+                               tavrn_link_v2_send_unicast(
+                                   &link, &peer_c, &b_owned[index],
+                                   (uint32_t)(20u + 8u * pass + index),
+                                   &output) == TAVRN_LINK_SEND_OK);
+            remove_queued_hacks_for_origin(&scheduler,
+                                           b_owned[index].origin.value);
+        }
+        CHECK("LINK-03", tavrn_link_v2_dispatch(&link,
+                                                   (uint32_t)(40u + 8u * pass),
+                                                   &output) == TAVRN_LINK_STEP_NO_EVENT &&
+                           link.active_custody_index == 0u &&
+                           link.custody[0].phase == TAVRN_CUSTODY_ACTIVE_QUEUED);
+        link.custody[1].phase = TAVRN_CUSTODY_BUSY_WAIT;
+        link.custody[1].retry_not_before_ms = 0u;
+        candidate = make_transit_data(adva_d, adva_b,
+                                      (uint16_t)(0x7300u + pass));
+
+        /* The fifth DATA must remain unresolved rather than consuming another
+         * fixed custody slot; it is B-owned only through its final endpoint. */
+        {
+            tavrn_codec_config_t codec;
+            tavrn_decoded_frame_t frame;
+            ble_mesh_sched_event_t event;
+            size_t encoded_len = 0u;
+
+            memset(&codec, 0, sizeof(codec));
+            codec.network_id = link.config.network_id;
+            codec.local_peer = link.config.local_peer;
+            memset(&frame, 0, sizeof(frame));
+            frame.type = TAVRN_WIRE_DATA;
+            frame.network_id = link.config.network_id;
+            frame.transmitter = peer_c;
+            frame.detail.data.immediate_receiver = link.config.local_peer.logical_id;
+            frame.detail.data.data = candidate;
+            memset(&event, 0, sizeof(event));
+            event.type = BLE_MESH_SCHED_EVENT_RX_ADV;
+            memcpy(event.adv_addr, adva_c, 6u);
+            CHECK("LINK-03", tavrn_wire_v2_encode(&codec, &frame, event.adv_data,
+                                                    sizeof(event.adv_data),
+                                                    &encoded_len) == TAVRN_CODEC_OK &&
+                               encoded_len <= BLE_ADV_MAX_DATA);
+            event.adv_len = (uint8_t)encoded_len;
+            CHECK("LINK-03", tavrn_link_v2_on_scheduler_event(
+                                   &link, &event, (uint32_t)(43u + 8u * pass),
+                                   &output) == TAVRN_LINK_STEP_EVENT &&
+                               output.type == TAVRN_LINK_EVENT_RX_DATA_CANDIDATE &&
+                               link.candidate_valid != 0u);
+        }
+
+        CHECK("LINK-03", tavrn_link_v2_clear_peer_incarnation(
+                               &link, &peer_b, (uint32_t)(44u + 8u * pass)) ==
+                               TAVRN_LINK_RESOLVE_OK &&
+                           link.active_custody_index == TAVRN_CUSTODY_SLOT_NONE &&
+                           link.candidate_valid == 0u &&
+                           data_dedupe_contains(&link, &unrelated) &&
+                           scheduler.routed_tx_queue.count == 1u);
+        for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+            CHECK("LINK-03", link.custody[index].phase == TAVRN_CUSTODY_FREE &&
+                               !data_dedupe_contains(&link, &b_owned[index]));
+        }
+    }
+    CHECK("LINK-03", tavrn_link_v2_release_rx_custody(&link, &unrelated, 100u) ==
+                       TAVRN_LINK_RESOLVE_OK);
+}
+
 int main(void)
 {
     test_bearer_04_outer_adva_before_mutation();
     test_link_01_only_data_is_hackable();
     test_link_02_candidate_resolution_and_containment();
+    test_link_02_candidate_match_seam();
     test_link_03_busy_rejected_and_exact_correlation();
     test_link_02_two_peer_hack_direction_and_statuses();
     test_link_04_slots_retries_terminal_ownership_and_fault_draining();
@@ -1485,6 +1781,7 @@ int main(void)
     test_link_02_hack_turnaround_enqueue_paths();
     test_link_04_tx_done_response_deadline();
     test_link_07_best_effort_aodv_control_send();
+    test_serial_04_peer_cleanup_owns_transit_data_by_endpoints();
     if (failures != 0u) {
         printf("tavrn_link_v2 RED tests failed: %u assertion(s)\n", failures);
         return 1;

@@ -99,6 +99,15 @@ the AODV core, and none stores a forwarding next hop as a second route table.
 The routed binding constructs `tavrn_full` first and injects its generic vtable
 into the router; callback invocation does not create a router-to-full include.
 
+The Phase 5 production routed binding is one `tavrn_router_t` instance in
+`app/tavrn_routed_node/src/main.c`. Its application port adapts the firmware's
+eight-entry delivery ring through opaque nonzero reserve/commit/cancel tokens;
+it does not retain AODV actions, resolve candidates, or release transit custody
+itself. Each mesh cycle is scheduler event, router scheduler handling, router
+tick, optional application submission, mandatory typed `dispatch_ex` event
+handling, then router link service. Router faults are copied to the logger/fault
+counters without recreating protocol ownership in the binding.
+
 There are exactly two behavioral branches above the shared BLE foundation:
 
 - legacy controlled flood using wire-v1; and
@@ -127,7 +136,7 @@ has a regression-proven reason to move them.
 | no routed orchestrator | `app/protocol/tavrn_router.{h,c}` | Compose one `aodv_core` with link-v2; translate inputs/actions; expose application submission, delivery, route snapshots, and generic augmentation hooks. |
 | no full modules | `app/protocol/tavrn_gtt.*`, `tavrn_smart_ttl.*`, `tavrn_esc.*`, `tavrn_mentorship.*`, `tavrn_maintenance.*`, `tavrn_repair.*`, `tavrn_full.*` | FULL_TAVRN-only state and policy. `tavrn_full` is the only binder to generic router hooks. |
 | no common node API | `app/protocol/tron_node.h`, `tron_node_legacy.c`, `tron_node_routed.c` | Firmware-facing facade. CMake compiles exactly one binding source; `main.c` does not select modes with preprocessor branches. Both routed feature levels use `tron_node_routed.c`. |
-| future patient handling | `app/protocol/patient_bridge.{h,c}` | Optional application layer above `tron_node`; never included by link, AODV, GTT, or radio code. |
+| future patient handling | `app/protocol/patient_bridge.{h,c}` | Optional application layer above `tron_node`; only the mesh-owner lane calls the canonical GTT API, so other tasks marshal copied commands/results through the existing application-event owner. It is never included by link, AODV, GTT, or radio code. |
 | no test-hook port | `app/protocol/tron_test_hooks.h`, `tron_test_hooks_off.c`, `tron_test_hooks_bench.c` | One injected fault port. CMake compiles exactly one implementation; algorithms do not contain feature-selection preprocessor blocks. |
 | `ble_mesh_node/src/main.c` | platform/task startup only | Create the dedicated bounded mesh task and fixed copied command/event/log queues. Logging/display/patient work runs outside the mesh task. No route/flood algorithm. |
 | no generated profile config | `app/ble_mesh_node/config/tron_build_config.h.in`, `src/tron_build_info.c.in` | One validated CMake registry generates the effective C config and runtime build-info line; no algorithm supplies hidden defaults. |
@@ -307,16 +316,21 @@ add uncounted poll cycles to this bound.
 
 Only link-v2 may enqueue `CUSTODY_DATA`, and only for its one active initial or
 retry attempt with a nonzero tracked token. Its other three custody slots remain
-link-local and never enter the physical queue. Legacy wrappers and all control/HACK
-callers use `BEST_EFFORT`; misuse is an invalid enqueue in profile-aware builds.
+link-local and never enter the physical queue. Legacy wrappers, HACK, and normal
+control use `BEST_EFFORT`. A future demanded-maintenance verification control is
+also `BEST_EFFORT` but carries its router-owned tracked token solely so its
+matching `TX_DONE` can consume the verification stage; it is not custody DATA.
+Other `BEST_EFFORT` controls use token zero; misuse is an invalid enqueue in
+profile-aware builds.
 
-The enqueue caller assigns the token. Only link-v2 may submit a nonzero tracked
-token; every legacy, control, HACK, and other best-effort item uses token zero.
-A tracked token must be unique among all queued/in-flight items. The scheduler
-only copies and echoes it in eviction/`TX_DONE`/`TX_FAILED` results. Link-v2 owns
-the nonzero token allocator, wraps while skipping its four outstanding tokens,
-and treats token zero as untracked. This single-owner rule makes a synchronously
-returned nonzero eviction token unambiguous.
+The enqueue caller assigns the token. Link-v2 and the future router-owned
+verification-control seam are the only nonzero-token owners; they use disjoint
+domains (`0001..7fff` for link custody and `8000..ffff` for verification), and a
+tracked token must be unique among all queued/in-flight items. The scheduler only
+copies and echoes it in eviction/`TX_DONE`/`TX_FAILED` results. Link-v2 allocates
+only from its domain while skipping its four outstanding tokens; maintenance
+allocates only from its four active contexts. Token zero remains untracked. This
+makes a synchronously returned nonzero eviction token unambiguous.
 
 ### 5.3 Scheduler events and API
 
@@ -1358,7 +1372,11 @@ compiles no full source/header. `FULL_TAVRN` constructs the vtable in
   evidence. GTT cannot mutate AODV storage.
 - Smart TTL returns only an initial scope. Unknown, hard-expired, or departed
   state returns the caller's full scope; soft-stale non-departed membership
-  remains eligible under `GTT-06`, and fallback remains AODV-owned.
+  remains eligible under `GTT-06`. The sole hard-expired exception is the
+  maintenance stage-1 verifier's retained hop plus two; ordinary discovery never
+  receives that hint, and fallback remains AODV-owned. Missing/zero retained hop
+  skips stage 1 unconsumed; a diameter-capped stage 1 remains distinct from the
+  fresh-ID full-diameter stage 2.
 - ESC changes type-specific identity encoding through the wire-v2 codec seam,
   never route selection or route storage.
 - Mentorship and maintenance emit typed control actions; the router decides how
@@ -1373,6 +1391,250 @@ compiles no full source/header. `FULL_TAVRN` constructs the vtable in
 This direction prevents a cycle: `tavrn_full` may include public router/AODV
 types to construct hooks, while `tavrn_router.c` and `aodv_core.c` never include
 `tavrn_full.h`.
+
+### 10.1 Local expiry/demand RED boundary
+
+The local-expiry/demand slice is a documentation contract for later source work,
+not a claim that the implemented Phase 5 adaptive-HELLO prefix has expiry or
+verification. Its only top-level requirement tags are `GTT-02`, `GTT-03`,
+`GTT-05`, `MAINT-01`, `MAINT-02`, `MAINT-04`, and `MAINT-05`.
+
+GTT remains passive. Its public application seam retains the existing active
+enumeration and separately adds a known/nondeparted enumeration/query returning
+a copied snapshot for every retained nondeparted member, including a demanded
+hard-expired member. The copied result carries canonical AdvA and freshness; it
+does not claim a route. Only the mesh-owner lane calls that direct canonical GTT
+API. Other tasks use a fixed-capacity-one by-value FULL application mailbox:
+submit copies an application GTT query/request/cancel command, the mesh owner
+takes it before router tick, publishes a copied result, and the consumer takes
+it. The mailbox exposes only
+empty, command-pending, owner-processing, and result-ready states. Submit while
+pending/processing/result-ready is BUSY; repeated owner take while processing or
+result-ready is BUSY; owner take moves only pending to processing; publish moves
+only processing to result-ready; and consumer take returns only a ready result to
+empty. INVALID is reserved for null/invalid arguments and wrong publish
+transitions, all immutable. The mailbox contains no pointers and every main call
+stays under the existing `queue_guard_begin/end`. A same-timestamp request
+therefore wins over departure; it is the sole application demand state in this
+slice.
+
+Each GTT entry carries directness, last direct evidence time, one application
+request, and a revision in addition to membership facts. The generation lives in
+`tavrn_gtt_storage_t`; every semantic mutation, raw imported-deadline adjustment,
+serial clear, replacement, request/cancel, directness change, and departure uses
+the next nonzero revision, skipping zero on wrap, while duplicate/no-op work does
+not revise. `tavrn_gtt_sync_merge` takes no caller generation: GTT atomically
+allocates its own monotonic nonzero generation/revision for every changed row and
+the candidate commit, while duplicate bulk import is a no-op. Central GTT APIs
+own raw mutation, and mentorship invokes only that merge; it never writes
+candidate deadlines, generation, or raw storage. Directness is set only by the
+distinct locally committed hop-1 provenance kinds `DIRECT_HELLO`,
+`DIRECT_BOOTSTRAP`, `DIRECT_INCARNATION`, or `DIRECT_OUTER_TRANSMITTER`; the last
+is generic non-HELLO immediate-transmitter evidence for exactly that AdvA and
+accepts serial-absent liveness with canonical zero serial hash bytes while
+preserving an existing latest serial/presence; a newly created serial-absent row
+may remain serial-absent.
+Imported metadata, SYNC, TC subjects, JOIN, and hop estimates are non-direct. A
+direct deadline is calculated from
+stored time and the current HELLO liveness threshold, never stored as a stale
+fixed deadline.
+
+| Future caller/path | Compatibility and centralized mutation rule |
+| --- | --- |
+| Legacy `tavrn_gtt_observe` / `tavrn_gtt_enumerate_active` | Retain Phase 3 no-jitter observation and active-enumeration compatibility. |
+| Phase 5 FULL runtime observation | Uses provenance API only: ordinary HELLO/bootstrap/incarnation, generic direct outer transmitter, imported metadata/TC/JOIN, and imported SYNC. |
+| Central GTT transitions | Serial clear; confirmed/checked departure; replacement; purge; request/cancel; and all ordinary/direct/imported refreshes revise centrally. |
+| Mentorship | Uses centralized atomic SYNC merge only; no raw candidate deadline or storage-generation mutation. |
+
+`tavrn_full_maintenance_binding.{h,c}` is the one future FULL-only executable
+boundary called exactly once by routed main. Routed main alone performs short
+guarded mailbox owner-take/owner-publish operations; the binding receives only
+one copied application GTT query/request/cancel command plus exact 0/1 presence,
+and returns only its copied command result plus exact 0/1 presence. Given real
+router, mentorship, and maintenance state, it also returns copied pre/post
+results, `tavrn_router_tick_ex` phase trace/status, mentorship, local-broadcast,
+and activation statuses. It calls `tavrn_maintenance_owner_pre_tick`
+(whose observe/application result fields carry explicit presence bits), then
+`tavrn_router_tick_ex`, `tavrn_mentorship_tick`, router local-broadcast snapshot
+and maintenance observation, activation, and
+`tavrn_maintenance_owner_post_tick`. Scheduler RX evidence is committed before
+this boundary. Post-tick performs armed-only expiry sweep then topology/HELLO
+maintenance; gated/unarmed post-tick performs no sweep or expiry-state mutation.
+The exact main order is committed RX evidence → copied application GTT
+query/request/cancel command → FULL binding → existing application DATA
+submit/dispatch/link service. Generic `routed_cycle.{h,c}` remains GTT/FULL-free
+and contains no duplicate router/mentorship/maintenance tick. Each due cadence makes one
+bounded deterministic slot-order pass of at most 16 entries, visits every
+occupied retained slot at most once, and copies/rechecks one candidate at a time;
+there is no stacked table snapshot and demanded candidates cannot starve later
+undemanded ones. Same-timestamp admitted direct RX wins before the sweep. It
+computes the specified FNV-1a TTL jitter only for ordinary accepted remote
+liveness refreshes; absent serial hashes two zero bytes and `now_ms` always
+hashes exactly four little-endian bytes. Active imported SYNC uses no jitter:
+`hard=now+remaining_hard` and
+`soft=now+min(local_soft_expiry, remaining_hard)`; departed import uses fixed
+local departed retention. Mentorship uses centralized atomic SYNC merge only,
+never raw candidate-deadline/generation mutation. Local/checked departure and
+departed retention are not jittered. Soft stale state only exposes/selects copied state and emits no
+metadata or control in this slice.
+Because sweep precedes topology sampling, a same-timestamp no-demand direct
+departure is reflected in that post-tick's public direct-peer count and
+topology-reset/cadence result; topology never retains an already departed peer.
+
+For one copied canonical subject, maintenance resolves a unique SID8 through
+GTT/ESC, then asks generic router/AODV/link snapshots by logical ID plus the
+canonical subject AdvA. Shared reason masks and snapshot types belong in a tiny
+future GTT-free `tavrn_subject_demand.h` (not created by this RED/docs slice).
+Those generic components do not include or query GTT. Final-destination demand
+reasons compare logical subject ID; AODV `VALID_ROUTE_VIA_SUBJECT` and next-hop
+reasons compare logical ID and retained canonical AdvA; precursor compares its
+logical subject on an unexpired valid route; deferred repair compares its
+destination; pending ingest/retained DATA compare only final destination and
+applicable next hop. The aggregate demand snapshot includes
+`valid_route_to_subject` but no caller generation token; checked departure
+synchronously recomputes authoritative mesh-owner demand immediately before
+mutation from current AODV/link/router state—not a caller-supplied or cached
+demand observation—and fails closed on unavailable/fail-stop state.
+
+### 10.2 Local expiry resource and hardware acceptance
+
+`build-tavrn-ble.sh` supports
+`--stack-usage` and `--resource-baseline <manifest>` case arms, build FULL
+FAST_TEST and BALANCED for `--target tavrn_routed_node`, and retains matching map,
+ELF, `.su`, and resource-manifest artifacts. The production runner then
+invokes `python3 microbit/scripts/check_tavrn_expiry_resources.py` with
+the pre/post map, ELF, `.su` files, declared fixed-state manifest, and the
+`routed_mesh_task` root; it reports pre/post `.data/.bss`,
+the exact declared fixed-state delta, unexplained RAM delta, heap-use verdict,
+link verdict, and static owner-binding mesh-task call-chain stack. Required
+future templates, executable only after those case arms and checker exist, are:
+
+```text
+./microbit/build-tavrn-ble.sh --target tavrn_routed_node --feature FULL_TAVRN \
+  --timer FAST_TEST --out out/full-fast --stack-usage \
+  --resource-baseline resources/pre-expiry-fast.json
+./microbit/build-tavrn-ble.sh --target tavrn_routed_node --feature FULL_TAVRN \
+  --timer BALANCED --out out/full-balanced --stack-usage \
+  --resource-baseline resources/pre-expiry-balanced.json
+python3 microbit/scripts/check_tavrn_expiry_resources.py \
+  --before-map "$TAVRN_EXPIRY_BASELINE_DIR/fast.before.map" \
+  --after-map out/full-fast/tavrn_routed_node.map \
+  --baseline-manifest "$TAVRN_EXPIRY_BASELINE_DIR/fast.baseline.manifest" \
+  --baseline-sha256 "$TAVRN_EXPIRY_BASELINE_DIR/fast.baseline.sha256" \
+  --elf out/full-fast/tavrn_routed_node.elf --su-glob 'out/full-fast/**/*.su' \
+  --stack-root routed_mesh_task \
+  --required-edge-manifest microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-stack-edges.json \
+  --resolve-operation-edge routed_cycle_operations.router_tick=routed_cycle_router_tick \
+  --resource-manifest out/full-fast/tron.tavrn.expiry.resources.v1.json
+```
+
+After host success, GREEN requires
+`TAVRN_EXPIRY_BASELINE_DIR=<provenance-bound-pre-expiry-dir>`,
+`TAVRN_EXPIRY_ARM_CAPTURE_MANIFEST=<capture.json>`, and
+`TAVRN_EXPIRY_ARM_CAPTURE_ARTIFACT_MANIFEST=<hooks-on-artifact.manifest>`.
+The capture artifact is the hooks-ON FULL FAST_TEST artifact, never the
+hooks-OFF resource build manifest. The checker hashes that manifest, compares
+its ELF hash exactly with capture provenance, requires its hooks-ON fields, and
+compares it with the hooks-OFF FAST resource artifact. Their selected-source
+inventory hashes must match; their generated build-config manifests may differ
+only in `hook.enabled` and `hook.expiry_full_table`. The baseline directory contains
+exactly `fast.before.map`, `fast.baseline.manifest`, `fast.baseline.sha256`,
+`balanced.before.map`, `balanced.baseline.manifest`, and
+`balanced.baseline.sha256`; checker validation rejects missing, duplicate, stale,
+or source-inventory-mismatched baseline content. FAST and BALANCED each pass
+their own `--before-map`, returned fresh `--after-map`, returned stack-usage
+`--su-glob`, `--stack-root routed_mesh_task`, and the required-edge manifest to
+every checker invocation. The manifest resolves both indirect routed-cycle
+operation edges, `routed_cycle_operations.router_scheduler_event` and
+`routed_cycle_operations.router_tick`, evaluates every reachable operation
+branch, and selects the true maximum-byte chain. The <=3072-byte result sums
+all caller frames and by-value/hidden result storage, not merely the binding
+leaf. Kernel sources compiled in resource mode also emit `.su` evidence, so a
+scheduler-event branch cannot disappear behind an undeclared kernel frame.
+
+The manifest schema is `tron.tavrn.expiry.resources.v1` and contains target,
+feature, timer, `.data`, `.bss`, unallocated RAM, declared fixed-state bytes,
+unexplained delta, true maximum routed-cycle operation chain, stack headroom,
+scheduler capture duration/pass count/maximum gap,
+hard-selected+demand-deferred complete-pass count, unavailable checked-candidate
+count, fault fields, and targeted/RREQ/TC control fields. `unavailable_count`
+is a capture fault. Build-profile tests include passing and threshold-failing
+fixtures for every reported limit.
+
+The exact fixtures are
+`microbit/tests/protocol/fixtures/tavrn_expiry_resources/{baseline,pass,fail-stack,fail-headroom,fail-ram,fail-delta,fail-capture}.json`.
+BALANCED independently uses
+`microbit/tests/protocol/fixtures/tavrn_expiry_resources/{balanced-baseline,balanced-pass,balanced-fail-stack,balanced-fail-headroom,balanced-fail-ram,balanced-fail-delta,balanced-fail-capture}.json`.
+The build-profile runner's
+`--expiry-resource-acceptance-report <fresh-report.env>` creates fresh temporary
+FULL FAST_TEST, FULL BALANCED, and AODV_ONLY artifacts and returns only their
+ELF/map/resource-manifest/selected-source-inventory/**compile_commands.json** paths plus
+`full_fast.source_inventory_sha256`, `full_balanced.source_inventory_sha256`,
+and `aodv_only.source_inventory_sha256`. Each inventory is one selected relative
+source path per line (including untracked selected production source), hashed as
+the deterministic ordered `<sha256>  <relative-path>` digest list. The checker rejects missing
+or duplicate schema keys, stale artifact hashes, wrong target/feature/timer,
+binding symbol count mismatch, stack above 3072, headroom below 1024, RAM below
+8192, unexplained delta above 512, and every failing-fixture threshold.
+
+For each fresh FULL profile, the checker selects the exact `main.c` command from
+that profile's `compile_commands.json`, replays it with `-E -P` and the generated
+defines/includes, and parses the resulting preprocessed main artifact. That
+artifact—not repository `main.c` text—is authoritative for the exact callback
+assignment, two fail-closed guarded mailbox blocks, one active binding call,
+presence/result validation before publish, no loop/recursion/dead branch/direct
+owner tick, and AODV exclusion. Pass/fail preprocessed-main fixtures cover an
+inactive-only binding and an ignored guard failure. Fresh FULL ELF/disassembly
+must define and call the binding; AODV_ONLY must neither define nor reference it.
+
+Routine host GREEN invokes this fresh acceptance only after zero host failures,
+then requires both capture environment paths above. Missing, stale,
+shorter-than-300-second, fewer-than-ten-pass, no hard-selected+demand-deferred
+complete pass, over-2-ms, unavailable, faulted, or targeted/RREQ/TC-control-
+emitting capture manifests are nonzero failures; there is no pending-success
+mode.
+
+Production slice 1 is **tooling and baseline only**: before any semantic GTT,
+AODV, link, router, maintenance, FULL, or main change, implement the build
+options/checker, generate the provenance-bound FAST/BALANCED before maps,
+baseline manifests, hashes, and selected-source inventories, then freeze those
+artifacts read-only. A later source-inventory mismatch invalidates comparison and
+restarts the production effort from that untouched baseline; it must never
+regenerate a baseline after semantic edits.
+
+Both links must succeed with no heap, at least 8 KiB unallocated RAM, static
+worst-case mesh-task operation chain at most 3072 bytes (leaving at least 1024
+bytes of the 4096-byte mesh stack), and unexplained RAM growth no more than 512
+bytes beyond declared fixed structs/alignment. A separate test-only FULL
+FAST_TEST full-table hook seeds exactly once after GTT and maintenance
+initialization and before the mesh task begins: self plus 15 deterministic
+synthetic identities. It uses the real ESC mapping to reject full-AdvA and SID8
+collisions, marks every synthetic entry application-requested on the mesh-owner
+lane, and never refreshes entries per router tick. The entries therefore age
+naturally through soft selected and hard selected/demand deferred states without
+departure, purge, or periodic hook work. Seed failure aborts startup; transient
+runtime statuses do not latch a hook fault. The 300-second capture requires at
+least ten due complete 16-slot passes, at least one complete
+hard-selected+demand-deferred pass, a nonzero monotonic scheduler-return-gap
+sample no greater than 2 ms, unavailable_count=0, no
+routed-cycle/router/link/radio/service fault, and no targeted/RREQ/TC expiry
+traffic. Required artifacts are both map/ELF/.su sets, checker JSON/text output,
+exact build/check command transcript, hooks-ON test-hook manifest, and capture
+log; hooks are excluded from normal production behavior.
+That bit alone authorizes later stage 0, which must immediately revalidate an
+unexpired route to the subject and skips unconsumed on route loss. Other demand
+can retain a hard-expired member but skips stage 0. A checked local departure
+must match canonical identity, revision, and current hard expiry, must be
+nonself/nondeparted, and for a direct entry must also meet the calculated direct
+deadline. It preserves last real evidence/serial/hop, clears directness and
+application request, sets fixed departed retention, and emits neither a
+received-evidence record nor a LEAVE.
+
+The four verification contexts, scheduler token consumption, targeted freshness
+request/response, and retained-hop/full-RREQ attempts are later non-overlapping
+RED slices under `MAINT-06`/`MAINT-07`; no local-expiry/demand implementation
+allocates or advances them, sends targeted control or RREQ, or originates
+expiry-driven TC. Existing mentorship bootstrap JOIN remains unchanged.
 
 ## 11. Patient bridge position
 
@@ -1406,9 +1668,10 @@ copies only the exact patient envelope to the application queue; a later
 consumed patient event is copied into bridge-owned fixed storage; the application
 task copies each value returned by `poll_submission` into the fixed mesh command
 queue, and only the mesh task calls the selected node submit seam. The bridge consumes routed/flood delivery through copied
-`tron_node_event_t` values. It must not call link, AODV, GTT, scheduler enqueue,
-or radio APIs directly, and patient identity must never be inserted as a
-mesh-node identity or route.
+`tron_node_event_t` values. It marshals GTT query/request/cancel by-value commands
+through the application-event owner and receives copied results; it must not call
+link, AODV, scheduler enqueue, radio, or mutable GTT APIs directly, and patient
+identity must never be inserted as a mesh-node identity or route.
 
 Single-radio truth remains visible: patient observation and mesh TX share the
 same scheduler. There is no simultaneous TX/RX claim.
@@ -1431,6 +1694,11 @@ patient state is statically or caller allocated. None may call `malloc`,
 | link accepted/duplicate cache | 16 keys | deterministic expired/oldest replacement; never duplicate-deliver |
 | link generic-FLOOD dedupe | 16 keys | purge expired then deterministic oldest; no second local process/relay |
 | router pending incarnation reset | 1 peer tuple | bar affected peer and retry atomic AODV invalidation/RERR reservation; second reset fails routed admission closed |
+| router failure obligations | 16 peers | coalesce exact direct peers and process only the oldest wrap-safe admission order before new AODV/application/link admission |
+| router failure overflow preservation | 1 owned DATA event | the seventeenth distinct retry-exhausted event is copied here and latches fail-stop; no later router API produces an event |
+| router post-ACK accepted DATA | 1 input | retain until its one AODV ingest succeeds; non-BUSY ingest failure latches fail-stop without dropping it |
+| router application delivery reservation | 1 opaque token | reserve before ACK; token zero after `OK`, cancellation/commit inconsistency, or action/data mismatch latches fail-stop with accepted state retained |
+| router retained AODV action | 1 action | retain exact action over transient link/application BUSY; typed dispatch output is mandatory |
 | AODV routes | 16 | reject worse/new route; never evict an active route for a stale candidate |
 | AODV RREQ seen cache | 32 | expired/oldest deterministic replacement |
 | AODV pending application/transit DATA | 8 | `BUSY`; failed transit DATA follows RERR/repair fallback, never silent overwrite |
@@ -1438,11 +1706,15 @@ patient state is statically or caller allocated. None may call `malloc`,
 | pending E_RREP_ACK waits | 4 | refuse/backpressure a new A=1 transmission before emission; never create an untracked wait |
 | AODV RERR sorted batch | 16 unreachable logical IDs | numeric SID16 order in AODV_ONLY, canonical full-identity order in FULL; segment at max 3 SID16 or 4 SID8 entries, therefore at most 6 or 4 action items |
 | AODV pending action queue | 8 | atomically reserve all RERR segments before mutation; external input returns `AODV_FAILURE_BUSY`, timer action remains due, and no item is overwritten |
-| GTT membership entries | 16 | deterministic departed/oldest-stale replacement; never overwrite fresher active state |
+| GTT membership entries | 16 plus one storage-owned generation | deterministic departed/oldest-stale replacement; never overwrite fresher active state; central APIs assign a fresh nonzero revision for every semantic/raw-deadline/serial/directness/request/departure mutation, while no-op operations do not revise; each entry retains directness/time and one application request without creating a GTT timer/send/route owner |
 | mentorship competing offers | 8 | retain best deterministic offers; count overflow |
 | mentorship frozen snapshot | 16 GTT entries | reject bootstrap snapshot creation if it cannot represent local GTT |
 | mentorship active snapshot/session | 1 | reject/defer another mentee session until completion/expiry; immutable snapshot remains owned by the active session |
-| maintenance TC/verification dedupe | 16 keys | deterministic expired/oldest replacement |
+| maintenance ordinary-HELLO equality dedupe | 16 keys | purge expired; reject/backpressure a new live key rather than overwrite equality protection |
+| maintenance direct-peer boot epochs | 16 full-AdvA/nonce records | follow router-committed boot nonces; clear only the matching nonself GTT serial and ordinary-HELLO keys before N=0 evaluation |
+| maintenance pending ordinary HELLO | 1 control | retain the exact control on BUSY; cadence advances only after queue admission |
+| maintenance active verification FSMs | 4, later targeted/RREQ slices only | retain subject, demand, retained hop, current stage (including `WAIT_DIRECT_DEADLINE`), and one verification-domain tracked token; defer a fifth start; the local-expiry/demand slice allocates none |
+| maintenance metadata/freshness candidates | 4 | round-robin social metadata plus delayed tier-2 response state; no free slot suppresses the response rather than replacing live state or discovering a route |
 | concurrent repair contexts | 1 | immediate normal AODV failure/RERR path |
 | repair buffered DATA | 4 | immediate normal AODV failure/RERR path for the unbuffered item |
 | patient dedupe | 16 keys | deterministic expired/oldest replacement |
@@ -1454,6 +1726,13 @@ patient state is statically or caller allocated. None may call `malloc`,
 All capacities are emitted in the build manifest and guarded with compile-time
 assertions that count fields fit their index types. Increasing a capacity is an
 architecture and memory-budget change, not a bench-only CMake override.
+
+Historical capacity evidence required measured maximum use and remaining
+headroom but imposed no numeric threshold. The later local-expiry production
+gate is now explicit: ARM `-fstack-usage`/map evidence for the complete
+`routed_mesh_task` chain must be at most 3072 bytes and preserve at least 1024
+bytes of the 4096-byte mesh task stack; fixed-size guards alone remain
+insufficient.
 
 There is one 16-entry AODV route table. The 16-entry GTT and caches above are
 not alternate route tables.
@@ -1478,8 +1757,8 @@ the required manifest keys and consumers:
 | `timer.aodv_node_traversal_ms`, `timer.aodv_net_diameter`, `timer.aodv_net_traversal_ms`, `timer.aodv_path_discovery_ms`, `timer.aodv_rreq_seen_ms`, `timer.aodv_rreq_retries`, `timer.aodv_rreq_rate`, `timer.aodv_rerr_rate`, `timer.aodv_active_route_ms`, `timer.aodv_pending_data_ms`, `timer.aodv_blacklist_ms` | AODV traversal/search/lifetime/rate registry |
 | `timer.aodv_rrep_dedupe_ms`, `timer.aodv_rerr_dedupe_ms`, `timer.aodv_rrep_ack_wait_ms` | exact AODV control dedupe and independent E_RREP_ACK wait |
 | `timer.gtt_soft_expiry_ms`, `timer.gtt_hard_expiry_ms`, `timer.gtt_departed_ms`, `timer.gtt_maintenance_ms` | GTT/maintenance |
-| `timer.hello_change_ms`, `timer.hello_stable_ms`, `timer.hello_alpha`, `timer.hello_snap_ratio`, `timer.hello_dedupe_ms`, `timer.router_reboot_announce_ms` | common router/HELLO maintenance and reboot announcement |
-| `timer.verification_window_ms`, `timer.verification_new_cap`, `timer.verification_active_cap` | maintenance verification bound and distinct start/active caps |
+| `timer.hello_change_ms`, `timer.hello_stable_ms`, `timer.hello_alpha`, `timer.hello_snap_ratio`, `timer.hello_dedupe_ms`, `timer.router_reboot_announce_ms` | Phase 5 adaptive HELLO cadence/suppression and reboot announcement |
+| `timer.freshness_response_min_ms`, `timer.freshness_response_max_ms`, `timer.verification_window_ms`, `timer.verification_new_cap`, `timer.verification_active_cap` | tiered targeted-freshness response and maintenance verification bound/caps |
 | `timer.mentor_offer_window_ms`, `timer.mentor_page_timeout_ms`, `timer.mentor_page_attempts`, `timer.mentor_self_bootstrap_ms`, `timer.mentor_sync_dedupe_ms` | mentorship collection, paging, self-bootstrap, and SYNC retention |
 | `timer.mentor_rssi_weak_magnitude_db`, `timer.mentor_rssi_strong_magnitude_db`, `timer.mentor_rssi_weak_delay_ms`, `timer.mentor_rssi_strong_delay_ms`, `timer.mentor_jitter_min_ms`, `timer.mentor_jitter_max_ms`, `timer.mentor_offer_suppression_ms` | mentorship RSSI magnitude/delay endpoints, jitter, and offer suppression |
 | `timer.metadata_cooldown_ms`, `timer.tc_uuid_ms`, `timer.tc_subject_ms` | metadata/topology maintenance |
@@ -1488,7 +1767,7 @@ the required manifest keys and consumers:
 
 `tavrn_link_config_t.hack_turnaround_ms` is initialized from the existing
 `timer.radio_tx_event_bound_ms`; it deliberately has no `timer.*` manifest key.
-The registry remains exactly 71 keys.
+The registry remains exactly 73 keys.
 
 Profile intent is fixed:
 
@@ -1504,7 +1783,8 @@ CMake fatal error; no C fallback default is permitted. Derived values, including
 the custody service bound
 `(scheduler_custody_bypass_max + 1) * (radio_tx_event_bound_ms +
 scheduler_poll_max_ms) = (2 + 1) * (8 + 2) = 30`, the 750 ms response-window
-sum, 840 ms no-response wall bound, and
+sum, 840 ms no-response wall bound,
+`aodv_net_traversal + 2 * aodv_path_discovery` verification bound, and
 `2 * aodv_path_discovery + 500` repair timeout are generated once at configure
 time and emitted to the manifest; algorithms do not recompute a different
 private default. Firmware `timer.loop_delay_ms` remains a separate application
@@ -1569,16 +1849,19 @@ mislabelled artifact.
 
 ### 14.2 Source manifests
 
-The final source lists are additive and centralized. No implementation file may
-use `#if TRON_NODE_MODE`, `#if TAVRN_FEATURE_LEVEL`, or repair/test conditionals
-to contain several algorithms in one translation unit.
+The final source lists are additive and centralized. Feature selection is made
+by CMake source closure, not source-name heuristics. The one routed binding may
+use the generated `TRON_BUILD_ROUTED_FULL_TAVRN` boolean solely to declare and
+initialize the selected optional GTT/FULL objects; it cannot select a second
+link/AODV/DATA algorithm.
 
 | Manifest | Sources |
 | --- | --- |
 | `SHARED_BLE_SOURCES` | `ble_radio.c`, `ble_mesh_tx_queue.c`, `ble_mesh_scheduler.c`, generated build-info source |
 | `LEGACY_FLOOD_SOURCES` | `tron_mesh_packet.c`, `tron_mesh_dedupe.c`, `tron_mesh_pingpong.c`, `legacy_flood_node.c`, `tron_node_legacy.c` |
-| `ROUTED_COMMON_SOURCES` | `tavrn_wire_v2.c`, `aodv_codec.c`, `tavrn_link_v2.c`, `aodv_core.c`, `tavrn_router.c`, `tron_node_routed.c` |
-| `FULL_TAVRN_SOURCES` | `tavrn_gtt.c`, `tavrn_smart_ttl.c`, `tavrn_esc.c`, `tavrn_mentorship.c`, `tavrn_maintenance.c`, `tavrn_full.c` |
+| `ROUTED_COMMON_SOURCES` | `tavrn_wire_v2.c`, `tavrn_link_v2.c`, `aodv_core.c`, `tavrn_router.c`, `tavrn_routed_node/src/routed_cycle.c`, and `tavrn_routed_node/src/main.c` |
+| `FULL_TAVRN_SOURCES` (implemented Phase 5 adaptive HELLO) | `tavrn_gtt.c`, `tavrn_smart_ttl.c`, `tavrn_full.c`, `tavrn_esc.c`, `tavrn_mentorship.c`, `tavrn_maintenance.c`, and `routed_full_telemetry.c` only |
+| `FULL_EXPIRY_BINDING_SOURCE` (future, blocked) | `tavrn_full_maintenance_binding.c` plus its public header; compiled only by FULL_TAVRN and called once by routed main |
 | `REPAIR_SOURCE` | `tavrn_repair.c` only when repair is on |
 | `PATIENT_SOURCE` | `patient_bridge.c` only when patient bridge is on |
 | `TEST_HOOK_SOURCE` | `tron_test_hooks_bench.c` only when test hooks are on; otherwise `tron_test_hooks_off.c` |
@@ -1598,8 +1881,32 @@ patient      = selected node profile + PATIENT (optional, above node facade)
 ```
 
 Linker maps and the sorted source manifest must prove that legacy contains no
-routed source and AODV_ONLY contains no `tavrn_full`, GTT, ESC, mentorship,
-maintenance, or repair source/header dependency.
+routed source; AODV_ONLY contains no `tavrn_full`, GTT, Smart-TTL, ESC,
+mentorship, maintenance, or repair source/header dependency; and the implemented
+Phase 5 FULL prefix contains only the common closure plus GTT, Smart-TTL,
+`tavrn_full`, ESC, mentorship, adaptive ordinary-HELLO maintenance, and copied
+FULL telemetry. Expiry, verification, metadata, expiry-driven TC maintenance,
+the future FULL expiry binding, and repair remain absent; accepted mentorship bootstrap JOIN behavior remains
+unchanged.
+
+### 14.3 Step 5f liveness delivery boundary
+
+Step 5f changes documentation only; it does not change generated configuration,
+production sources, or the accepted Phase 5 source closure above. The next RED
+slices are deliberately non-overlapping: (1) local expiry/demand and direct
+evidence (`GTT-02`, `GTT-03`, `GTT-05`, `MAINT-01`, `MAINT-02`, `MAINT-04`,
+`MAINT-05` only), (2)
+targeted freshness request/response, and (3) tracked retained-hop stage-1 plus
+full-diameter stage-2 RREQ. `tavrn_maintenance` owns the later fixed contexts
+and emits typed actions; `tavrn_router` owns route lookup, control-token domain
+handoff, and matching scheduler completion; `aodv_core` remains the sole
+RREQ/request-ID owner. No slice may add expiry-driven LEAVE or other new TC
+behavior: accepted mentorship bootstrap JOIN encoding/origination/relay/dedupe
+remains unchanged, and later TC JOIN/LEAVE maintenance remains separate from
+hard-expiry local departure. Before a RED slice is accepted, its generated
+configuration/manifest closure must be reconciled to the profile's 73-key
+registry; that generated-config work is intentionally outside this
+documentation-only step.
 
 ## 15. Test-hook isolation
 
@@ -1617,7 +1924,7 @@ The exact build inputs are:
 | `TRON_TEST_HACK_DROP_PEER_ADVA` | empty | Full canonical peer AdvA whose outgoing HACKs may be suppressed. |
 | `TRON_TEST_HACK_DROP_COUNT` | `0` | Number of matching HACKs to suppress, including deterministic first-HACK tests. |
 | `TRON_TEST_BUSY_ADMISSION_COUNT` | `0` | Number of otherwise valid DATA candidates whose router/application reservation is forced to resolve BUSY; no dedupe commit occurs. |
-| `TRON_TEST_COLLISION_PEER_ADVA` | empty | Injects one distinct valid full canonical peer AdvA; SID collision is derived naturally at the selected width, never forced by a suffix-only identity. |
+| `TRON_TEST_COLLISION_PEER_ADVA` | empty | FULL-only bench hook: combines the selected peer's nonreserved SID8 byte with local override bytes 1..5, producing a unique full AdvA/SID16 that deliberately duplicates only that peer's SID8. |
 
 Any nondefault test input with `TRON_ENABLE_TEST_HOOKS=OFF` is a configure-time
 error. Hooks are invalid for acceptance artifacts unless the specific hardware
@@ -1637,15 +1944,18 @@ The publishing name is deterministic:
 
 ```text
 tron-ble-legacy-na-<timer>-candidate<0|1>-repair0-patient<0|1>-<role>-id<id>-<commit12>.<ext>
-tron-ble-routed-<feature>-<timer>-candidate<0|1>-repair<0|1>-patient<0|1>-<role>-adva<adva>-<commit12>.<ext>
+tron-ble-routed-<aodv-only|full-tavrn-phase5-adaptive-hello>-<timer>-<role>-adva<adva>-<commit12>.<ext>
 ```
 
-Tags are lowercase: `legacy` with feature `na`, or `routed` with feature
-`aodv`/`full`; timers are `fast`/`balanced`/`soak`; the candidate tag is the
-effective hardware-purpose gate. Legacy uses `idficr` or a four-digit legacy
+Tags are lowercase: `legacy` with feature `na`, `routed-aodv-only`, or the
+fixed-k=1 mentorship plus adaptive HELLO build
+`routed-full-tavrn-phase5-adaptive-hello`; timers are
+`fast`/`balanced`/`soak`. Legacy uses `idficr` or a four-digit legacy
 `TRON_NODE_ID`. Routed development with empty override uses filename tag
 `advaruntime-ficr` and manifest identity exactly `RUNTIME_FICR`; an override uses
-`adva` followed by all 12 lowercase canonical-array-order hex digits. A routed
+`adva` followed by all 12 lowercase canonical-array-order hex digits. A
+collision-hook artifact uses the generated effective synthetic AdvA in its
+filename while preserving the base override separately in the manifest. A routed
 candidate can use only the latter and never a SID-only artifact tag.
 The Phase 1 non-routing artifact is
 `tron-ble-linkv2-harness-<timer>-candidate<0|1>-<role>-adva<adva>-<commit12>.<ext>`
@@ -1701,8 +2011,8 @@ Required independently buildable cells after their implementation gate:
 | --- | --- | --- | --- | --- |
 | `LEGACY_FLOOD` | N/A | off | v1 | all link-v2/AODV/FULL sources |
 | `TAVRN_ROUTED` | `AODV_ONLY` | off | v2 | GTT/ESC/mentorship/maintenance/repair |
-| `TAVRN_ROUTED` | `FULL_TAVRN` | off | v2 | repair |
-| `TAVRN_ROUTED` | `FULL_TAVRN` | on | v2 | none of the final routed set |
+| `TAVRN_ROUTED` | `FULL_TAVRN` Phase 5 adaptive HELLO | off | v2/SID8 bootstrap to SID16 | expiry, verification, metadata, expiry-driven TC maintenance, repair, patient |
+| `TAVRN_ROUTED` | `FULL_TAVRN` later repair-on | on | v2 | none of the final routed set (not a Phase 5 build cell) |
 
 Each valid cell builds with each timer profile once that profile's numeric
 manifest is frozen. Patient bridge and test hooks are orthogonal additions and

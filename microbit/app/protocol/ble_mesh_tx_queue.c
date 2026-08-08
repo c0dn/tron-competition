@@ -68,10 +68,11 @@ static int item_is_valid(const ble_mesh_tx_item_t *item)
         return 0;
     }
 
-    if ((item->service_class == BLE_MESH_TX_SERVICE_CUSTODY_DATA &&
-         item->token == BLE_MESH_TX_TOKEN_NONE) ||
-        (item->service_class == BLE_MESH_TX_SERVICE_BEST_EFFORT &&
-         item->token != BLE_MESH_TX_TOKEN_NONE)) {
+    /* Most best-effort work remains anonymous.  Routed bootstrap HELLO uses a
+     * nonzero best-effort token solely to match its scheduler TX_DONE; it does
+     * not participate in custody promotion or bypass accounting. */
+    if (item->service_class == BLE_MESH_TX_SERVICE_CUSTODY_DATA &&
+        item->token == BLE_MESH_TX_TOKEN_NONE) {
         return 0;
     }
     return 1;

@@ -131,6 +131,58 @@ static tavrn_router_scope_hint_t give_scope(void *context,
     return hint;
 }
 
+static tavrn_router_delivery_status_t reserve_test_delivery(
+    void *context, const tavrn_direct_peer_t *transmitter,
+    const tavrn_link_data_t *data, tavrn_router_delivery_token_t *token_out,
+    uint32_t now_ms)
+{
+    (void)context;
+    (void)transmitter;
+    (void)data;
+    (void)now_ms;
+    if (token_out == NULL) {
+        return TAVRN_ROUTER_DELIVERY_INVALID;
+    }
+    *token_out = 1u;
+    return TAVRN_ROUTER_DELIVERY_OK;
+}
+
+static tavrn_router_delivery_status_t commit_test_delivery(
+    void *context, tavrn_router_delivery_token_t token,
+    const tavrn_direct_peer_t *transmitter, const tavrn_link_data_t *data,
+    uint32_t now_ms)
+{
+    (void)context;
+    (void)transmitter;
+    (void)data;
+    (void)now_ms;
+    return token == 1u ? TAVRN_ROUTER_DELIVERY_OK : TAVRN_ROUTER_DELIVERY_INVALID;
+}
+
+static tavrn_router_delivery_status_t cancel_test_delivery(
+    void *context, tavrn_router_delivery_token_t token,
+    const tavrn_direct_peer_t *transmitter, const tavrn_link_data_t *data,
+    uint32_t now_ms)
+{
+    return commit_test_delivery(context, token, transmitter, data, now_ms);
+}
+
+static int init_router(tavrn_router_t *router, tavrn_link_v2_t *link,
+                       aodv_core_t *core,
+                       const tavrn_router_augmentation_hooks_t *hooks_or_null)
+{
+    tavrn_router_application_hooks_t application_hooks;
+
+    memset(&application_hooks, 0, sizeof(application_hooks));
+    application_hooks.reserve = reserve_test_delivery;
+    application_hooks.commit = commit_test_delivery;
+    application_hooks.cancel = cancel_test_delivery;
+    return tavrn_router_init(router, link, core, hooks_or_null) ==
+               TAVRN_ROUTER_INIT_OK &&
+           tavrn_router_set_application_hooks(router, &application_hooks) ==
+               TAVRN_ROUTER_APPLICATION_HOOK_OK;
+}
+
 static tavrn_router_frame_observation_t make_frame(
     tavrn_router_frame_admission_t admission, tavrn_wire_type_t type,
     tavrn_hack_status_t hack_status)
@@ -244,14 +296,12 @@ static void test_gtt_01_generic_hook_isolation(void)
         CHECK("GTT-01", 0);
         return;
     }
-    CHECK("GTT-01", tavrn_router_init(&router, &link, &core, &hooks) ==
-                        TAVRN_ROUTER_INIT_OK &&
+    CHECK("GTT-01", init_router(&router, &link, &core, &hooks) &&
                          tavrn_router_initial_scope(&router, &destination, 15u, 0u,
                                                     &hint) == TAVRN_ROUTER_SCOPE_OK &&
                         hint.has_hint != 0u && hint.initial_scope == 4u &&
                         recorder.scope_calls == 1u);
-    CHECK("GTT-01", tavrn_router_init(&aodv_only, &link, &core, NULL) ==
-                        TAVRN_ROUTER_INIT_OK &&
+    CHECK("GTT-01", init_router(&aodv_only, &link, &core, NULL) &&
                          tavrn_router_initial_scope(&aodv_only, &destination, 15u, 0u,
                                                     &hint) == TAVRN_ROUTER_SCOPE_OK &&
                         hint.has_hint == 0u && hint.initial_scope == 15u);
@@ -315,7 +365,7 @@ static void test_gtt_03_frame_role_admission(void)
     hooks.context = &recorder;
     hooks.observe = record_observation;
     if (aodv_core_init(&core, &config, 0u) != AODV_INIT_OK ||
-        tavrn_router_init(&router, &link, &core, &hooks) != TAVRN_ROUTER_INIT_OK) {
+        !init_router(&router, &link, &core, &hooks)) {
         CHECK("GTT-03", 0);
         return;
     }
@@ -441,7 +491,7 @@ static void test_gtt_05_observation_never_mutates_routes(void)
     hooks.observe = record_observation;
     if (aodv_core_init(&core, &config, 0u) != AODV_INIT_OK ||
         !install_expiring_route(&core) ||
-        tavrn_router_init(&router, &link, &core, &hooks) != TAVRN_ROUTER_INIT_OK) {
+        !init_router(&router, &link, &core, &hooks)) {
         CHECK("GTT-05", 0);
         return;
     }

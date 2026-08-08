@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "ble_mesh_scheduler.h"
+#include "tavrn_subject_demand.h"
 #include "tavrn_wire_v2.h"
 
 #define TAVRN_RX_CANDIDATE_TOKEN_NONE  0u
@@ -50,6 +51,7 @@ typedef enum tavrn_link_step_status {
     TAVRN_LINK_STEP_EVENT,
     TAVRN_LINK_STEP_ADDITIONAL_DATA_BUSY,
     TAVRN_LINK_STEP_CANDIDATE_TIMEOUT_BUSY,
+    TAVRN_LINK_STEP_DATA_DEDUPE_BUSY,
     TAVRN_LINK_STEP_INVALID,
 } tavrn_link_step_status_t;
 
@@ -146,6 +148,10 @@ typedef struct tavrn_link_config {
     uint32_t flood_dedupe_ms;
     uint32_t flood_jitter_min_ms;
     uint32_t flood_jitter_max_ms;
+    /* FULL_TAVRN installs this fixed-context admission hook before SID8 can
+     * enter the shared codec/link path.  It is optional for SID16-only builds. */
+    tavrn_codec_identity_conflict_fn identity_conflict;
+    void *identity_context;
 } tavrn_link_config_t;
 
 typedef struct tavrn_link_counters {
@@ -155,9 +161,11 @@ typedef struct tavrn_link_counters {
     uint32_t rx_candidate_rejected;
     uint32_t rx_candidate_timeout_busy;
     uint32_t rx_additional_data_busy;
+    uint32_t rx_data_dedupe_busy;
     uint32_t rx_committed_duplicate;
     uint32_t rx_control;
     uint32_t rx_flood_committed;
+    uint32_t rx_flood_duplicate;
     uint32_t rx_malformed;
     uint32_t rx_wrong_next_hop;
     uint32_t rx_identity_conflict;
@@ -183,6 +191,13 @@ typedef struct tavrn_link_counters {
     uint32_t service_fault_terminal;
 } tavrn_link_counters_t;
 
+/* Read-only peer facts and the one atomic clear used by router incarnation
+ * handling.  Full AdvA remains part of the direct peer argument. */
+typedef struct tavrn_link_peer_incarnation_snapshot {
+    uint8_t pending_custody_count;
+    uint8_t data_dedupe_count;
+} tavrn_link_peer_incarnation_snapshot_t;
+
 typedef enum tavrn_custody_phase {
     TAVRN_CUSTODY_FREE = 0,
     TAVRN_CUSTODY_READY_NOT_ELIGIBLE,
@@ -196,6 +211,7 @@ typedef struct tavrn_data_dedupe_entry {
     uint8_t valid;
     uint8_t custody_pinned;
     tavrn_logical_id_t origin;
+    tavrn_logical_id_t final_destination;
     uint16_t data_seq;
     uint8_t app_kind;
     uint8_t app_source;
@@ -264,10 +280,27 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
     tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome);
+/* As above, but returns the scheduler token assigned to an accepted control.
+ * Router bootstrap uses it to accept only a matching scheduler TX_DONE. */
+tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, tavrn_link_event_t *local_outcome,
+    ble_mesh_tx_token_t *scheduler_token_out);
+/* Cancels every still-queued exact copy of one locally-originated control.
+ * It does not affect an already selected/in-flight scheduler item. */
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control);
 tavrn_link_resolve_status_t tavrn_link_v2_resolve_rx(
     tavrn_link_v2_t *link, tavrn_rx_candidate_token_t token,
     tavrn_rx_decision_t decision, uint32_t now_ms,
     tavrn_link_event_t *local_outcome);
+/* Returns nonzero only when candidate exactly matches the link-owned,
+ * unresolved candidate.  This is a read-only ownership check for router
+ * dispatch; it neither resolves the candidate nor changes counters. */
+int tavrn_link_v2_rx_candidate_matches(
+    const tavrn_link_v2_t *link,
+    const tavrn_rx_data_candidate_t *candidate);
 tavrn_link_resolve_status_t tavrn_link_v2_release_rx_custody(
     tavrn_link_v2_t *link, const tavrn_link_data_t *data,
     uint32_t now_ms);
@@ -281,5 +314,28 @@ tavrn_link_step_status_t tavrn_link_v2_dispatch(
     tavrn_link_event_t *local_outcome);
 const tavrn_link_counters_t *tavrn_link_v2_counters(
     const tavrn_link_v2_t *link);
+/* Pure copied custody ownership facts; this remains GTT/FULL-free. */
+tavrn_link_subject_demand_snapshot_t tavrn_link_v2_subject_demand_snapshot(
+    const tavrn_link_v2_t *link, const tavrn_logical_id_t *subject,
+    const tavrn_adva_t *canonical_subject, uint32_t now_ms);
+tavrn_link_resolve_status_t tavrn_link_v2_clear_peer_incarnation(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer, uint32_t now_ms);
+/* Removes only peer-owned outbound custody and queued best-effort work while a
+ * router reset is BUSY.  It deliberately retains inbound dedupe/freshness for
+ * the later committed clear. */
+tavrn_link_resolve_status_t tavrn_link_v2_quarantine_peer_incarnation(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer);
+tavrn_link_resolve_status_t tavrn_link_v2_peer_incarnation_snapshot(
+    const tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer,
+    tavrn_link_peer_incarnation_snapshot_t *snapshot_out);
+/* Identity-width handover is one mesh-task operation: it discards every
+ * width-dependent custody, candidate, dedupe and queued routed transmission
+ * before replacing the local direct-peer namespace. */
+tavrn_link_resolve_status_t tavrn_link_v2_reconfigure_identity(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *local_peer,
+    uint32_t now_ms);
+void tavrn_link_v2_set_identity_admission(
+    tavrn_link_v2_t *link, tavrn_codec_identity_conflict_fn callback,
+    void *context);
 
 #endif /* TAVRN_LINK_V2_H */

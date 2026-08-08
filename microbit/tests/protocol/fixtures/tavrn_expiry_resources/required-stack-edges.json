@@ -1,0 +1,17 @@
+{
+  "schema": "tron.tavrn.expiry.required-stack-edges.v2",
+  "root": "routed_mesh_task",
+  "edges": [
+    {"from": "routed_mesh_task", "to": "routed_cycle_run_task", "kind": "call", "when": "always"},
+    {"from": "routed_cycle_run_task", "to": "routed_cycle_run_once", "kind": "call", "when": "always"},
+    {"from": "routed_cycle_run_once", "to": "routed_cycle_operations.router_scheduler_event", "kind": "indirect", "when": "always"},
+    {"from": "routed_cycle_run_once", "to": "routed_cycle_operations.router_tick", "kind": "indirect", "when": "always"},
+    {"from": "routed_cycle_router_tick", "to": "tavrn_full_maintenance_binding_tick", "kind": "call", "when": "binding"}
+  ],
+  "declared_leaves": [
+    {"symbol": "__aeabi_uldivmod", "frame_bytes": 16, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/thumb/v7e-m+fp/hard/libgcc.a", "sha256": "4cffa9f1d5680a22d30b30131a0d93e34cd3711fe13f8a682448e701b597677b", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memcmp", "frame_bytes": 8, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memcpy", "frame_bytes": 0, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memset", "frame_bytes": 12, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}}
+  ]
+}

@@ -61,6 +61,80 @@ static int logical_id_equal(const tavrn_logical_id_t *left,
            left->value == right->value;
 }
 
+static int bytes_equal(const uint8_t *left, const uint8_t *right, uint8_t length)
+{
+    uint8_t i;
+
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+    for (i = 0u; i < length; i++) {
+        if (left[i] != right[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int direct_peer_equal(const tavrn_direct_peer_t *left,
+                             const tavrn_direct_peer_t *right)
+{
+    return left != NULL && right != NULL &&
+           logical_id_equal(&left->logical_id, &right->logical_id) &&
+           bytes_equal(left->adva.bytes, right->adva.bytes, TAVRN_ADVA_LEN);
+}
+
+static int link_data_equal(const tavrn_link_data_t *left,
+                           const tavrn_link_data_t *right)
+{
+    return left != NULL && right != NULL &&
+           logical_id_equal(&left->origin, &right->origin) &&
+           logical_id_equal(&left->final_destination, &right->final_destination) &&
+           left->data_seq == right->data_seq && left->ttl == right->ttl &&
+           left->hops == right->hops && left->app_kind == right->app_kind &&
+           left->app_source == right->app_source && left->urgent == right->urgent &&
+           left->app_len == right->app_len &&
+           bytes_equal(left->app_bytes, right->app_bytes,
+                       TAVRN_LINK_APP_BYTES) &&
+           left->ownership == right->ownership;
+}
+
+/* DATA belongs to a resetting logical identity when that identity was the
+ * direct hop for this copy, its origin, or its final destination. */
+static int data_uses_direct_peer(const tavrn_logical_id_t *direct_peer,
+                                 const tavrn_link_data_t *data,
+                                 const tavrn_direct_peer_t *peer)
+{
+    return direct_peer != NULL && data != NULL && peer != NULL &&
+        (logical_id_equal(direct_peer, &peer->logical_id) ||
+         logical_id_equal(&data->origin, &peer->logical_id) ||
+         logical_id_equal(&data->final_destination, &peer->logical_id));
+}
+
+static int custody_uses_direct_peer(const tavrn_custody_slot_t *slot,
+                                    const tavrn_direct_peer_t *peer)
+{
+    return slot != NULL && slot->phase != TAVRN_CUSTODY_FREE &&
+        data_uses_direct_peer(&slot->next_hop.logical_id, &slot->data, peer);
+}
+
+static int candidate_uses_direct_peer(const tavrn_rx_data_candidate_t *candidate,
+                                      const tavrn_direct_peer_t *peer)
+{
+    return candidate != NULL && data_uses_direct_peer(
+        &candidate->transmitter.logical_id, &candidate->data, peer);
+}
+
+static int candidate_equal(const tavrn_rx_data_candidate_t *left,
+                           const tavrn_rx_data_candidate_t *right)
+{
+    return left != NULL && right != NULL && left->token == right->token &&
+           direct_peer_equal(&left->transmitter, &right->transmitter) &&
+           left->rssi_magnitude_db == right->rssi_magnitude_db &&
+           link_data_equal(&left->data, &right->data) &&
+           left->deadline_ms == right->deadline_ms;
+}
+
 static int adva_valid(const tavrn_adva_t *adva)
 {
     uint8_t all_zero = 1u;
@@ -150,13 +224,32 @@ static int control_send_shape_valid(const tavrn_link_v2_t *link,
 
     if (link == NULL || control == NULL || controlled_flood > 1u ||
         control->pdu_len < 7u || control->type != (tavrn_wire_type_t)control->pdu[4] ||
-        (control->pdu[5] & 0x80u) != 0u ||
         control->pdu[0] != 0x54u || control->pdu[1] != 0x52u ||
         control->pdu[2] != 0x02u || control->pdu[3] != link->config.network_id) {
         return 0;
     }
+    if (control->type == TAVRN_WIRE_SYNC_OFFER ||
+        control->type == TAVRN_WIRE_SYNC_PULL ||
+        control->type == TAVRN_WIRE_SYNC_DATA) {
+        return controlled_flood == 0u && next_hop_or_null == NULL;
+    }
+    if (control->type == TAVRN_WIRE_TC_UPDATE) {
+        return controlled_flood != 0u && next_hop_or_null == NULL;
+    }
+    if ((control->pdu[5] & 0x80u) != 0u &&
+        link->config.local_peer.logical_id.width != TAVRN_IDENTITY_SID8) {
+        return 0;
+    }
+    if ((control->pdu[5] & 0x80u) == 0u &&
+        link->config.local_peer.logical_id.width != TAVRN_IDENTITY_SID16 &&
+        control->type != TAVRN_WIRE_HELLO) {
+        return 0;
+    }
     if (control->type == TAVRN_WIRE_E_RREQ || control->type == TAVRN_WIRE_E_RERR) {
         return controlled_flood != 0u && next_hop_or_null == NULL;
+    }
+    if (control->type == TAVRN_WIRE_HELLO) {
+        return controlled_flood == 0u && next_hop_or_null == NULL;
     }
     if (control->type != TAVRN_WIRE_E_RREP &&
         control->type != TAVRN_WIRE_E_RREP_ACK) {
@@ -180,6 +273,8 @@ static tavrn_codec_config_t codec_config(const tavrn_link_v2_t *link)
     memset(&config, 0, sizeof(config));
     config.network_id = link->config.network_id;
     config.local_peer = link->config.local_peer;
+    config.identity_conflict = link->config.identity_conflict;
+    config.identity_context = link->config.identity_context;
     return config;
 }
 
@@ -278,6 +373,16 @@ static int token_in_use(const tavrn_link_v2_t *link, ble_mesh_tx_token_t token)
             return 1;
         }
     }
+    if (link->scheduler != NULL) {
+        for (i = 0u; i < BLE_MESH_TX_QUEUE_CAPACITY; i++) {
+            const ble_mesh_tx_queue_entry_t *entry =
+                &link->scheduler->routed_tx_queue.entries[i];
+
+            if (entry->occupied != 0u && entry->item.token == token) {
+                return 1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -312,6 +417,60 @@ static int dedupe_key_equal(const tavrn_data_dedupe_entry_t *entry,
     return entry->valid != 0u && logical_id_equal(&entry->origin, &data->origin) &&
            entry->data_seq == data->data_seq && entry->app_kind == data->app_kind &&
            entry->app_source == data->app_source;
+}
+
+static tavrn_data_dedupe_entry_t *find_data_dedupe_exact(
+    tavrn_link_v2_t *link, const tavrn_link_data_t *data)
+{
+    uint8_t index;
+
+    if (link == NULL || data == NULL) {
+        return NULL;
+    }
+    for (index = 0u; index < TAVRN_LINK_DATA_DEDUPE_CAPACITY; index++) {
+        if (dedupe_key_equal(&link->data_dedupe[index], data)) {
+            return &link->data_dedupe[index];
+        }
+    }
+    return NULL;
+}
+
+static int transit_dedupe_can_release(tavrn_link_v2_t *link,
+                                      const tavrn_link_data_t *data)
+{
+    tavrn_data_dedupe_entry_t *entry;
+
+    if (data == NULL || data->ownership != TAVRN_DATA_TRANSIT) {
+        return data != NULL;
+    }
+    entry = find_data_dedupe_exact(link, data);
+    return entry != NULL && entry->custody_pinned != 0u;
+}
+
+static int release_transit_dedupe(tavrn_link_v2_t *link,
+                                  const tavrn_link_data_t *data)
+{
+    tavrn_data_dedupe_entry_t *entry;
+
+    if (!transit_dedupe_can_release(link, data)) {
+        return 0;
+    }
+    if (data->ownership != TAVRN_DATA_TRANSIT) {
+        return 1;
+    }
+    entry = find_data_dedupe_exact(link, data);
+    entry->custody_pinned = 0u;
+    return 1;
+}
+
+static void clear_data_dedupe_exact(tavrn_link_v2_t *link,
+                                    const tavrn_link_data_t *data)
+{
+    tavrn_data_dedupe_entry_t *entry = find_data_dedupe_exact(link, data);
+
+    if (entry != NULL && entry->custody_pinned == 0u) {
+        memset(entry, 0, sizeof(*entry));
+    }
 }
 
 static void prune_data_dedupe(tavrn_link_v2_t *link, uint32_t now_ms)
@@ -409,6 +568,7 @@ static int commit_data_dedupe(tavrn_link_v2_t *link,
                                              &link->config.local_peer.logical_id) ?
         0u : 1u;
     entry->origin = data->origin;
+    entry->final_destination = data->final_destination;
     entry->data_seq = data->data_seq;
     entry->app_kind = data->app_kind;
     entry->app_source = data->app_source;
@@ -588,7 +748,11 @@ static tavrn_link_step_status_t handle_flood(tavrn_link_v2_t *link,
     int duplicate;
 
     entry = find_or_reserve_flood_dedupe(link, flood, now_ms, &duplicate);
-    if (duplicate || entry == NULL) {
+    if (duplicate) {
+        link->counters.rx_flood_duplicate++;
+        return TAVRN_LINK_STEP_NO_EVENT;
+    }
+    if (entry == NULL) {
         return TAVRN_LINK_STEP_NO_EVENT;
     }
     memset(entry, 0, sizeof(*entry));
@@ -597,6 +761,7 @@ static tavrn_link_step_status_t handle_flood(tavrn_link_v2_t *link,
     entry->origin = flood->origin;
     entry->sequence = flood->flood_seq;
     entry->expires_at_ms = now_ms + link->config.flood_dedupe_ms;
+    link->counters.rx_flood_committed++;
     if (flood->ttl == 0u || flood->hops == 15u || link->mesh_fault_latched != 0u) {
         return TAVRN_LINK_STEP_NO_EVENT;
     }
@@ -731,7 +896,10 @@ tavrn_link_init_status_t tavrn_link_v2_init(
     link->active_custody_index = TAVRN_CUSTODY_SLOT_NONE;
     link->latched_mesh_fault_reason = TAVRN_MESH_FAULT_NONE;
     if (!direct_peer_valid(&config->local_peer) ||
-        config->local_peer.logical_id.width != TAVRN_IDENTITY_SID16 ||
+        (config->local_peer.logical_id.width != TAVRN_IDENTITY_SID16 &&
+         config->local_peer.logical_id.width != TAVRN_IDENTITY_SID8) ||
+        (config->local_peer.logical_id.width == TAVRN_IDENTITY_SID8 &&
+         config->identity_conflict == NULL) ||
         !ble_mesh_scheduler_copy_local_adva(sched, scheduler_adva) ||
         memcmp(scheduler_adva, config->local_peer.adva.bytes,
                TAVRN_ADVA_LEN) != 0) {
@@ -892,12 +1060,26 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome)
 {
+    return tavrn_link_v2_send_control_tracked(link, control, next_hop_or_null,
+                                               controlled_flood, now_ms,
+                                               local_outcome, NULL);
+}
+
+tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, tavrn_link_event_t *local_outcome,
+    ble_mesh_tx_token_t *scheduler_token_out)
+{
     tavrn_codec_config_t config;
     tavrn_decoded_frame_t frame;
     ble_mesh_tx_item_t item;
     ble_mesh_sched_enqueue_result_t result;
     size_t adv_len = 0u;
 
+    if (scheduler_token_out != NULL) {
+        *scheduler_token_out = BLE_MESH_TX_TOKEN_NONE;
+    }
     if (local_outcome == NULL) {
         return TAVRN_LINK_SEND_INVALID;
     }
@@ -926,7 +1108,11 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms;
-    item.token = BLE_MESH_TX_TOKEN_NONE;
+    item.token = scheduler_token_out == NULL ? BLE_MESH_TX_TOKEN_NONE :
+        allocate_scheduler_token(link);
+    if (scheduler_token_out != NULL && item.token == BLE_MESH_TX_TOKEN_NONE) {
+        return TAVRN_LINK_SEND_BUSY;
+    }
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
         return TAVRN_LINK_SEND_BUSY;
@@ -935,7 +1121,48 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
      * that separate DATA ownership outcome without treating the control as
      * unsent, so a tracked RREP wait starts exactly after successful enqueue. */
     (void)terminal_evicted_token(link, result.evicted_token, local_outcome);
+    if (scheduler_token_out != NULL) {
+        *scheduler_token_out = result.accepted_token;
+    }
     return TAVRN_LINK_SEND_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control)
+{
+    tavrn_decoded_frame_t frame;
+    tavrn_codec_config_t config;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+    uint8_t index;
+
+    if (link == NULL || link->scheduler == NULL || control == NULL) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.type = control->type;
+    frame.network_id = link->config.network_id;
+    frame.detail.control = *control;
+    config = codec_config(link);
+    if (tavrn_wire_v2_encode(&config, &frame, encoded, sizeof(encoded),
+                             &encoded_len) != TAVRN_CODEC_OK ||
+        encoded_len > BLE_ADV_MAX_DATA) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        ble_mesh_tx_queue_entry_t *entry =
+            &link->scheduler->routed_tx_queue.entries[index];
+
+        if (entry->occupied == 0u || entry->item.adv_len != encoded_len ||
+            memcmp(entry->item.adv_data, encoded, encoded_len) != 0) {
+            continue;
+        }
+        if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
+                                      NULL)) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+    }
+    return TAVRN_LINK_RESOLVE_OK;
 }
 
 tavrn_link_resolve_status_t tavrn_link_v2_resolve_rx(
@@ -982,6 +1209,14 @@ tavrn_link_resolve_status_t tavrn_link_v2_resolve_rx(
                            TAVRN_HACK_REJECTED, now_ms, local_outcome);
     }
     return TAVRN_LINK_RESOLVE_OK;
+}
+
+int tavrn_link_v2_rx_candidate_matches(
+    const tavrn_link_v2_t *link,
+    const tavrn_rx_data_candidate_t *candidate)
+{
+    return link != NULL && candidate != NULL && link->candidate_valid != 0u &&
+           candidate_equal(&link->candidate, candidate);
 }
 
 tavrn_link_resolve_status_t tavrn_link_v2_release_rx_custody(
@@ -1121,10 +1356,10 @@ tavrn_link_step_status_t tavrn_link_v2_on_scheduler_event(
             return TAVRN_LINK_STEP_ADDITIONAL_DATA_BUSY;
         }
         if (!data_dedupe_has_capacity(link, now_ms)) {
+            link->counters.rx_data_dedupe_busy++;
             (void)enqueue_hack(link, &frame.transmitter, &frame.detail.data.data,
-                               TAVRN_HACK_BUSY, now_ms, output);
-            return output->type == TAVRN_LINK_EVENT_NONE ?
-                TAVRN_LINK_STEP_NO_EVENT : TAVRN_LINK_STEP_EVENT;
+                                TAVRN_HACK_BUSY, now_ms, output);
+            return TAVRN_LINK_STEP_DATA_DEDUPE_BUSY;
         }
         memset(&link->candidate, 0, sizeof(link->candidate));
         link->candidate.token = allocate_candidate_token(link);
@@ -1319,4 +1554,301 @@ tavrn_link_step_status_t tavrn_link_v2_dispatch(
 const tavrn_link_counters_t *tavrn_link_v2_counters(const tavrn_link_v2_t *link)
 {
     return link == NULL ? NULL : &link->counters;
+}
+
+tavrn_link_subject_demand_snapshot_t tavrn_link_v2_subject_demand_snapshot(
+    const tavrn_link_v2_t *link, const tavrn_logical_id_t *subject,
+    const tavrn_adva_t *canonical_subject, uint32_t now_ms)
+{
+    tavrn_link_subject_demand_snapshot_t snapshot;
+    uint8_t index;
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (link == NULL || subject == NULL || canonical_subject == NULL ||
+        subject->width != link->config.local_peer.logical_id.width ||
+        !logical_id_valid(subject, 0)) {
+        return snapshot;
+    }
+    if (link->mesh_fault_latched != 0u) {
+        return snapshot;
+    }
+    snapshot.snapshot_available = 1u;
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        const tavrn_custody_slot_t *slot = &link->custody[index];
+
+        if (slot->phase == TAVRN_CUSTODY_FREE ||
+            time_due(now_ms, slot->transaction_deadline_ms)) {
+            continue;
+        }
+        if (slot->data.final_destination.width == subject->width &&
+            slot->data.final_destination.value == subject->value) {
+            snapshot.reason_mask |= TAVRN_MAINT_DEMAND_CUSTODY_FINAL;
+        }
+        if (slot->next_hop.logical_id.width == subject->width &&
+            slot->next_hop.logical_id.value == subject->value &&
+            memcmp(slot->next_hop.adva.bytes, canonical_subject->bytes,
+                   TAVRN_ADVA_LEN) == 0) {
+            snapshot.reason_mask |= TAVRN_MAINT_DEMAND_CUSTODY_NEXT_HOP;
+        }
+    }
+    return snapshot;
+}
+
+static int queued_item_has_peer_id(const ble_mesh_tx_item_t *item,
+                                   const tavrn_direct_peer_t *peer)
+{
+    const uint8_t *pdu;
+    tavrn_identity_width_t width;
+    uint8_t width_len;
+
+    if (item == NULL || peer == NULL || item->adv_len < 12u ||
+        item->adv_data[7] != 0x54u || item->adv_data[8] != 0x52u ||
+        item->adv_data[9] != 0x02u) {
+        return 0;
+    }
+    pdu = &item->adv_data[7];
+    width = (pdu[5] & 0x80u) != 0u ? TAVRN_IDENTITY_SID8 :
+                                     TAVRN_IDENTITY_SID16;
+    width_len = width == TAVRN_IDENTITY_SID8 ? 1u : 2u;
+    if (width != peer->logical_id.width) {
+        return 0;
+    }
+    /* Do not use the validated-control helper above: queued work is already
+     * encoded and must be removable even when its later receiver would reject
+     * it.  The explicit byte reads below retain queue/link layering. */
+#define QUEUED_ID_IS_PEER(at) \
+    ((uint32_t)(at) + (uint32_t)width_len <= (uint32_t)item->adv_len - 7u && \
+     (width == TAVRN_IDENTITY_SID8 ? (uint16_t)pdu[(at)] : \
+      (uint16_t)pdu[(at)] | ((uint16_t)pdu[(uint8_t)((at) + 1u)] << 8)) == \
+         peer->logical_id.value)
+    switch ((tavrn_wire_type_t)pdu[4]) {
+    case TAVRN_WIRE_DATA:
+        {
+            tavrn_link_data_t data;
+            tavrn_logical_id_t receiver;
+
+            if ((uint32_t)(7u + 3u * width_len) >
+                (uint32_t)item->adv_len - 7u) {
+                return 0;
+            }
+            memset(&data, 0, sizeof(data));
+            receiver.width = width;
+            receiver.value = width == TAVRN_IDENTITY_SID8 ? pdu[7] :
+                (uint16_t)pdu[7] | ((uint16_t)pdu[8] << 8);
+            data.origin.width = width;
+            data.origin.value = width == TAVRN_IDENTITY_SID8 ?
+                pdu[(uint8_t)(7u + width_len)] :
+                (uint16_t)pdu[(uint8_t)(7u + width_len)] |
+                    ((uint16_t)pdu[(uint8_t)(8u + width_len)] << 8);
+            data.final_destination.width = width;
+            data.final_destination.value = width == TAVRN_IDENTITY_SID8 ?
+                pdu[(uint8_t)(7u + 2u * width_len)] :
+                (uint16_t)pdu[(uint8_t)(7u + 2u * width_len)] |
+                    ((uint16_t)pdu[(uint8_t)(8u + 2u * width_len)] << 8);
+            return data_uses_direct_peer(&receiver, &data, peer);
+        }
+    case TAVRN_WIRE_HACK:
+        return QUEUED_ID_IS_PEER(6u) || QUEUED_ID_IS_PEER((uint8_t)(6u + width_len)) ||
+            QUEUED_ID_IS_PEER((uint8_t)(6u + 2u * width_len));
+    case TAVRN_WIRE_FLOOD:
+        return QUEUED_ID_IS_PEER(7u);
+    case TAVRN_WIRE_E_RREQ:
+        return QUEUED_ID_IS_PEER(7u) ||
+            QUEUED_ID_IS_PEER((uint8_t)(9u + width_len));
+    case TAVRN_WIRE_E_RREP:
+        return QUEUED_ID_IS_PEER(7u) ||
+            QUEUED_ID_IS_PEER((uint8_t)(7u + width_len)) ||
+            QUEUED_ID_IS_PEER((uint8_t)(9u + 2u * width_len));
+    case TAVRN_WIRE_E_RREP_ACK:
+        return QUEUED_ID_IS_PEER(6u) ||
+            QUEUED_ID_IS_PEER((uint8_t)(6u + width_len)) ||
+            QUEUED_ID_IS_PEER((uint8_t)(8u + 2u * width_len));
+    case TAVRN_WIRE_E_RERR:
+        /* A locally-originated RERR remains queued even when one unreachable
+         * entry names the rebooted peer.  A stale reporter is peer-owned;
+         * unreachable destinations are notification payload, not ownership. */
+        return QUEUED_ID_IS_PEER(7u);
+    default:
+        return 0;
+    }
+#undef QUEUED_ID_IS_PEER
+}
+
+static int remove_queued_peer_work(tavrn_link_v2_t *link,
+                                   const tavrn_direct_peer_t *peer)
+{
+    uint8_t index;
+
+    if (link == NULL || link->scheduler == NULL) {
+        return 0;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        ble_mesh_tx_queue_entry_t *entry =
+            &link->scheduler->routed_tx_queue.entries[index];
+
+        if (entry->occupied != 0u && queued_item_has_peer_id(&entry->item, peer) &&
+            !ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
+                                      NULL)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int peer_custody_can_clear(tavrn_link_v2_t *link,
+                                  const tavrn_direct_peer_t *peer)
+{
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        const tavrn_custody_slot_t *slot = &link->custody[index];
+
+        if (custody_uses_direct_peer(slot, peer) &&
+            !transit_dedupe_can_release(link, &slot->data)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int clear_peer_custody(tavrn_link_v2_t *link,
+                              const tavrn_direct_peer_t *peer)
+{
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        tavrn_custody_slot_t *slot = &link->custody[index];
+
+        if (!custody_uses_direct_peer(slot, peer)) {
+            continue;
+        }
+        if (!release_transit_dedupe(link, &slot->data)) {
+            return 0;
+        }
+        if (logical_id_equal(&slot->data.origin, &peer->logical_id) ||
+            logical_id_equal(&slot->data.final_destination, &peer->logical_id)) {
+            clear_data_dedupe_exact(link, &slot->data);
+        }
+        reset_slot(link, index);
+    }
+    return 1;
+}
+
+static void clear_peer_data_dedupe(tavrn_link_v2_t *link,
+                                   const tavrn_direct_peer_t *peer)
+{
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_LINK_DATA_DEDUPE_CAPACITY; index++) {
+        tavrn_data_dedupe_entry_t *entry = &link->data_dedupe[index];
+
+        if (entry->valid != 0u &&
+            (logical_id_equal(&entry->origin, &peer->logical_id) ||
+             logical_id_equal(&entry->final_destination, &peer->logical_id))) {
+            /* RX admission pins before router forwarding creates custody.  A
+             * reset can therefore own this entry solely through an endpoint,
+             * with no slot available to release it first. */
+            entry->custody_pinned = 0u;
+            memset(entry, 0, sizeof(*entry));
+        }
+    }
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_quarantine_peer_incarnation(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer)
+{
+    if (link == NULL || !direct_peer_valid(peer) ||
+        !peer_custody_can_clear(link, peer) ||
+        !remove_queued_peer_work(link, peer)) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    if (!clear_peer_custody(link, peer)) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    if (link->candidate_valid != 0u &&
+        candidate_uses_direct_peer(&link->candidate, peer)) {
+        memset(&link->candidate, 0, sizeof(link->candidate));
+        link->candidate_valid = 0u;
+    }
+    clear_peer_data_dedupe(link, peer);
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_clear_peer_incarnation(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer, uint32_t now_ms)
+{
+    uint8_t index;
+
+    if (tavrn_link_v2_quarantine_peer_incarnation(link, peer) !=
+        TAVRN_LINK_RESOLVE_OK) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    for (index = 0u; index < TAVRN_LINK_FLOOD_DEDUPE_CAPACITY; index++) {
+        tavrn_flood_dedupe_entry_t *entry = &link->flood_dedupe[index];
+
+        if (entry->valid != 0u &&
+            logical_id_equal(&entry->origin, &peer->logical_id)) {
+            memset(entry, 0, sizeof(*entry));
+        }
+    }
+    (void)now_ms;
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_peer_incarnation_snapshot(
+    const tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer,
+    tavrn_link_peer_incarnation_snapshot_t *snapshot_out)
+{
+    uint8_t index;
+
+    if (link == NULL || !direct_peer_valid(peer) || snapshot_out == NULL) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    memset(snapshot_out, 0, sizeof(*snapshot_out));
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        if (custody_uses_direct_peer(&link->custody[index], peer)) {
+            snapshot_out->pending_custody_count++;
+        }
+    }
+    for (index = 0u; index < TAVRN_LINK_DATA_DEDUPE_CAPACITY; index++) {
+        if (link->data_dedupe[index].valid != 0u &&
+            logical_id_equal(&link->data_dedupe[index].origin,
+                              &peer->logical_id)) {
+            snapshot_out->data_dedupe_count++;
+        }
+    }
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_reconfigure_identity(
+    tavrn_link_v2_t *link, const tavrn_direct_peer_t *local_peer,
+    uint32_t now_ms)
+{
+    tavrn_link_config_t config;
+    ble_mesh_scheduler_t *scheduler;
+
+    if (link == NULL || local_peer == NULL || !direct_peer_valid(local_peer) ||
+        link->scheduler == NULL) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    config = link->config;
+    scheduler = link->scheduler;
+    config.local_peer = *local_peer;
+    /* No old-width control or DATA may survive to be transmitted after the
+     * new logical namespace becomes visible. */
+    ble_mesh_tx_queue_init(&scheduler->routed_tx_queue);
+    return tavrn_link_v2_init(link, scheduler, &config, now_ms) ==
+            TAVRN_LINK_INIT_OK ? TAVRN_LINK_RESOLVE_OK :
+            TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+}
+
+void tavrn_link_v2_set_identity_admission(
+    tavrn_link_v2_t *link, tavrn_codec_identity_conflict_fn callback,
+    void *context)
+{
+    if (link == NULL) {
+        return;
+    }
+    link->config.identity_conflict = callback;
+    link->config.identity_context = context;
 }

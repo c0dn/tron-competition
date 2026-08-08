@@ -313,7 +313,11 @@ and FULL_TAVRN:
    idempotent and do not clear state again. A valid different nonce for that
    full AdvA atomically starts a new routed incarnation and clears old pending
    HACK/custody, routed dedupe, route, request-generation, serial freshness,
-   and direct-peer binding state for that identity.
+   and direct-peer binding state for that identity. In the implemented FULL
+   maintenance foundation, the router-committed first/new nonce also clears
+   only that nonself GTT serial and ordinary-HELLO equality keys before the
+   next N=0 is evaluated; retained identity, hop, departed, and lifetime facts
+   are not rewritten.
 3. Exact-half serial rejection never applies between different incarnation or
    dedupe keys. It applies only to freshness values within the same established
    key/stream.

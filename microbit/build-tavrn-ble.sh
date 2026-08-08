@@ -21,14 +21,22 @@ probe_uid=""
 inventory_file=""
 candidate="OFF"
 hooks="OFF"
+expiry_full_table="OFF"
 rx_block_adva=""
 hack_drop_adva=""
 hack_drop_count="0"
 busy_admission_count="0"
+collision_peer_adva=""
 peer_adva=""
 initiator="OFF"
 tx_interval_ms="1000"
 transaction_target="0"
+feature="AODV_ONLY"
+feature_requested=no
+stack_usage="OFF"
+resource_baseline=""
+resource_checker="${repo_root}/scripts/check_tavrn_expiry_resources.py"
+resource_gate="NOT_REQUESTED"
 
 usage() {
     cat <<'EOF'
@@ -51,15 +59,20 @@ Legacy options:
   --node-id VALUE           Legacy label; zero derives its existing FICR label
 
 Routed PoC options:
+  --feature AODV_ONLY|FULL_TAVRN
   --peer-adva ADDR          Direct diagnostic peer AdvA
   --initiator ON|OFF        Emit bounded diagnostic DATA directly to peer
   --tx-interval-ms MS       Diagnostic DATA interval
   --transaction-target N    Number of diagnostic transactions
-  --enable-hooks ON|OFF
+  --stack-usage              Publish GCC .su stack evidence (FULL_TAVRN only)
+  --resource-baseline FILE   Validate FULL_TAVRN resources against frozen baseline
+   --enable-hooks ON|OFF
+   --expiry-full-table ON|OFF  FULL FAST_TEST hooks-only expiry table bench hook
   --rx-block-adva ADDR
   --hack-drop-adva ADDR
   --hack-drop-count N
   --busy-admission-count N
+  --collision-peer-adva ADDR  FULL-only synthetic duplicate-SID8 bench hook
 EOF
 }
 
@@ -76,14 +89,19 @@ while [[ $# -gt 0 ]]; do
         --inventory) inventory_file="${2:?Missing value for --inventory}"; shift 2 ;;
         --candidate) candidate="ON"; shift ;;
         --enable-hooks) hooks="${2:?Missing value for --enable-hooks}"; shift 2 ;;
+        --expiry-full-table) expiry_full_table="${2:?Missing value for --expiry-full-table}"; shift 2 ;;
         --rx-block-adva) rx_block_adva="${2:?Missing value for --rx-block-adva}"; shift 2 ;;
         --hack-drop-adva) hack_drop_adva="${2:?Missing value for --hack-drop-adva}"; shift 2 ;;
         --hack-drop-count) hack_drop_count="${2:?Missing value for --hack-drop-count}"; shift 2 ;;
         --busy-admission-count) busy_admission_count="${2:?Missing value for --busy-admission-count}"; shift 2 ;;
+        --collision-peer-adva) collision_peer_adva="${2:?Missing value for --collision-peer-adva}"; shift 2 ;;
         --peer-adva) peer_adva="${2:?Missing value for --peer-adva}"; shift 2 ;;
         --initiator) initiator="${2:?Missing value for --initiator}"; shift 2 ;;
         --tx-interval-ms) tx_interval_ms="${2:?Missing value for --tx-interval-ms}"; shift 2 ;;
         --transaction-target) transaction_target="${2:?Missing value for --transaction-target}"; shift 2 ;;
+        --feature) feature="${2:?Missing value for --feature}"; feature_requested=yes; shift 2 ;;
+        --stack-usage) stack_usage="ON"; shift ;;
+        --resource-baseline) resource_baseline="${2:?Missing value for --resource-baseline}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -94,6 +112,46 @@ if [[ "$target" != "ble_mesh_node" && "$target" != "ble_link_v2_testbed" &&
     printf '%s\n' '--target must be ble_mesh_node, ble_link_v2_testbed, or tavrn_routed_node' >&2
     exit 2
 fi
+if [[ "$target" != "tavrn_routed_node" && "$feature_requested" == yes ]]; then
+    printf '%s\n' '--feature is valid only with --target tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ "$target" == "tavrn_routed_node" && "$feature" != "AODV_ONLY" &&
+      "$feature" != "FULL_TAVRN" ]]; then
+    printf '%s\n' '--feature must be AODV_ONLY or FULL_TAVRN for tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ "$expiry_full_table" != "ON" && "$expiry_full_table" != "OFF" ]]; then
+    printf '%s\n' '--expiry-full-table must be ON or OFF' >&2
+    exit 2
+fi
+if [[ "$expiry_full_table" == "ON" ]]; then
+    if [[ "$target" != "tavrn_routed_node" || "$feature" != "FULL_TAVRN" ]]; then
+        printf '%s\n' '--expiry-full-table requires --target tavrn_routed_node --feature FULL_TAVRN' >&2
+        exit 2
+    fi
+    if [[ "$timer_profile" != "FAST_TEST" ]]; then
+        printf '%s\n' '--expiry-full-table requires --timer FAST_TEST' >&2
+        exit 2
+    fi
+    if [[ "$hooks" != "ON" ]]; then
+        printf '%s\n' '--expiry-full-table requires --enable-hooks ON' >&2
+        exit 2
+    fi
+fi
+if [[ -n "$resource_baseline" && "$stack_usage" != "ON" ]]; then
+    printf '%s\n' '--resource-baseline requires --stack-usage' >&2
+    exit 2
+fi
+if [[ "$stack_usage" == "ON" &&
+      ( "$target" != "tavrn_routed_node" || "$feature" != "FULL_TAVRN" ) ]]; then
+    printf '%s\n' '--stack-usage is supported only for --target tavrn_routed_node --feature FULL_TAVRN' >&2
+    exit 2
+fi
+if [[ -n "$resource_baseline" && ! -f "$resource_baseline" ]]; then
+    printf 'Resource baseline does not exist: %s\n' "$resource_baseline" >&2
+    exit 2
+fi
 if [[ "$candidate" == "ON" && "$target" != "ble_link_v2_testbed" ]]; then
     printf '%s\n' 'Phase 1 candidate publication is available only for ble_link_v2_testbed' >&2
     exit 2
@@ -101,8 +159,9 @@ fi
 if [[ "$target" == "ble_mesh_node" &&
       ( -n "$adva_override" || -n "$probe_uid" || -n "$inventory_file" ||
         -n "$peer_adva" || "$initiator" != "OFF" || "$hooks" != "OFF" ||
-        -n "$rx_block_adva" || -n "$hack_drop_adva" || "$hack_drop_count" != "0" ||
-        "$busy_admission_count" != "0" || "$transaction_target" != "0" ) ]]; then
+         -n "$rx_block_adva" || -n "$hack_drop_adva" || "$hack_drop_count" != "0" ||
+         "$busy_admission_count" != "0" || -n "$collision_peer_adva" ||
+         "$transaction_target" != "0" ) ]]; then
     printf '%s\n' 'Legacy publication rejects routed identity, harness, and routed-hook inputs' >&2
     exit 2
 fi
@@ -110,7 +169,7 @@ if [[ "$target" == "tavrn_routed_node" &&
       ( "$candidate" != "OFF" || -n "$probe_uid" || -n "$inventory_file" ||
         -n "$hack_drop_adva" || "$hack_drop_count" != "0" ||
         "$busy_admission_count" != "0" ) ]]; then
-    printf '%s\n' 'Routed AODV_ONLY PoC rejects candidate and link-harness-only inputs' >&2
+    printf '%s\n' 'Routed feature levels reject candidate and link-harness-only inputs' >&2
     exit 2
 fi
 
@@ -120,6 +179,10 @@ case "$timer_profile" in
     SOAK) timer_tag="soak" ;;
     *) printf '%s\n' '--timer must be FAST_TEST, BALANCED, or SOAK' >&2; exit 2 ;;
 esac
+
+if [[ "$out_dir" != /* ]]; then
+    out_dir="$(pwd -P)/${out_dir}"
+fi
 
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tron-ble-publish.XXXXXX")"
 manifest_work="${build_dir}/manifest.unsorted"
@@ -137,7 +200,7 @@ elif [[ "$target" == "ble_link_v2_testbed" ]]; then
 else
     phase1_target="ROUTED"
     node_mode="TAVRN_ROUTED"
-    feature_level="AODV_ONLY"
+    feature_level="$feature"
 fi
 
 cmake_args=(
@@ -146,6 +209,7 @@ cmake_args=(
     -DTRON_PHASE1_TARGET="$phase1_target"
     -DTRON_NODE_MODE="$node_mode"
     -DTAVRN_FEATURE_LEVEL="$feature_level"
+    -DTRON_STACK_USAGE="$stack_usage"
     -DTRON_TIMER_PROFILE="$timer_profile"
     -DTRON_BENCH_ROLE="$role"
     -DTRON_NODE_ID="$node_id"
@@ -155,10 +219,12 @@ cmake_args=(
     -DTRON_TARGET_INVENTORY_FILE="$inventory_file"
     -DTRON_HARDWARE_CANDIDATE="$candidate"
     -DTRON_ENABLE_TEST_HOOKS="$hooks"
+    -DTRON_TEST_EXPIRY_FULL_TABLE="$expiry_full_table"
     -DTRON_TEST_RX_BLOCK_ADVA="$rx_block_adva"
     -DTRON_TEST_HACK_DROP_PEER_ADVA="$hack_drop_adva"
     -DTRON_TEST_HACK_DROP_COUNT="$hack_drop_count"
     -DTRON_TEST_BUSY_ADMISSION_COUNT="$busy_admission_count"
+    -DTRON_TEST_COLLISION_PEER_ADVA="$collision_peer_adva"
     -DTRON_LINK_TEST_PEER_ADVA="$peer_adva"
     -DTRON_LINK_TEST_INITIATOR="$initiator"
     -DTRON_LINK_TEST_TX_INTERVAL_MS="$tx_interval_ms"
@@ -250,13 +316,32 @@ elif [[ "$target" == "ble_link_v2_testbed" ]]; then
     [[ "$candidate" == "ON" ]] && candidate_bit=1
     artifact_base="tron-ble-linkv2-harness-${timer_tag}-candidate${candidate_bit}-${role,,}-${identity_tag}-${commit12}"
 else
-    if [[ -z "$adva_override" ]]; then
+    effective_adva=""
+    while IFS='=' read -r manifest_key manifest_value; do
+        if [[ "$manifest_key" == "identity.adva" ]]; then
+            effective_adva="$manifest_value"
+            break
+        fi
+    done < "$config_manifest"
+    if [[ -z "$effective_adva" ]]; then
+        printf '%s\n' 'Generated routed manifest lacks identity.adva' >&2
+        exit 2
+    fi
+    if [[ "$effective_adva" == "RUNTIME_FICR" ]]; then
         identity_tag="advaruntime-ficr"
     else
-        identity_tag="adva${adva_override//:/}"
+        identity_tag="adva${effective_adva//:/}"
         identity_tag="${identity_tag,,}"
     fi
-    artifact_base="tron-ble-routed-aodv-only-${timer_tag}-${role,,}-${identity_tag}-${commit12}"
+    if [[ "$feature" == "FULL_TAVRN" ]]; then
+        feature_tag="full-tavrn-phase5-adaptive-hello"
+        if [[ "$hooks" == "ON" && "$expiry_full_table" == "ON" ]]; then
+            feature_tag="${feature_tag}-expiry-full-table-hook"
+        fi
+    else
+        feature_tag="aodv-only"
+    fi
+    artifact_base="tron-ble-routed-${feature_tag}-${timer_tag}-${role,,}-${identity_tag}-${commit12}"
 fi
 
 install -m 0644 "$source_elf" "$out_dir/${artifact_base}.elf"
@@ -272,6 +357,9 @@ ninja_evidence_name="${artifact_base}.build.ninja"
 cmake_cache_evidence_name="${artifact_base}.cmake-cache.txt"
 config_manifest_evidence_name="${artifact_base}.build-config.manifest"
 config_header_evidence_name="${artifact_base}.build-config.h"
+generated_headers_evidence_dir="${out_dir}/${artifact_base}.generated-headers"
+disassembly_evidence_name="${artifact_base}.disassembly.txt"
+source_inventory_evidence_name="${artifact_base}.selected-sources.txt"
 ninja -C "$build_dir" -t commands "$target" > "$out_dir/${commands_evidence_name}"
 install -m 0644 "$build_dir/compile_commands.json" \
     "$out_dir/${compile_commands_evidence_name}"
@@ -279,12 +367,104 @@ install -m 0644 "$build_dir/build.ninja" "$out_dir/${ninja_evidence_name}"
 install -m 0644 "$build_dir/CMakeCache.txt" "$out_dir/${cmake_cache_evidence_name}"
 install -m 0644 "$config_manifest" "$out_dir/${config_manifest_evidence_name}"
 install -m 0644 "$generated_config_header" "$out_dir/${config_header_evidence_name}"
+install -d "$generated_headers_evidence_dir"
+install -m 0644 "$build_dir/app/${target}/generated/${target}/"*.h \
+    "$generated_headers_evidence_dir/"
+arm-none-eabi-objdump -d "$source_elf" > "$out_dir/${disassembly_evidence_name}"
 test -s "$out_dir/${commands_evidence_name}"
 test -s "$out_dir/${compile_commands_evidence_name}"
 test -s "$out_dir/${ninja_evidence_name}"
 test -s "$out_dir/${cmake_cache_evidence_name}"
 test -s "$out_dir/${config_manifest_evidence_name}"
 test -s "$out_dir/${config_header_evidence_name}"
+test -s "$generated_headers_evidence_dir/tron_build_config.h"
+test -s "$generated_headers_evidence_dir/tron_build_info.h"
+test -s "$out_dir/${disassembly_evidence_name}"
+
+# Generated translation units are part of the build closure, but the immutable
+# selected-source inventory intentionally contains only repository sources.
+: > "${build_dir}/selected-sources.unsorted"
+while IFS='=' read -r source_key source_path; do
+    case "$source_key" in
+        source.selected.[0-9]*)
+            [[ "$source_path" == generated/* ]] && continue
+            if [[ "$source_path" == /* || ! -f "${repo_root}/${source_path}" ]]; then
+                printf 'Selected source inventory is invalid: %s\n' "$source_path" >&2
+                exit 2
+            fi
+            printf '%s\n' "$source_path" >> "${build_dir}/selected-sources.unsorted"
+            ;;
+    esac
+done < "$config_manifest"
+if [[ ! -s "${build_dir}/selected-sources.unsorted" ]]; then
+    printf '%s\n' 'Selected source inventory is empty' >&2
+    exit 2
+fi
+LC_ALL=C sort "${build_dir}/selected-sources.unsorted" > "$out_dir/${source_inventory_evidence_name}"
+if [[ -n "$(uniq -d "$out_dir/${source_inventory_evidence_name}")" ]]; then
+    printf '%s\n' 'Selected source inventory contains duplicates' >&2
+    exit 2
+fi
+source_inventory_hash="$(python3 - "$repo_root" "$out_dir/${source_inventory_evidence_name}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+records = []
+for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+    records.append(f"{hashlib.sha256((root / line).read_bytes()).hexdigest()}  {line}\n")
+print(hashlib.sha256("".join(records).encode("utf-8")).hexdigest())
+PY
+)"
+
+stack_evidence_name=""
+stack_evidence_glob=""
+resource_manifest_name=""
+if [[ "$stack_usage" == "ON" ]]; then
+    stack_evidence_name="${artifact_base}.stack-usage"
+    stack_evidence_dir="$out_dir/${stack_evidence_name}"
+    shopt -s globstar nullglob
+    stack_usage_files=("${build_dir}"/**/*.su)
+    shopt -u globstar nullglob
+    if [[ ${#stack_usage_files[@]} -eq 0 ]]; then
+        printf '%s\n' 'GCC stack-usage mode produced no .su evidence' >&2
+        exit 1
+    fi
+    for stack_usage_file in "${stack_usage_files[@]}"; do
+        stack_relative="${stack_usage_file#"${build_dir}/"}"
+        mkdir -p "${stack_evidence_dir}/$(dirname "$stack_relative")"
+        install -m 0644 "$stack_usage_file" "${stack_evidence_dir}/${stack_relative}"
+    done
+    stack_evidence_glob="${stack_evidence_dir}/**/*.su"
+    shopt -s globstar
+    compgen -G "$stack_evidence_glob" > /dev/null
+    shopt -u globstar
+    stack_evidence_hash="$(python3 - "$stack_evidence_dir" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+paths = sorted(path for path in root.rglob("*.su") if path.is_file())
+if not paths:
+    raise SystemExit(1)
+records = "".join(
+    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}\n"
+    for path in paths)
+print(hashlib.sha256(records.encode("utf-8")).hexdigest())
+PY
+)"
+    resource_manifest_name="${artifact_base}.tron.tavrn.expiry.resources.v1.json"
+    python3 "$resource_checker" --emit-resource-manifest "$out_dir/${resource_manifest_name}" \
+        --name "$artifact_base" --target "$target" --feature "$feature" --timer "$timer_profile" \
+        --full-elf "$out_dir/${artifact_base}.elf" --full-map "$out_dir/${artifact_base}.map" \
+        --full-manifest "$config_manifest" --compile-commands "$out_dir/${compile_commands_evidence_name}" \
+        --selected-sources "$out_dir/${source_inventory_evidence_name}" \
+        --disassembly "$out_dir/${disassembly_evidence_name}" \
+        --config-header "$out_dir/${config_header_evidence_name}"
+    test -s "$out_dir/${resource_manifest_name}"
+fi
 
 : > "$manifest_work"
 while IFS= read -r manifest_line || [[ -n "$manifest_line" ]]; do
@@ -361,6 +541,9 @@ fi
     printf 'candidate.unhooked_acceptance=%s\n' "$candidate_unhooked_acceptance"
     printf 'source.commit=%s\n' "$commit"
     printf 'source.dirty=%s\n' "$source_dirty"
+    printf 'source.inventory.name=%s\n' "$source_inventory_evidence_name"
+    printf 'source.inventory.sha256=%s\n' "$source_inventory_hash"
+    printf 'source.inventory.size=%s\n' "$(wc -c < "$out_dir/${source_inventory_evidence_name}")"
     printf 'source.submodule.count=%s\n' "$submodule_count"
     printf '%s' "$submodule_manifest_lines"
     printf 'source.submodule.sha256=%s\n' "$(printf '%s' "$submodule_status" | sha256sum | cut -d' ' -f1)"
@@ -384,6 +567,24 @@ fi
     printf 'evidence.target_config_manifest.name=%s\n' "$config_manifest_evidence_name"
     printf 'evidence.target_config_manifest.sha256=%s\n' "$(sha256sum "$out_dir/${config_manifest_evidence_name}" | cut -d' ' -f1)"
     printf 'evidence.target_config_manifest.size=%s\n' "$(wc -c < "$out_dir/${config_manifest_evidence_name}")"
+    printf 'evidence.disassembly.name=%s\n' "$disassembly_evidence_name"
+    printf 'evidence.disassembly.sha256=%s\n' "$(sha256sum "$out_dir/${disassembly_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.disassembly.size=%s\n' "$(wc -c < "$out_dir/${disassembly_evidence_name}")"
+    printf 'evidence.selected_sources.name=%s\n' "$source_inventory_evidence_name"
+    printf 'evidence.selected_sources.sha256=%s\n' "$(sha256sum "$out_dir/${source_inventory_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.selected_sources.size=%s\n' "$(wc -c < "$out_dir/${source_inventory_evidence_name}")"
+    if [[ "$stack_usage" == "ON" ]]; then
+        printf 'resource.schema=tron.tavrn.expiry.resources.v1\n'
+        printf 'resource.stack_usage=ON\n'
+        printf 'resource.su_glob=%s\n' "$stack_evidence_name/**/*.su"
+        printf 'resource.su.sha256=%s\n' "$stack_evidence_hash"
+        printf 'resource.manifest.name=%s\n' "$resource_manifest_name"
+        printf 'resource.manifest.sha256=%s\n' "$(sha256sum "$out_dir/${resource_manifest_name}" | cut -d' ' -f1)"
+        printf 'resource.manifest.size=%s\n' "$(wc -c < "$out_dir/${resource_manifest_name}")"
+    else
+        printf 'resource.stack_usage=OFF\n'
+    fi
+    printf 'resource.gate=%s\n' "$resource_gate"
 } >> "$manifest_work"
 
 duplicate_keys="$(cut -d= -f1 "$manifest_work" | LC_ALL=C sort | uniq -d)"
@@ -392,6 +593,66 @@ if [[ -n "$duplicate_keys" ]]; then
     exit 1
 fi
 LC_ALL=C sort "$manifest_work" > "$out_dir/${artifact_base}.manifest"
+
+if [[ -n "$resource_baseline" ]]; then
+    baseline_dir="$(dirname "$resource_baseline")"
+    baseline_map="${baseline_dir}/${timer_tag}.before.map"
+    baseline_hash="${baseline_dir}/${timer_tag}.baseline.sha256"
+    if [[ ! -f "$baseline_map" || ! -f "$baseline_hash" ]]; then
+        printf 'Resource baseline is incomplete for %s: expected %s and %s\n' \
+            "$timer_profile" "$baseline_map" "$baseline_hash" >&2
+        exit 2
+    fi
+    resource_gate="PENDING"
+    python3 - "$out_dir/${artifact_base}.manifest" "$resource_gate" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+old = "resource.gate=NOT_REQUESTED\n"
+source = path.read_text(encoding="utf-8")
+if source.count(old) != 1:
+    raise SystemExit("resource gate placeholder is missing or ambiguous")
+path.write_text(source.replace(old, f"resource.gate={sys.argv[2]}\n"), encoding="utf-8")
+PY
+    set +e
+    python3 "$resource_checker" --resource-manifest "$out_dir/${resource_manifest_name}" \
+        --full-elf "$out_dir/${artifact_base}.elf" --full-map "$out_dir/${artifact_base}.map" \
+        --full-manifest "$out_dir/${artifact_base}.manifest" \
+        --before-map "$baseline_map" --baseline-manifest "$resource_baseline" \
+        --baseline-sha256 "$baseline_hash" --selected-sources "$out_dir/${source_inventory_evidence_name}" \
+        --su-glob "$stack_evidence_glob" --stack-root routed_mesh_task \
+        --required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-stack-edges.json" \
+        --resolve-operation-edge 'routed_cycle_operations.router_scheduler_event=routed_cycle_router_scheduler_event' \
+        --resolve-operation-edge 'routed_cycle_operations.router_tick=routed_cycle_router_tick' \
+        --disassembly "$out_dir/${disassembly_evidence_name}" \
+        --compile-commands "$out_dir/${compile_commands_evidence_name}" \
+        --config-header "$out_dir/${config_header_evidence_name}" \
+        --main-source "${repo_root}/app/tavrn_routed_node/src/main.c" \
+        --preprocessed-main-out "${out_dir}/${artifact_base}.main.i" --require-binding-call
+    resource_gate_status=$?
+    set -e
+    if [[ $resource_gate_status -eq 0 ]]; then
+        resource_gate="PASSED"
+    else
+        resource_gate="FAILED"
+    fi
+    python3 - "$out_dir/${artifact_base}.manifest" "$resource_gate" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = "resource.gate=PENDING\n"
+if source.count(old) != 1:
+    raise SystemExit("resource gate placeholder is missing or ambiguous")
+path.write_text(source.replace(old, f"resource.gate={sys.argv[2]}\n"), encoding="utf-8")
+PY
+    if [[ $resource_gate_status -ne 0 ]]; then
+        printf 'Resource gate failed after staging artifacts: %s\n' "$out_dir/${artifact_base}.manifest" >&2
+        exit "$resource_gate_status"
+    fi
+fi
 
 printf 'Published ELF: %s\n' "$out_dir/${artifact_base}.elf"
 printf 'Published HEX: %s\n' "$out_dir/${artifact_base}.hex"
@@ -402,4 +663,10 @@ printf 'Build Ninja: %s\n' "$out_dir/${ninja_evidence_name}"
 printf 'CMake cache: %s\n' "$out_dir/${cmake_cache_evidence_name}"
 printf 'Target config: %s\n' "$out_dir/${config_manifest_evidence_name}"
 printf 'Target config header: %s\n' "$out_dir/${config_header_evidence_name}"
+printf 'Disassembly: %s\n' "$out_dir/${disassembly_evidence_name}"
+printf 'Selected sources: %s\n' "$out_dir/${source_inventory_evidence_name}"
+if [[ "$stack_usage" == "ON" ]]; then
+    printf 'Stack usage: %s\n' "$out_dir/${stack_evidence_name}"
+    printf 'Resource manifest: %s\n' "$out_dir/${resource_manifest_name}"
+fi
 printf 'Manifest: %s\n' "$out_dir/${artifact_base}.manifest"

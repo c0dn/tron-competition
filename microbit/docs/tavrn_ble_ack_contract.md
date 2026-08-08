@@ -136,6 +136,25 @@ An ACKed transit queue entry MUST NOT be evicted for control, relay, or newly
 originated traffic. It leaves custody storage only after the next hop accepts
 custody, final delivery succeeds, or a typed failure path takes ownership.
 
+### Router fail-stop containment
+
+The common router has sixteen ordered failure obligations and one copied overflow
+preservation slot. Before it ingests candidate/control AODV input, accepts an
+application submission, promotes link custody, or allows ordinary action work to
+overtake a report, it attempts the oldest obligation first. An action dispatch
+may drain one already-retained action only to make bounded AODV capacity
+available; it cannot admit unbounded newer DATA work ahead of that obligation.
+
+An application `reserve=OK` with token zero, delivery/action data mismatch,
+non-BUSY post-ACK AODV ingest failure, failed required transit
+`release_rx_custody`, permanent delivery callback result, invalid control
+cancellation, failure-report invariant, or seventeenth distinct failure latches
+one typed router fault. Accepted delivery/pending/overflow state remains exactly
+retained; the faulted router invokes no further delivery callback, retry, or
+link/AODV mutation and every later mutating router API returns `INVALID`. The
+seventeenth event is copied into the overflow slot rather than released and
+forgotten.
+
 ## 4. HACK statuses
 
 HACK status is the final HACK byte:

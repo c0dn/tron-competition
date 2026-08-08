@@ -83,10 +83,18 @@ zero. Bucket zero is valid for an active entry with less than 20 seconds left;
 the departed bit disambiguates it.
 
 Metadata is legal only with `I=1` and only in E_RREQ, E_RREP, E_RERR, or the
-single targeted-HELLO exception below. There is no AM byte because this profile
+two targeted-HELLO exceptions below. There is no AM byte because this profile
 has exactly two modes and metadata exists only after fixed `k=1` activation.
 Unknown or reserved SID8 values make the entire frame malformed. Metadata is
 placed where each type below states; no receiver may scan for it heuristically.
+
+On E_RREQ/E_RREP/E_RERR, `freshness_request=1` is a soft social query, not a
+targeted request and not permission to originate a HELLO. A request-clear entry
+on a later otherwise eligible metadata-bearing control is its social answer. The
+subject itself is tier 1 and is selected first; an intermediary is tier 2 only
+when its active, non-departed encoded remaining-TTL bucket is strictly greater
+than twice the received request bucket. Tier 3 sources remain silent. This uses
+the profile's fixed metadata-candidate store and starts no standalone control.
 
 ## 3. Full legacy advertising wrapper
 
@@ -270,11 +278,13 @@ use their own types, not an opaque FLOOD body. Immediate receiver is implicit
 broadcast. Dedupe key is
 `{network, type, active-width origin logical ID, flood_seq}`.
 
-FLOOD, E_RREQ, E_RERR, broadcast HELLO, and TC_UPDATE all use the same
-controlled-flood admission discipline: validate first; refresh direct
-transmitter evidence; dedupe; process locally once; and, if permitted by the
-type and TTL, enqueue one jittered relay preserving origin, correlation, and
-body while changing only TTL/hops and type-permitted hop-local metadata.
+FLOOD, E_RREQ, E_RERR, and TC_UPDATE use the controlled-flood admission
+discipline: validate first; refresh direct transmitter evidence; dedupe; process
+locally once; and, if permitted by the type and TTL, enqueue one jittered relay
+preserving origin, correlation, and body while changing only TTL/hops and
+type-permitted hop-local metadata. Ordinary HELLO is direct one-hop control, not
+a controlled flood; targeted HELLO is forwarded only along its selected valid
+route.
 
 ## 5. AODV control frames
 
@@ -422,24 +432,66 @@ freshness request; bit 3 `M`; bits 2..0 zero.
 | `13+2W` | 2 | `boot_nonce` when `N=1`; node sequence when `N=0` |
 | `15+2W` | variable | optional metadata |
 
-For an untargeted HELLO, `T=0` and both receiver and final target MUST be
-broadcast. A direct bootstrap HELLO has `N=1`, SID16 mode, TTL=1/hops=0, full
-origin identity equal to outer AdvA, a nonzero boot nonce, and no metadata.
-`{full origin AdvA,boot_nonce}` is routed-common incarnation admission and is
-handled before ordinary HELLO dedupe: repeats of the same pair are idempotent;
-a different nonce triggers a new incarnation. That direct N=1 also derives
-SID16 from outer `AdvA[0..1]` and installs `{SID16,AdvA}` without adding a
-SID16 HELLO field. A targeted verification
-HELLO has `T=1`; relays update only immediate receiver and TTL/hops, preserving
-full origin and final target.
+An ordinary HELLO is exactly `N=0,T=0,Q=0,M=0`, with broadcast receiver/final
+target, TTL=1/hops=0, and full origin AdvA equal to outer AdvA. It is direct
+one-hop control: it is never relayed, never answered, and refreshes
+direct-neighbor evidence only. A bootstrap HELLO is `N=1,T=0,Q=0,M=0`, SID16,
+direct one-hop/non-relayed, with a nonzero boot nonce, no metadata, and the same
+full-origin/outer-AdvA rule. It may elicit a separate mentorship `SYNC_OFFER`,
+which is not a HELLO reply. `{full origin AdvA,boot_nonce}` is routed-common
+incarnation admission and is handled before ordinary HELLO dedupe: repeats of
+the same pair are idempotent; a different nonce triggers a new incarnation. That
+direct N=1 also derives SID16 from outer `AdvA[0..1]` and installs `{SID16,AdvA}`
+without adding a SID16 HELLO field.
 
-Base length is 19 (SID16) or 17 (SID8). HELLO has zero general metadata slots.
-The sole exception is a fixed-k targeted verification HELLO, for which
-`I=1,T=1,Q=1,M=1`, `meta_count=1`, and the one entry has
-`freshness_request=1,departed=0`; its length is 20 (`17 + 1 + 2`). Any other
-HELLO metadata count or flag combination is malformed. Ordinary `N=0` dedupe
-key is `{network, full origin AdvA, node_sequence, T, final_target}`. N=1 uses
-the incarnation pair above, not the ordinary HELLO dedupe/high-water path.
+Targeted HELLO is fixed-k SID8, `N=0`, and has unicast immediate receiver and
+final target. It is only the `MAINT-06` stage-0 demanded hard-expiry exchange;
+soft social metadata never originates this form. The origin owns the node
+sequence: a request origin owns its request sequence and a response origin owns
+its response sequence; each retains that sequence across local admission
+failures. A targeted origin uses the valid route's positive hop count as its
+initial TTL and `hops=0`; a newly originated targeted request or response must
+have full origin equal to outer AdvA. Every relay changes only immediate receiver
+and TTL/hops while preserving full origin. A targeted control never starts route
+discovery.
+
+- A targeted freshness request is exactly `I=1,N=0,T=1,Q=1,M=1` (`0xb8`). Its
+  full origin is the requester, its final target is the subject, and it has
+  exactly one metadata entry naming that subject with remaining-TTL bucket zero,
+  `freshness_request=1`, and `departed=0`; its immediate receiver is the first
+  next hop of the valid route to that subject.
+- A targeted freshness response is exactly `I=1,N=0,T=1,Q=0,M=1` (`0xa8`). It
+  is distinct control, never an ordinary HELLO reply. Its full origin is the
+  evidence source, its final target is the SID8 derived from the original
+  requester's full origin, its immediate receiver is the first next hop of the
+  valid return route, and it has
+  exactly one metadata entry for the requested subject with
+  `freshness_request=0` and `departed=0`. The target subject responds immediately
+  when it has a valid route to the requester. A non-target intermediary may
+  respond only with active, non-departed evidence whose encoded remaining-TTL
+  bucket is strictly greater than twice the request bucket; it waits one chosen
+  delay in the inclusive
+  `timer.freshness_response_min_ms..timer.freshness_response_max_ms` interval.
+   After normal structural, receiver, identity, and dedupe admission, a response
+   for the same requester/subject may suppress a pending intermediary response.
+   A tier-3 or stale source remains silent.
+
+For an admitted targeted freshness response, the preserved full origin is the
+evidence source for its one subject claim; outer AdvA is direct evidence only for
+the immediate relay. This is the targeted-response exception to ordinary metadata
+attribution, not permission to use a relay as the subject evidence source.
+
+For either targeted form, missing return route, local BUSY, rate/capacity denial,
+or zero-channel TX failure sends no response, starts no discovery, and proves no
+departure. A response with `Q=0` is incapable of recursively eliciting another
+response. Base length is 19 (SID16) or 17 (SID8). HELLO has zero general metadata
+slots; the only exceptions are the two 20-byte (`17 + 1 + 2`) targeted forms
+above. Any other HELLO metadata count or flag combination is malformed. Ordinary
+`N=0` dedupe key is `{network, full origin AdvA, node_sequence, T=0}`; targeted
+request and response keys are respectively `{network, full origin AdvA,
+node_sequence, final_target, subject, Q=1}` and `{network, full origin AdvA,
+node_sequence, final_target, subject, Q=0}`. N=1 uses the incarnation pair
+above, not the ordinary HELLO dedupe/high-water path.
 
 ### 6.2 SYNC_OFFER (`type=05`)
 
@@ -550,7 +602,7 @@ using one ambiguous `src` field.
 | E_RREP | outer AdvA | `next_hop` | route destination/RREQ tuple | RREQ origin |
 | E_RERR | outer AdvA | implicit broadcast | reporter + RERR sequence | unreachable entries |
 | E_RREP_ACK | outer AdvA | `receiver` | acknowledged RREP tuple including destination sequence | RREQ origin |
-| HELLO | outer AdvA | receiver or broadcast | full node AdvA + boot nonce/node sequence | final target or broadcast |
+| HELLO | outer AdvA | receiver or broadcast | ordinary: full direct node AdvA + boot nonce/node sequence; targeted: requester/evidence-source full AdvA + its node sequence | ordinary: broadcast; targeted request: subject; targeted response: requester |
 | SYNC_OFFER | outer/mentor AdvA | physical broadcast, logical mentee | mentor + snapshot | mentee |
 | SYNC_PULL | outer/mentee AdvA | mentor full AdvA | mentee + snapshot/index | mentor |
 | SYNC_DATA | outer/mentor AdvA | mentee full AdvA | mentor + snapshot/index | mentee / page entry |
@@ -575,7 +627,7 @@ using one ambiguous `src` field.
 | E_RERR SID8 | 11 + 3D | `D=1..4`, conditional metadata table above | 24 | 31 |
 | E_RREP_ACK SID16 / SID8 | 16 / 13 | none | 16 / 13 | 23 / 20 |
 | HELLO SID16 | 19 | no metadata | 19 | 26 |
-| HELLO SID8 | 17 | targeted verification metadata exactly 1 | 20 | 27 |
+| HELLO SID8 | 17 | targeted freshness request or response metadata exactly 1 | 20 | 27 |
 | SYNC_OFFER | exact 24 | zero entries inline; snapshot count only | 24 | 31 |
 | SYNC_PULL | exact 22 | requested count fixed at 1 | 22 | 29 |
 | SYNC_DATA | 15 empty / 24 present | zero or one full entry | 24 | 31 |
@@ -602,7 +654,7 @@ _Static_assert(RERR16_BASE + 3u * RERR16_ENTRY == PDU_MAX,
 _Static_assert(RREP_ACK16_LEN == 16u && RREP_ACK8_LEN == 13u,
                "RREP ACK includes destination sequence correlation");
 _Static_assert(HELLO8_BASE + META_HEADER + META_ENTRY == 20u,
-               "targeted HELLO carries exactly one freshness request");
+                "targeted HELLO carries exactly one freshness entry");
 _Static_assert(SYNC_DATA_BASE + SYNC_DATA_ENTRY == PDU_MAX,
                "one full bootstrap entry");
 _Static_assert(SYNC_OFFER_LEN == PDU_MAX, "full bootstrap identities");
@@ -630,7 +682,9 @@ AdvData exceeds 31. They MUST NOT rely on `ble_radio_advertise()` truncation.
 7. record the direct-transmitter RSSI observation and apply only the
    type/status-permitted liveness update (BUSY/REJECTED HACK never refreshes
    route or GTT state);
-8. check the type-specific equality-only dedupe/correlation key;
+8. check the type-specific equality-only dedupe/correlation key; after successful
+   normal admission, a newly admitted targeted freshness response may suppress a
+   pending delayed intermediary response for the same requester/subject;
 9. for new DATA emit a candidate token without dedupe/HACK/state commit; the
    router/application performs the ACK contract's synchronous
    reserve-and-`resolve_rx` phase, with defensive
@@ -768,14 +822,27 @@ PDU=13, AdvData=20.
 
 PDU=19, AdvData=26.
 
-### Fixed-k targeted verification HELLO8 with one freshness request
+### Fixed-k targeted freshness request HELLO8
 
 ```text
 02 01 06 17 ff ff ff 54 52 02 2a 04 b8 10 dc dc 18 42 de
-52 4a dd 02 00 01 dc a1
+52 4a dd 02 00 01 dc 01
 ```
 
 PDU=20, AdvData=27.
+
+### Fixed-k targeted freshness response HELLO8
+
+Board B responds directly to requester A about subject B, with response node
+sequence `0003` and an active bucket of 10:
+
+```text
+02 01 06 17 ff ff ff 54 52 02 2a 04 a8 10 18 18 dc 4b 0a
+06 03 f8 03 00 01 dc a0
+```
+
+PDU=20, AdvData=27. The full origin and outer AdvA are B; the final target and
+immediate receiver are A. This is `0xa8`, not an ordinary HELLO reply.
 
 ### SYNC_OFFER (full)
 

@@ -1,6 +1,6 @@
 #include "tron_timer_config.h"
 
-/* Generated from the centralized 71-key profile registry. */
+/* Generated from the centralized 73-key profile registry. */
 const tron_timer_config_t tron_timer_config = {
     @TRON_TIMER_INITIALIZER@
 };

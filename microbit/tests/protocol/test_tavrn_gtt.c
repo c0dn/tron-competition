@@ -276,6 +276,45 @@ static void test_gtt_04_serial_tombstone_and_rejoin(void)
                             TAVRN_GTT_QUERY_NOT_FOUND);
 }
 
+static void test_gtt_04_departed_fresh_evidence(void)
+{
+    tavrn_gtt_t gtt;
+    tavrn_gtt_storage_t storage;
+    tavrn_gtt_config_t config = make_config();
+    tavrn_adva_t remote = make_identity(0x14u);
+    tavrn_gtt_evidence_t evidence;
+    tavrn_gtt_snapshot_t snapshot;
+
+    CHECK("GTT-04", tavrn_gtt_init(&gtt, &storage, &config, 0u) ==
+                        TAVRN_GTT_INIT_OK);
+    evidence = make_evidence(remote, 5u, 2u, TAVRN_GTT_EVIDENCE_LIVENESS);
+    CHECK("GTT-04", tavrn_gtt_observe(&gtt, &evidence, 1u) ==
+                        TAVRN_GTT_OBSERVE_ADDED);
+    evidence = make_evidence(remote, 6u, 2u, TAVRN_GTT_EVIDENCE_DEPARTED);
+    CHECK("GTT-04", tavrn_gtt_observe(&gtt, &evidence, 2u) ==
+                        TAVRN_GTT_OBSERVE_DEPARTED);
+    evidence = make_evidence(remote, 6u, 7u, TAVRN_GTT_EVIDENCE_LIVENESS);
+    CHECK("GTT-04", tavrn_gtt_observe(&gtt, &evidence, 3u) ==
+                        TAVRN_GTT_OBSERVE_REFRESHED &&
+                        tavrn_gtt_snapshot(&gtt, &remote, 3u, &snapshot) ==
+                            TAVRN_GTT_QUERY_FOUND &&
+                        snapshot.freshness == TAVRN_GTT_FRESHNESS_ACTIVE &&
+                        snapshot.serial == 6u && snapshot.hop_count == 7u);
+
+    evidence = make_evidence(remote, 7u, 7u, TAVRN_GTT_EVIDENCE_DEPARTED);
+    CHECK("GTT-04", tavrn_gtt_observe(&gtt, &evidence, 4u) ==
+                        TAVRN_GTT_OBSERVE_DEPARTED);
+    evidence = make_evidence(remote, 0u, 4u, TAVRN_GTT_EVIDENCE_LIVENESS);
+    evidence.serial_present = 0u;
+    CHECK("GTT-04", tavrn_gtt_observe(&gtt, &evidence, 5u) ==
+                        TAVRN_GTT_OBSERVE_REFRESHED &&
+                        tavrn_gtt_snapshot(&gtt, &remote, 5u, &snapshot) ==
+                            TAVRN_GTT_QUERY_FOUND &&
+                        snapshot.freshness == TAVRN_GTT_FRESHNESS_ACTIVE &&
+                        snapshot.serial_present != 0u && snapshot.serial == 7u &&
+                        snapshot.hop_count == 4u);
+}
+
 static void test_gtt_05_wrap_safe_expiry(void)
 {
     tavrn_gtt_t gtt;
@@ -347,15 +386,15 @@ static void test_gtt_05_deterministic_lazy_enumeration(void)
                                                    TAVRN_GTT_CAPACITY, &count) ==
                         TAVRN_GTT_QUERY_FOUND && count == 3u &&
                         same_identity(&snapshots[0].identity, &second) &&
-                        same_identity(&snapshots[1].identity,
-                                       &config.local_identity) &&
-                        same_identity(&snapshots[2].identity, &first));
+                        same_identity(&snapshots[1].identity, &first) &&
+                        same_identity(&snapshots[2].identity,
+                                      &config.local_identity));
     CHECK("GTT-05", tavrn_gtt_enumerate_active(&gtt, 50u, snapshots,
                                                   TAVRN_GTT_CAPACITY, &count) ==
                         TAVRN_GTT_QUERY_FOUND && count == 3u &&
                         snapshots[0].freshness == TAVRN_GTT_FRESHNESS_SOFT_STALE &&
-                        snapshots[1].freshness == TAVRN_GTT_FRESHNESS_ACTIVE &&
-                        snapshots[2].freshness == TAVRN_GTT_FRESHNESS_SOFT_STALE);
+                        snapshots[1].freshness == TAVRN_GTT_FRESHNESS_SOFT_STALE &&
+                        snapshots[2].freshness == TAVRN_GTT_FRESHNESS_ACTIVE);
     CHECK("GTT-05", tavrn_gtt_enumerate_active(&gtt, 100u, snapshots,
                                                   TAVRN_GTT_CAPACITY, &count) ==
                         TAVRN_GTT_QUERY_FOUND && count == 1u &&
@@ -366,13 +405,99 @@ static void test_gtt_05_deterministic_lazy_enumeration(void)
                         snapshot.freshness == TAVRN_GTT_FRESHNESS_HARD_EXPIRED);
 }
 
+static void test_gtt_06_expiry_provenance_and_sync(void)
+{
+    tavrn_gtt_t gtt;
+    tavrn_gtt_storage_t storage;
+    tavrn_gtt_config_t config = make_config();
+    tavrn_adva_t remote = make_identity(0x31u);
+    tavrn_gtt_evidence_t evidence = make_evidence(
+        remote, 0u, 1u, TAVRN_GTT_EVIDENCE_LIVENESS);
+    tavrn_gtt_expiry_snapshot_t snapshot;
+    tavrn_gtt_expiry_snapshot_t known[TAVRN_GTT_CAPACITY];
+    tavrn_gtt_sync_record_t record;
+    uint8_t count = 0u;
+
+    evidence.serial_present = 0u;
+    memset(&snapshot, 0, sizeof(snapshot));
+    CHECK("GTT-06", tavrn_gtt_init(&gtt, &storage, &config, 0u) ==
+                        TAVRN_GTT_INIT_OK &&
+                        tavrn_gtt_observe_with_provenance(
+                            &gtt, &evidence,
+                            TAVRN_GTT_PROVENANCE_DIRECT_OUTER_TRANSMITTER, 1u,
+                            &snapshot) == TAVRN_GTT_EXPIRY_OBSERVE_ADDED &&
+                        snapshot.revision == 2u && snapshot.storage_generation == 2u &&
+                        snapshot.direct != 0u && snapshot.last_direct_evidence_ms == 1u &&
+                        snapshot.serial_present == 0u);
+    CHECK("GTT-06", tavrn_gtt_observe_with_provenance(
+                        &gtt, &evidence,
+                        TAVRN_GTT_PROVENANCE_DIRECT_OUTER_TRANSMITTER, 1u,
+                        &snapshot) == TAVRN_GTT_EXPIRY_OBSERVE_DUPLICATE);
+
+    memset(&record, 0, sizeof(record));
+    record.identity = remote;
+    record.remaining_lifetime_ms = 80u;
+    record.serial = 3u;
+    record.serial_present = 1u;
+    record.hop_count = 2u;
+    CHECK("GTT-06", tavrn_gtt_sync_merge(&gtt, &record, 1u, 5u) ==
+                        TAVRN_GTT_SYNC_MERGE_COMMITTED &&
+                        tavrn_gtt_expiry_snapshot(&gtt, &remote, 5u, &snapshot) ==
+                            TAVRN_GTT_EXPIRY_QUERY_FOUND &&
+                        snapshot.revision == 3u && snapshot.direct != 0u &&
+                        snapshot.last_direct_evidence_ms == 1u &&
+                        snapshot.hard_deadline_ms == 85u);
+    evidence.serial = 3u;
+    evidence.serial_present = 1u;
+    CHECK("GTT-06", tavrn_gtt_observe_with_provenance(
+                        &gtt, &evidence, TAVRN_GTT_PROVENANCE_DIRECT_HELLO,
+                        6u, &snapshot) == TAVRN_GTT_EXPIRY_OBSERVE_STALE &&
+                        tavrn_gtt_expiry_snapshot(&gtt, &remote, 6u, &snapshot) ==
+                            TAVRN_GTT_EXPIRY_QUERY_FOUND &&
+                        snapshot.revision == 3u && snapshot.last_evidence_ms == 5u);
+    evidence.serial = 4u;
+    CHECK("GTT-06", tavrn_gtt_observe_with_provenance(
+                        &gtt, &evidence, TAVRN_GTT_PROVENANCE_DIRECT_INCARNATION,
+                        6u, &snapshot) == TAVRN_GTT_EXPIRY_OBSERVE_REFRESHED &&
+                        snapshot.revision == 4u && snapshot.serial == 4u &&
+                        snapshot.direct != 0u && snapshot.last_direct_evidence_ms == 6u &&
+                        tavrn_gtt_application_request(
+                            &gtt, TAVRN_PHASE5_EXPIRY_LANE_MESH_OWNER,
+                            &remote, 6u, &snapshot) == TAVRN_GTT_APPLICATION_CHANGED &&
+                        snapshot.revision == 5u && snapshot.application_requested != 0u);
+    CHECK("GTT-06", tavrn_gtt_enumerate_known(
+                        &gtt, TAVRN_PHASE5_EXPIRY_LANE_OTHER_TASK, 5u, known,
+                        TAVRN_GTT_CAPACITY, &count) ==
+                        TAVRN_GTT_EXPIRY_QUERY_MARSHAL_REQUIRED &&
+                        tavrn_gtt_enumerate_known(
+                            &gtt, TAVRN_PHASE5_EXPIRY_LANE_MESH_OWNER, 5u,
+                            known, TAVRN_GTT_CAPACITY, &count) ==
+                            TAVRN_GTT_EXPIRY_QUERY_FOUND && count == 2u);
+
+    record.departed = 1u;
+    record.remaining_lifetime_ms = 0u;
+    record.serial = 5u;
+    CHECK("GTT-06", tavrn_gtt_sync_merge(&gtt, &record, 1u, 6u) ==
+                        TAVRN_GTT_SYNC_MERGE_COMMITTED &&
+                        tavrn_gtt_expiry_snapshot(&gtt, &remote, 6u, &snapshot) ==
+                            TAVRN_GTT_EXPIRY_QUERY_FOUND &&
+                        snapshot.freshness == TAVRN_GTT_FRESHNESS_DEPARTED &&
+                        snapshot.direct == 0u && snapshot.application_requested == 0u &&
+                        tavrn_gtt_enumerate_known(
+                            &gtt, TAVRN_PHASE5_EXPIRY_LANE_MESH_OWNER, 6u,
+                            known, TAVRN_GTT_CAPACITY, &count) ==
+                            TAVRN_GTT_EXPIRY_QUERY_FOUND && count == 1u);
+}
+
 int main(void)
 {
     test_gtt_01_capacity_and_self_protection();
     test_gtt_02_replacement_order();
     test_gtt_04_serial_tombstone_and_rejoin();
+    test_gtt_04_departed_fresh_evidence();
     test_gtt_05_wrap_safe_expiry();
     test_gtt_05_deterministic_lazy_enumeration();
+    test_gtt_06_expiry_provenance_and_sync();
     if (failures != 0u) {
         printf("tavrn_gtt RED tests failed: %u assertion(s)\n", failures);
         return 1;

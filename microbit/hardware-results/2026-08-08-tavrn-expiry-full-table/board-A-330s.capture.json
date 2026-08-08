@@ -1,0 +1,21 @@
+{
+  "complete_passes": 131,
+  "duration_seconds": 327,
+  "faults": 0,
+  "hard_selected_demand_deferred_passes": 122,
+  "max_scheduler_gap_ms": 2,
+  "provenance": {
+    "artifact_elf_sha256": "c8a7ae390d03dff5448932483bca87cdf5b55c7748157650c53c0d9c803edfa9",
+    "artifact_manifest_name": "tron-ble-routed-full-tavrn-phase5-adaptive-hello-expiry-full-table-hook-fast-generic-advaruntime-ficr-e340b816bcd3.manifest",
+    "artifact_manifest_sha256": "44fef29f48a7a42882802b16aa645b45d09f18df3ee4e00959e93853816167e7",
+    "expiry_full_table": "ON",
+    "feature": "FULL_TAVRN",
+    "hooks": "ON",
+    "timer": "FAST_TEST"
+  },
+  "rreq_controls": 0,
+  "schema": "tron.tavrn.expiry.hardware.capture.v1",
+  "targeted_controls": 0,
+  "tc_expiry_controls": 0,
+  "unavailable_count": 0
+}

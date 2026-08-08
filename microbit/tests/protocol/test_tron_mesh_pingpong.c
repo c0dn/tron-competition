@@ -197,11 +197,48 @@ static int test_frozen_timer_object_is_wrap_safe(void)
 {
     ASSERT_EQ_U32(2000u, tron_timer_config.legacy_ping_interval_ms);
     ASSERT_EQ_U32(1500u, tron_timer_config.legacy_ping_timeout_ms);
+    ASSERT_EQ_U32(2u, tron_timer_config.aodv_rreq_retries);
+    ASSERT_EQ_U32(10u, tron_timer_config.freshness_response_min_ms);
+    ASSERT_EQ_U32(100u, tron_timer_config.freshness_response_max_ms);
+    ASSERT_EQ_U32(6000u, tron_timer_config.verification_window_ms);
     ASSERT_TRUE(tron_timer_config.legacy_ping_timeout_ms <
                 tron_timer_config.legacy_ping_interval_ms);
     ASSERT_TRUE(tron_timer_config.legacy_ping_interval_ms < 0x80000000UL);
     ASSERT_TRUE(tron_timer_config.legacy_ping_timeout_ms < 0x80000000UL);
     ASSERT_TRUE(tron_timer_config_is_valid(&tron_timer_config));
+    return 0;
+}
+
+static int test_timer_validation_rejects_invalid_freshness_and_verification(void)
+{
+    tron_timer_config_t invalid = tron_timer_config;
+
+    invalid.freshness_response_min_ms = 0u;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.freshness_response_max_ms = 0u;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.freshness_response_min_ms = 101u;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.freshness_response_max_ms = 0x80000000UL;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.verification_window_ms = 0u;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.verification_window_ms = 6001u;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
+
+    invalid = tron_timer_config;
+    invalid.verification_window_ms = 0x80000000UL;
+    ASSERT_TRUE(!tron_timer_config_is_valid(&invalid));
     return 0;
 }
 
@@ -366,6 +403,7 @@ int main(void)
         { "endpoint and semantic validation", test_endpoint_and_semantic_validation },
         { "TTL zero remains valid for local delivery", test_ttl_zero_is_valid_for_local_delivery },
         { "frozen timer object is wrap-safe", test_frozen_timer_object_is_wrap_safe },
+        { "timer validation rejects invalid freshness and verification", test_timer_validation_rejects_invalid_freshness_and_verification },
         { "pending starts only after successful queue", test_pending_starts_only_after_successful_queue },
         { "matching PONG reports enqueue latency", test_matching_pong_reports_enqueue_latency },
         { "wrong source, destination, and correlation are unmatched", test_wrong_source_destination_and_correlation_are_unmatched },

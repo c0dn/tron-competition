@@ -1,0 +1,72 @@
+[0.000000 0.000000] mesh own dummy queued src=0x0002 seq=0 ttl=3
+[1.000995 1.000995] mesh own dummy queued src=0x0002 seq=1 ttl=3
+[2.002000 1.001004] mesh own dummy queued src=0x0002 seq=2 ttl=3
+[3.003009 1.001009] mesh own dummy queued src=0x0002 seq=3 ttl=3
+[4.001010 0.998001] mesh counters id=0x0002 rx_ok=0 tx_ok=4 decode_error=223 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[4.016966 0.015956] mesh own dummy queued src=0x0002 seq=4 ttl=3
+[5.018010 1.001044] mesh own dummy queued src=0x0002 seq=5 ttl=3
+[6.019011 1.001001] mesh own dummy queued src=0x0002 seq=6 ttl=3
+[7.020105 1.001094] mesh own dummy queued src=0x0002 seq=7 ttl=3
+[8.021045 1.000941] mesh own dummy queued src=0x0002 seq=8 ttl=3
+[9.001074 0.980029] mesh counters id=0x0002 rx_ok=0 tx_ok=9 decode_error=454 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[9.023008 0.021934] mesh own dummy queued src=0x0002 seq=9 ttl=3
+[10.024042 1.001033] mesh own dummy queued src=0x0002 seq=10 ttl=3
+[11.025053 1.001011] mesh own dummy queued src=0x0002 seq=11 ttl=3
+[12.026062 1.001010] mesh own dummy queued src=0x0002 seq=12 ttl=3
+[13.027126 1.001064] mesh own dummy queued src=0x0002 seq=13 ttl=3
+[14.001068 0.973942] mesh counters id=0x0002 rx_ok=0 tx_ok=14 decode_error=717 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[14.029052 0.027984] mesh own dummy queued src=0x0002 seq=14 ttl=3
+[15.030109 1.001057] mesh own dummy queued src=0x0002 seq=15 ttl=3
+[16.031086 1.000977] mesh own dummy queued src=0x0002 seq=16 ttl=3
+[17.032110 1.001024] mesh own dummy queued src=0x0002 seq=17 ttl=3
+[18.033090 1.000980] mesh own dummy queued src=0x0002 seq=18 ttl=3
+[19.001148 0.968058] mesh counters id=0x0002 rx_ok=0 tx_ok=19 decode_error=1036 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[19.035102 0.033954] mesh own dummy queued src=0x0002 seq=19 ttl=3
+[20.036121 1.001020] mesh own dummy queued src=0x0002 seq=20 ttl=3
+[21.037131 1.001010] mesh own dummy queued src=0x0002 seq=21 ttl=3
+[22.038119 1.000988] mesh own dummy queued src=0x0002 seq=22 ttl=3
+[23.039135 1.001016] mesh own dummy queued src=0x0002 seq=23 ttl=3
+[24.001133 0.961998] mesh counters id=0x0002 rx_ok=0 tx_ok=24 decode_error=1361 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[24.041145 0.040012] mesh own dummy queued src=0x0002 seq=24 ttl=3
+[25.042155 1.001010] mesh own dummy queued src=0x0002 seq=25 ttl=3
+[26.043243 1.001088] mesh own dummy queued src=0x0002 seq=26 ttl=3
+[27.044147 1.000904] mesh own dummy queued src=0x0002 seq=27 ttl=3
+[28.045164 1.001017] mesh own dummy queued src=0x0002 seq=28 ttl=3
+[29.000197 0.955033] mesh counters id=0x0002 rx_ok=0 tx_ok=29 decode_error=1682 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[29.047176 0.046978] mesh own dummy queued src=0x0002 seq=29 ttl=3
+[30.048191 1.001015] mesh own dummy queued src=0x0002 seq=30 ttl=3
+[31.049165 1.000974] mesh own dummy queued src=0x0002 seq=31 ttl=3
+[32.050189 1.001024] mesh own dummy queued src=0x0002 seq=32 ttl=3
+[33.051311 1.001122] mesh own dummy queued src=0x0002 seq=33 ttl=3
+[34.000198 0.948888] mesh counters id=0x0002 rx_ok=0 tx_ok=34 decode_error=1979 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[34.052314 0.052115] mesh own dummy queued src=0x0002 seq=34 ttl=3
+[35.053236 1.000922] mesh own dummy queued src=0x0002 seq=35 ttl=3
+[36.054219 1.000983] mesh own dummy queued src=0x0002 seq=36 ttl=3
+[37.055223 1.001004] mesh own dummy queued src=0x0002 seq=37 ttl=3
+[38.056217 1.000995] mesh own dummy queued src=0x0002 seq=38 ttl=3
+[39.000218 0.944001] mesh counters id=0x0002 rx_ok=0 tx_ok=39 decode_error=2284 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[39.058226 0.058007] mesh own dummy queued src=0x0002 seq=39 ttl=3
+[40.059268 1.001042] mesh own dummy queued src=0x0002 seq=40 ttl=3
+[41.060303 1.001035] mesh own dummy queued src=0x0002 seq=41 ttl=3
+[42.061257 1.000954] mesh own dummy queued src=0x0002 seq=42 ttl=3
+[43.062339 1.001081] mesh own dummy queued src=0x0002 seq=43 ttl=3
+[44.000288 0.937950] mesh counters id=0x0002 rx_ok=0 tx_ok=44 decode_error=2570 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[44.064270 0.063981] mesh own dummy queued src=0x0002 seq=44 ttl=3
+[45.065273 1.001003] mesh own dummy queued src=0x0002 seq=45 ttl=3
+[46.066280 1.001007] mesh own dummy queued src=0x0002 seq=46 ttl=3
+[47.067285 1.001005] mesh own dummy queued src=0x0002 seq=47 ttl=3
+[48.068289 1.001005] mesh own dummy queued src=0x0002 seq=48 ttl=3
+[49.000335 0.932046] mesh counters id=0x0002 rx_ok=0 tx_ok=49 decode_error=2866 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[49.070299 0.069964] mesh own dummy queued src=0x0002 seq=49 ttl=3
+[50.071312 1.001013] mesh own dummy queued src=0x0002 seq=50 ttl=3
+[51.072314 1.001002] mesh own dummy queued src=0x0002 seq=51 ttl=3
+[52.073334 1.001020] mesh own dummy queued src=0x0002 seq=52 ttl=3
+[53.074358 1.001024] mesh own dummy queued src=0x0002 seq=53 ttl=3
+[54.000339 0.925981] mesh counters id=0x0002 rx_ok=0 tx_ok=54 decode_error=3192 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[54.076388 0.076049] mesh own dummy queued src=0x0002 seq=54 ttl=3
+[55.077345 1.000957] mesh own dummy queued src=0x0002 seq=55 ttl=3
+[56.078355 1.001010] mesh own dummy queued src=0x0002 seq=56 ttl=3
+[57.079345 1.000991] mesh own dummy queued src=0x0002 seq=57 ttl=3
+[58.080373 1.001028] mesh own dummy queued src=0x0002 seq=58 ttl=3
+[59.000411 0.920037] mesh counters id=0x0002 rx_ok=0 tx_ok=59 decode_error=3519 duplicate_drop=0 ttl_drop=0 queue_drop=0 relay_scheduled=0 relay_rate_limited=0 blocked_direct=0
+[59.082379 0.081969] mesh own dummy queued src=0x0002 seq=59 ttl=3

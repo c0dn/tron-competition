@@ -1,7 +1,7 @@
 /*
- * Minimal AODV_ONLY routed-node proving ground.  The mesh task owns exactly
- * one link-v2 instance and one AODV core; UART output is confined to the
- * lower-priority logger task.
+ * Routed firmware binding.  The mesh task owns one scheduler and one
+ * tavrn_router; route/link/custody orchestration is intentionally not
+ * duplicated here.
  */
 
 #include <tk/tkernel.h>
@@ -13,14 +13,35 @@
 #include "aodv_core.h"
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
+#include "routed_cycle.h"
 #include "tavrn_link_v2.h"
+#include "tavrn_router.h"
 #include "tron_build_config.h"
 #include "tron_build_info.h"
 #include "tron_timer_config.h"
 
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+#include "routed_full_telemetry.h"
+#include "tavrn_mentorship.h"
+#include "tavrn_maintenance.h"
+#include "tavrn_full.h"
+#include "tavrn_full_maintenance_binding.h"
+#include "tavrn_gtt.h"
+#endif
+
 #define ROUTED_DELIVERY_CAPACITY 8u
 #define ROUTED_MESH_TASK_PRIORITY 10u
 #define ROUTED_LOGGER_TASK_PRIORITY 11u
+#define ROUTED_RELEASE_BIT 0x00000001u
+#define ROUTED_MESH_TASK_STACK_BYTES TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES
+#define ROUTED_RNG_BASE 0x4000D000UL
+#define ROUTED_RNG_TASKS_START (ROUTED_RNG_BASE + 0x000UL)
+#define ROUTED_RNG_TASKS_STOP (ROUTED_RNG_BASE + 0x004UL)
+#define ROUTED_RNG_EVENTS_VALRDY (ROUTED_RNG_BASE + 0x100UL)
+#define ROUTED_RNG_VALUE (ROUTED_RNG_BASE + 0x508UL)
+#define ROUTED_BOOT_NONCE_RNG_POLLS 4096u
+#define ROUTED_BOOT_NONCE_RNG_ATTEMPTS 4u
+#define ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY 1u
 
 typedef struct routed_ring {
     uint8_t head;
@@ -30,9 +51,12 @@ typedef struct routed_ring {
 
 typedef struct routed_delivery_state {
     routed_ring_t published;
+    tavrn_direct_peer_t transmitter;
+    tavrn_link_data_t data;
+    tavrn_router_delivery_token_t token;
     uint8_t provisional;
     uint8_t reserved_index;
-    tavrn_direct_peer_t transmitter;
+    uint8_t callback_active;
 } routed_delivery_state_t;
 
 typedef struct routed_delivery {
@@ -41,42 +65,89 @@ typedef struct routed_delivery {
     uint32_t delivered_at_ms;
 } routed_delivery_t;
 
-typedef struct routed_poll_gate {
-    uint32_t last_poll_return_ms;
-    uint8_t have_poll_return;
-    uint8_t fault_latched;
-} routed_poll_gate_t;
+typedef struct routed_local_event {
+    tavrn_router_dispatch_event_t event;
+} routed_local_event_t;
 
 typedef struct routed_counters {
     uint32_t submitted;
     uint32_t delivered;
-    uint32_t forwarded;
-    uint32_t control_rreq;
-    uint32_t control_rrep;
-    uint32_t control_rerr;
-    uint32_t control_rrep_ack;
-    uint32_t custody_transferred;
-    uint32_t retry_exhausted;
     uint32_t local_custody_fault;
     uint32_t scheduler_fault;
     uint32_t rx_blocked;
-    uint32_t retained_action;
     uint32_t pending_failed;
+    uint32_t blacklisted;
+    uint32_t router_fault;
 } routed_counters_t;
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+typedef struct routed_expiry_sweep_record {
+    uint32_t now_ms;
+    uint32_t received_evidence_count;
+    uint32_t pass;
+    uint32_t complete_passes;
+    uint32_t max_scheduler_gap_ms;
+    uint32_t scheduler_fault_count;
+    tavrn_router_fault_reason_t router_fault;
+    uint8_t trace_count;
+    uint8_t cursor;
+    uint8_t soft_selected_count;
+    uint8_t hard_selected_count;
+    uint8_t demand_deferred_count;
+    uint8_t unavailable_count;
+    uint8_t departed_count;
+    uint8_t purged_count;
+    uint8_t maximum_copied_candidates;
+    uint8_t targeted_control_count;
+    uint8_t rreq_control_count;
+    uint8_t expiry_tc_control_count;
+    uint8_t mesh_fault_latched;
+} routed_expiry_sweep_record_t;
+
+typedef struct routed_expiry_sweep_queue {
+    routed_expiry_sweep_record_t records[ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY];
+    uint8_t head;
+    uint8_t tail;
+    uint8_t count;
+} routed_expiry_sweep_queue_t;
+#endif
 
 typedef struct routed_snapshot {
     routed_counters_t routed;
     tavrn_link_counters_t link;
     aodv_counters_t aodv;
+    tavrn_router_counters_t router;
+    tavrn_router_fault_reason_t router_fault_reason;
     uint8_t delivery_queue_count;
     uint8_t delivery_provisional;
     uint8_t mesh_fault_latched;
+    uint8_t diagnostic_queue_count;
+    uint8_t rreq_queue_count;
+    uint32_t diagnostic_dropped;
+    uint32_t diagnostic_evicted_healthy;
+    uint32_t diagnostic_dropped_fault;
+    uint32_t rreq_dropped;
+    uint32_t phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    tavrn_mentorship_state_snapshot_t mentorship;
+    tavrn_mentorship_counters_t mentorship_counters;
+    tavrn_maintenance_snapshot_t maintenance;
+    tavrn_maintenance_counters_t maintenance_counters;
+    tavrn_adva_t serving_mentee;
+    uint16_t serving_boot_nonce;
+    uint8_t pending_offer_valid;
+    uint8_t serving_session_valid;
+    uint8_t page_session_valid;
+#endif
 } routed_snapshot_t;
 
-typedef struct routed_pending_failure {
-    tavrn_direct_peer_t failed_next_hop;
-    uint8_t active;
-} routed_pending_failure_t;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+/* The logger never needs its summary and copied GTT snapshot at once. */
+typedef union routed_full_logger_storage {
+    routed_snapshot_t summary;
+    routed_cycle_gtt_snapshot_t gtt_snapshot;
+} routed_full_logger_storage_t;
+#endif
 
 typedef char routed_delivery_capacity_must_be_eight[
     (ROUTED_DELIVERY_CAPACITY == 8u) ? 1 : -1];
@@ -86,19 +157,62 @@ typedef char routed_logger_must_be_lower_priority[
 static ble_mesh_scheduler_t routed_scheduler;
 static tavrn_link_v2_t routed_link;
 static aodv_core_t routed_aodv;
+static tavrn_router_t routed_router;
+static routed_cycle_t routed_cycle_state;
+static routed_cycle_operations_t routed_cycle_operations;
+static routed_cycle_run_result_t routed_cycle_result_storage;
+static routed_cycle_diagnostic_queue_t routed_diagnostic_queue;
+static routed_cycle_rreq_queue_t routed_rreq_queue;
+static routed_cycle_trace_t routed_logged_diagnostic;
+static aodv_rreq_lifecycle_record_t routed_logged_rreq;
+static tavrn_router_phase_trace_t routed_scheduler_fault_trace;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static routed_full_logger_storage_t routed_full_logger_storage;
+#else
+static routed_snapshot_t routed_snapshot_storage;
+#endif
+static uint32_t routed_phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
+static uint32_t routed_next_submit_at;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static tavrn_gtt_storage_t routed_gtt_storage;
+static tavrn_gtt_t routed_gtt;
+static tavrn_full_t routed_full;
+static tavrn_mentorship_t routed_mentorship;
+static tavrn_maintenance_t routed_maintenance;
+static tavrn_full_application_mailbox_t routed_application_mailbox;
+static tavrn_full_maintenance_binding_input_t routed_binding_input_storage;
+static tavrn_full_maintenance_binding_result_t routed_binding_result_storage;
+static tavrn_gtt_application_command_t routed_binding_command_storage;
+static uint32_t routed_gtt_snapshot_request_dropped;
+static uint32_t routed_gtt_snapshot_failed;
+static uint32_t routed_local_broadcast_generation_seen;
+static uint8_t routed_gtt_snapshot_request_pending;
+static uint8_t routed_gtt_snapshot_ready;
+static uint8_t routed_full_logger_summary_active;
+static routed_expiry_sweep_queue_t routed_expiry_sweep_queue;
+static routed_expiry_sweep_record_t routed_logged_expiry_sweep;
+static uint32_t routed_expiry_sweep_passes;
+static uint32_t routed_expiry_complete_passes;
+static uint8_t routed_router_tick_scheduler_return_requested;
+#endif
 static tavrn_direct_peer_t local_peer;
 static tavrn_direct_peer_t configured_destination;
 static UB local_adva[6];
 static UB runtime_ficr_adva[6];
 static routed_delivery_t deliveries[ROUTED_DELIVERY_CAPACITY];
+static routed_local_event_t local_events[ROUTED_DELIVERY_CAPACITY];
 static routed_delivery_state_t delivery_state;
+static routed_ring_t local_event_ring;
 static routed_counters_t routed_counters;
-static aodv_action_t retained_action;
-static uint8_t retained_action_valid;
-static routed_pending_failure_t pending_failure;
+static tavrn_router_delivery_token_t next_delivery_token;
+static tavrn_router_fault_reason_t pending_router_fault;
+static tavrn_router_fault_reason_t logged_router_fault;
 static uint8_t mesh_fault_latched;
+static ID routed_release_flag_id;
+static volatile uint32_t routed_logger_progress_epoch;
+static uint32_t routed_max_scheduler_gap_ms;
 
-static const UB configured_override[6] = TRON_BUILD_ADVA_OVERRIDE_BYTES;
+static const UB configured_local_adva[6] = TRON_BUILD_LOCAL_ADVA_BYTES;
 static const UB configured_peer_adva[6] = TRON_BUILD_LINK_PEER_ADVA_BYTES;
 static const UB configured_rx_block_adva[6] = TRON_BUILD_RX_BLOCK_ADVA_BYTES;
 
@@ -108,6 +222,48 @@ static uint32_t now_ms(void)
 
     tk_get_otm(&time);
     return time.lo;
+}
+
+/* The nRF52833 RNG signals EVENTS_VALRDY for each byte in VALUE.  Startup
+ * bounds both polling and zero retries, then fails closed rather than deriving
+ * an incarnation discriminator from the static FICR identity. */
+static int routed_boot_nonce(uint16_t *nonce_out)
+{
+    uint32_t attempt;
+
+    if (nonce_out == NULL) {
+        return 0;
+    }
+    *nonce_out = 0u;
+    for (attempt = 0u; attempt < ROUTED_BOOT_NONCE_RNG_ATTEMPTS; attempt++) {
+        uint16_t nonce = 0u;
+        uint8_t byte_index;
+
+        out_w(ROUTED_RNG_EVENTS_VALRDY, 0u);
+        out_w(ROUTED_RNG_TASKS_START, 1u);
+        for (byte_index = 0u; byte_index < 2u; byte_index++) {
+            uint32_t polls;
+
+            for (polls = 0u; polls < ROUTED_BOOT_NONCE_RNG_POLLS; polls++) {
+                if (in_w(ROUTED_RNG_EVENTS_VALRDY) != 0u) {
+                    break;
+                }
+            }
+            if (polls == ROUTED_BOOT_NONCE_RNG_POLLS) {
+                out_w(ROUTED_RNG_TASKS_STOP, 1u);
+                return 0;
+            }
+            nonce |= (uint16_t)(in_w(ROUTED_RNG_VALUE) & 0xffu) <<
+                (uint8_t)(8u * byte_index);
+            out_w(ROUTED_RNG_EVENTS_VALRDY, 0u);
+        }
+        out_w(ROUTED_RNG_TASKS_STOP, 1u);
+        if (nonce != 0u) {
+            *nonce_out = nonce;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int queue_guard_begin(void)
@@ -130,12 +286,21 @@ static uint16_t sid16_from_adva(const UB adva[6])
     return (uint16_t)adva[0] | ((uint16_t)adva[1] << 8);
 }
 
-static int logical_id_equal(const tavrn_logical_id_t *left,
-                            const tavrn_logical_id_t *right)
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static uint16_t ratio_to_permille(float ratio)
 {
-    return left != NULL && right != NULL && left->width == right->width &&
-           left->value == right->value;
+    uint16_t permille;
+
+    if (ratio <= 0.0f) {
+        return 1u;
+    }
+    if (ratio >= 1.0f) {
+        return 1000u;
+    }
+    permille = (uint16_t)(ratio * 1000.0f + 0.5f);
+    return permille == 0u ? 1u : permille;
 }
+#endif
 
 static void ring_init(routed_ring_t *ring)
 {
@@ -166,52 +331,114 @@ static int ring_pop(routed_ring_t *ring, uint8_t *index_out)
     return 1;
 }
 
-static int delivery_reserve(const tavrn_direct_peer_t *transmitter)
+static int delivery_callback_begin(void)
 {
-    int result = 0;
-
-    if (transmitter == NULL || !queue_guard_begin()) {
+    if (!queue_guard_begin()) {
         return 0;
     }
-    if (delivery_state.provisional == 0u &&
-        delivery_state.published.count < ROUTED_DELIVERY_CAPACITY) {
-        delivery_state.provisional = 1u;
-        delivery_state.reserved_index = delivery_state.published.tail;
-        delivery_state.transmitter = *transmitter;
-        result = 1;
-    }
-    queue_guard_end();
-    return result;
-}
-
-static void delivery_cancel(void)
-{
-    if (queue_guard_begin()) {
-        delivery_state.provisional = 0u;
+    if (delivery_state.callback_active != 0u) {
         queue_guard_end();
+        return 0;
     }
+    delivery_state.callback_active = 1u;
+    return 1;
 }
 
-static int delivery_commit(const tavrn_link_data_t *data, uint32_t delivered_at_ms)
+static void delivery_callback_end(void)
+{
+    delivery_state.callback_active = 0u;
+    queue_guard_end();
+}
+
+static tavrn_router_delivery_status_t router_delivery_reserve(
+    void *context, const tavrn_direct_peer_t *transmitter,
+    const tavrn_link_data_t *data, tavrn_router_delivery_token_t *token_out,
+    uint32_t delivered_at_ms)
+{
+    (void)context;
+    (void)delivered_at_ms;
+    if (token_out != NULL) {
+        *token_out = TAVRN_ROUTER_DELIVERY_TOKEN_NONE;
+    }
+    if (transmitter == NULL || data == NULL || token_out == NULL ||
+        !delivery_callback_begin()) {
+        return TAVRN_ROUTER_DELIVERY_INVALID;
+    }
+    if (delivery_state.provisional != 0u ||
+        delivery_state.published.count >= ROUTED_DELIVERY_CAPACITY) {
+        delivery_callback_end();
+        return TAVRN_ROUTER_DELIVERY_BUSY;
+    }
+    next_delivery_token++;
+    if (next_delivery_token == TAVRN_ROUTER_DELIVERY_TOKEN_NONE) {
+        next_delivery_token++;
+    }
+    delivery_state.provisional = 1u;
+    delivery_state.reserved_index = delivery_state.published.tail;
+    delivery_state.transmitter = *transmitter;
+    delivery_state.data = *data;
+    delivery_state.token = next_delivery_token;
+    *token_out = next_delivery_token;
+    delivery_callback_end();
+    return TAVRN_ROUTER_DELIVERY_OK;
+}
+
+static tavrn_router_delivery_status_t router_delivery_commit(
+    void *context, tavrn_router_delivery_token_t token,
+    const tavrn_direct_peer_t *transmitter, const tavrn_link_data_t *data,
+    uint32_t delivered_at_ms)
 {
     uint8_t index;
-    int result = 0;
 
-    if (data == NULL || !queue_guard_begin()) {
-        return 0;
+    (void)context;
+    if (transmitter == NULL || data == NULL || !delivery_callback_begin()) {
+        return TAVRN_ROUTER_DELIVERY_INVALID;
     }
-    if (delivery_state.provisional != 0u &&
-        delivery_state.reserved_index == delivery_state.published.tail &&
-        ring_push(&delivery_state.published, &index)) {
-        memset(&deliveries[index], 0, sizeof(deliveries[index]));
-        deliveries[index].transmitter = delivery_state.transmitter;
-        deliveries[index].data = *data;
-        deliveries[index].delivered_at_ms = delivered_at_ms;
-        delivery_state.provisional = 0u;
-        result = 1;
+    if (delivery_state.provisional == 0u || token == TAVRN_ROUTER_DELIVERY_TOKEN_NONE ||
+        token != delivery_state.token ||
+        memcmp(transmitter, &delivery_state.transmitter, sizeof(*transmitter)) != 0 ||
+        memcmp(data, &delivery_state.data, sizeof(*data)) != 0 ||
+        delivery_state.reserved_index != delivery_state.published.tail ||
+        !ring_push(&delivery_state.published, &index)) {
+        delivery_callback_end();
+        return TAVRN_ROUTER_DELIVERY_INVALID;
     }
-    queue_guard_end();
-    return result;
+    memset(&deliveries[index], 0, sizeof(deliveries[index]));
+    deliveries[index].transmitter = *transmitter;
+    deliveries[index].data = *data;
+    deliveries[index].delivered_at_ms = delivered_at_ms;
+    memset(&delivery_state.transmitter, 0, sizeof(delivery_state.transmitter));
+    memset(&delivery_state.data, 0, sizeof(delivery_state.data));
+    delivery_state.token = TAVRN_ROUTER_DELIVERY_TOKEN_NONE;
+    delivery_state.provisional = 0u;
+    routed_counters.delivered++;
+    delivery_callback_end();
+    return TAVRN_ROUTER_DELIVERY_OK;
+}
+
+static tavrn_router_delivery_status_t router_delivery_cancel(
+    void *context, tavrn_router_delivery_token_t token,
+    const tavrn_direct_peer_t *transmitter, const tavrn_link_data_t *data,
+    uint32_t now)
+{
+    (void)context;
+    (void)now;
+    if (transmitter == NULL || data == NULL || !delivery_callback_begin()) {
+        return TAVRN_ROUTER_DELIVERY_INVALID;
+    }
+    if (delivery_state.provisional == 0u || token == TAVRN_ROUTER_DELIVERY_TOKEN_NONE ||
+        token != delivery_state.token ||
+        memcmp(transmitter, &delivery_state.transmitter, sizeof(*transmitter)) != 0 ||
+        memcmp(data, &delivery_state.data, sizeof(*data)) != 0) {
+        delivery_callback_end();
+        return TAVRN_ROUTER_DELIVERY_INVALID;
+    }
+    memset(&delivery_state.transmitter, 0, sizeof(delivery_state.transmitter));
+    memset(&delivery_state.data, 0, sizeof(delivery_state.data));
+    delivery_state.token = TAVRN_ROUTER_DELIVERY_TOKEN_NONE;
+    delivery_state.provisional = 0u;
+    delivery_callback_end();
+    return TAVRN_ROUTER_DELIVERY_OK;
 }
 
 static int delivery_pop(routed_delivery_t *delivery)
@@ -230,24 +457,44 @@ static int delivery_pop(routed_delivery_t *delivery)
     return result;
 }
 
-static uint32_t mesh_remaining_yield_ms(const routed_poll_gate_t *gate,
-                                        uint32_t work_complete_ms)
+static int local_event_push(const tavrn_router_dispatch_event_t *event)
 {
-    uint32_t voluntary_yield = tron_timer_config.scheduler_poll_max_ms > 1u ?
-        tron_timer_config.scheduler_poll_max_ms - 1u : 0u;
-    uint32_t elapsed;
+    uint8_t index;
+    int result = 0;
 
-    if (gate == NULL || gate->have_poll_return == 0u) {
-        return 0u;
+    if (event == NULL || event->type == TAVRN_ROUTER_DISPATCH_EVENT_NONE ||
+        !queue_guard_begin()) {
+        return 0;
     }
-    elapsed = (uint32_t)(work_complete_ms - gate->last_poll_return_ms);
-    return elapsed < voluntary_yield ? voluntary_yield - elapsed : 0u;
+    if (ring_push(&local_event_ring, &index)) {
+        local_events[index].event = *event;
+        result = 1;
+    }
+    queue_guard_end();
+    return result;
+}
+
+static int local_event_pop(routed_local_event_t *event)
+{
+    uint8_t index;
+    int result = 0;
+
+    if (event == NULL || !queue_guard_begin()) {
+        return 0;
+    }
+    if (ring_pop(&local_event_ring, &index)) {
+        *event = local_events[index];
+        result = 1;
+    }
+    queue_guard_end();
+    return result;
 }
 
 static void snapshot(routed_snapshot_t *out)
 {
     const tavrn_link_counters_t *link_counters;
     const aodv_counters_t *aodv_counters;
+    const tavrn_router_counters_t *router_counters;
 
     if (out == NULL || !queue_guard_begin()) {
         return;
@@ -257,343 +504,400 @@ static void snapshot(routed_snapshot_t *out)
     out->delivery_queue_count = delivery_state.published.count;
     out->delivery_provisional = delivery_state.provisional;
     out->mesh_fault_latched = mesh_fault_latched;
+    out->diagnostic_queue_count = routed_diagnostic_queue.count;
+    out->rreq_queue_count = routed_rreq_queue.count;
+    out->diagnostic_dropped = routed_diagnostic_queue.dropped_count;
+    out->diagnostic_evicted_healthy =
+        routed_diagnostic_queue.evicted_healthy_count;
+    out->diagnostic_dropped_fault = routed_diagnostic_queue.dropped_fault_count;
+    out->rreq_dropped = routed_rreq_queue.dropped_count;
+    memcpy(out->phase_max_elapsed_ms, routed_phase_max_elapsed_ms,
+           sizeof(out->phase_max_elapsed_ms));
+    out->router_fault_reason = tavrn_router_fault_reason(&routed_router);
     link_counters = tavrn_link_v2_counters(&routed_link);
     aodv_counters = aodv_core_counters(&routed_aodv);
+    router_counters = tavrn_router_counters(&routed_router);
     if (link_counters != NULL) {
         out->link = *link_counters;
     }
     if (aodv_counters != NULL) {
         out->aodv = *aodv_counters;
     }
+    if (router_counters != NULL) {
+        out->router = *router_counters;
+    }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        const tavrn_mentorship_counters_t *mentorship_counters =
+            tavrn_mentorship_counters(&routed_mentorship);
+        const tavrn_maintenance_counters_t *maintenance_counters =
+            tavrn_maintenance_counters(&routed_maintenance);
+
+        (void)tavrn_mentorship_state_snapshot(&routed_mentorship,
+                                               &out->mentorship);
+        (void)tavrn_maintenance_snapshot(&routed_maintenance,
+                                         &out->maintenance);
+        if (mentorship_counters != NULL) {
+            out->mentorship_counters = *mentorship_counters;
+        }
+        if (maintenance_counters != NULL) {
+            out->maintenance_counters = *maintenance_counters;
+        }
+        out->serving_mentee = routed_mentorship.serving_mentee;
+        out->serving_boot_nonce = routed_mentorship.serving_boot_nonce;
+        out->pending_offer_valid = routed_mentorship.pending_offer_valid;
+        out->serving_session_valid = routed_mentorship.serving_session_valid;
+        out->page_session_valid = routed_mentorship.page_session_valid;
+    }
+#endif
     queue_guard_end();
 }
 
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static const UB *mentorship_state_name(tavrn_mentorship_state_t state)
+{
+    switch (state) {
+    case TAVRN_MENTORSHIP_REJOINING:
+        return (const UB *)"REJOINING";
+    case TAVRN_MENTORSHIP_COLLECTING_OFFERS:
+        return (const UB *)"COLLECTING_OFFERS";
+    case TAVRN_MENTORSHIP_SYNCING:
+        return (const UB *)"SYNCING";
+    case TAVRN_MENTORSHIP_SID8_ACTIVE:
+        return (const UB *)"SID8_ACTIVE";
+    case TAVRN_MENTORSHIP_IDENTITY_CONFLICT:
+        return (const UB *)"IDENTITY_CONFLICT";
+    default:
+        return (const UB *)"INVALID";
+    }
+}
+
+static const UB *identity_width_name(tavrn_identity_width_t width)
+{
+    if (width == TAVRN_IDENTITY_SID16) {
+        return (const UB *)"SID16";
+    }
+    if (width == TAVRN_IDENTITY_SID8) {
+        return (const UB *)"SID8";
+    }
+    return (const UB *)"INVALID";
+}
+#endif
+
 static void log_startup(void)
 {
+    const UB *feature = TRON_BUILD_ROUTED_FULL_TAVRN != 0 ?
+        (UB *)"FULL_TAVRN_ESC_K1_MENTORSHIP" : (UB *)"AODV_ONLY";
+
     if (TRON_BUILD_LINK_PEER_ADVA_ENABLED != 0) {
-        tm_printf((UB *)"routed startup sid16=0x%04x destination=0x%04x rx_block=%s\n",
-                  (UINT)local_peer.logical_id.value,
+        tm_printf((UB *)"routed startup feature=%s sid16=0x%04x destination=0x%04x rx_block=%s\n",
+                  feature, (UINT)local_peer.logical_id.value,
                   (UINT)configured_destination.logical_id.value,
                   (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
     } else {
-        tm_printf((UB *)"routed startup sid16=0x%04x destination=not_configured rx_block=%s\n",
-                  (UINT)local_peer.logical_id.value,
+        tm_printf((UB *)"routed startup feature=%s sid16=0x%04x destination=not_configured rx_block=%s\n",
+                  feature, (UINT)local_peer.logical_id.value,
                   (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
     }
 }
 
 static void log_summary(uint32_t now)
 {
-    routed_snapshot_t state;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    routed_snapshot_t *state = &routed_full_logger_storage.summary;
 
-    snapshot(&state);
-    tm_printf((UB *)"routed stats now=%lu submitted=%lu delivered=%lu forwarded=%lu ctrl_rreq=%lu ctrl_rrep=%lu ctrl_rerr=%lu ctrl_rrep_ack=%lu custody=%lu retry_exhausted=%lu local_fault=%lu scheduler_fault=%lu retained=%lu aodv_backpressure=%lu pending_failed=%lu rx_blocked=%lu delivery_q=%u provisional=%u fault=%u\n",
-              (UW)now, (UW)state.routed.submitted, (UW)state.routed.delivered,
-              (UW)state.routed.forwarded, (UW)state.routed.control_rreq,
-              (UW)state.routed.control_rrep, (UW)state.routed.control_rerr,
-              (UW)state.routed.control_rrep_ack,
-              (UW)state.routed.custody_transferred,
-              (UW)state.routed.retry_exhausted,
-              (UW)state.routed.local_custody_fault,
-              (UW)state.routed.scheduler_fault,
-              (UW)state.routed.retained_action,
-              (UW)state.aodv.action_backpressure,
-              (UW)state.routed.pending_failed,
-              (UW)state.routed.rx_blocked,
-              (UINT)state.delivery_queue_count,
-              (UINT)state.delivery_provisional,
-              (UINT)state.mesh_fault_latched);
-}
-
-static void release_transit_rx_custody(const tavrn_link_data_t *data, uint32_t now)
-{
-    if (data != NULL && data->ownership == TAVRN_DATA_TRANSIT) {
-        (void)tavrn_link_v2_release_rx_custody(&routed_link, data, now);
-    }
-}
-
-static void queue_link_failure(const tavrn_owned_data_event_t *owned, uint32_t now)
-{
-    aodv_failure_status_t status;
-
-    if (owned == NULL) {
+    if (!queue_guard_begin()) {
         return;
     }
-    status = aodv_core_report_link_failure(&routed_aodv, &owned->next_hop, NULL,
-                                           AODV_LINK_FAILURE_IMMEDIATE_RERR, now);
-    if (status == AODV_FAILURE_BUSY) {
-        pending_failure.failed_next_hop = owned->next_hop;
-        pending_failure.active = 1u;
-    } else if (status != AODV_FAILURE_OK) {
+    routed_full_logger_summary_active = 1u;
+    queue_guard_end();
+#else
+    routed_snapshot_t *state = &routed_snapshot_storage;
+#endif
+
+    snapshot(state);
+    tm_printf((UB *)"routed stats now=%lu submitted=%lu delivered=%lu pending_failed=%lu blacklisted=%lu local_fault=%lu router_fault=%lu scheduler_fault=%lu rx_blocked=%lu router_delivery=%u router_failures=%lu overflow=%lu aodv_backpressure=%lu delivery_q=%u provisional=%u mesh_fault=%u router_fault_reason=%u diag_q=%u diag_dropped=%lu diag_evicted_healthy=%lu diag_dropped_fault=%lu rreq_q=%u rreq_dropped=%lu max_pre_poll_ms=%lu max_scheduler_poll_ms=%lu max_scheduler_event_ms=%lu max_router_tick_ms=%lu max_application_submit_ms=%lu max_dispatch_ms=%lu max_link_service_ms=%lu max_healthy_yield_ms=%lu max_fault_idle_ms=%lu\n",
+              (UW)now, (UW)state->routed.submitted, (UW)state->routed.delivered,
+              (UW)state->routed.pending_failed, (UW)state->routed.blacklisted,
+              (UW)state->routed.local_custody_fault, (UW)state->routed.router_fault,
+              (UW)state->routed.scheduler_fault, (UW)state->routed.rx_blocked,
+              (UINT)tavrn_router_delivery_state(&routed_router),
+              (UW)(state->router.failure_invariant + state->router.failure_set_overflow),
+              (UW)state->router.failure_set_overflow,
+              (UW)state->aodv.action_backpressure,
+              (UINT)state->delivery_queue_count, (UINT)state->delivery_provisional,
+              (UINT)state->mesh_fault_latched, (UINT)state->router_fault_reason,
+              (UINT)state->diagnostic_queue_count, (UW)state->diagnostic_dropped,
+              (UW)state->diagnostic_evicted_healthy,
+              (UW)state->diagnostic_dropped_fault, (UINT)state->rreq_queue_count,
+              (UW)state->rreq_dropped,
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_PRE_POLL_BOUND],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_SCHEDULER_POLL],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_SCHEDULER_EVENT],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_ROUTER_TICK],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_APPLICATION_SUBMIT],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_AODV_ACTION_DISPATCH],
+              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_LINK_SERVICE],
+               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_HEALTHY_YIELD],
+               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_FAULT_IDLE]);
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    tm_printf((UB *)"routed mentorship state=%s active_width=%s gated=%u offers_active=%u selected_present=%u selected=%02x:%02x:%02x:%02x:%02x:%02x selected_snapshot=%u frozen=%u sync_pages=%u pull_attempts=%u restarts=%u pending_offer=%u page_session=%u serving_session=%u serving_mentee=%02x:%02x:%02x:%02x:%02x:%02x serving_nonce=%u\n",
+              mentorship_state_name(state->mentorship.state),
+              identity_width_name(state->mentorship.active_width),
+              (UINT)state->mentorship.ordinary_traffic_gated,
+              (UINT)state->mentorship.active_offer_count,
+              (UINT)state->mentorship.selected_mentor_present,
+              (UINT)state->mentorship.selected_mentor.bytes[0],
+              (UINT)state->mentorship.selected_mentor.bytes[1],
+              (UINT)state->mentorship.selected_mentor.bytes[2],
+              (UINT)state->mentorship.selected_mentor.bytes[3],
+              (UINT)state->mentorship.selected_mentor.bytes[4],
+              (UINT)state->mentorship.selected_mentor.bytes[5],
+              (UINT)state->mentorship.selected_snapshot_id,
+              (UINT)state->mentorship.frozen_snapshot_count,
+              (UINT)state->mentorship.sync_pages_committed,
+              (UINT)state->mentorship.pull_attempts,
+              (UINT)state->mentorship.restart_count,
+              (UINT)state->pending_offer_valid, (UINT)state->page_session_valid,
+              (UINT)state->serving_session_valid,
+              (UINT)state->serving_mentee.bytes[0],
+              (UINT)state->serving_mentee.bytes[1],
+              (UINT)state->serving_mentee.bytes[2],
+              (UINT)state->serving_mentee.bytes[3],
+              (UINT)state->serving_mentee.bytes[4],
+              (UINT)state->serving_mentee.bytes[5],
+              (UINT)state->serving_boot_nonce);
+    tm_printf((UB *)"routed mentorship_counters offer_collected=%lu offer_capacity_full=%lu offer_not_retained=%lu offer_scheduled=%lu offer_suppressed=%lu offer_selected=%lu sid8_unknown_drop=%lu sid8_collision_drop=%lu sid8_reserved_drop=%lu bootstrap_sid8=%lu gated_data=%lu transitions=%lu join_originated=%lu join_received=%lu join_duplicate=%lu join_dedupe_expired=%lu join_dedupe_replaced=%lu join_obligation_overflow=%lu join_relayed=%lu sync_dedupe_capacity_full=%lu\n",
+              (UW)state->mentorship_counters.offer_collected,
+              (UW)state->mentorship_counters.offer_capacity_full,
+              (UW)state->mentorship_counters.offer_not_retained,
+              (UW)state->mentorship_counters.offer_scheduled,
+              (UW)state->mentorship_counters.offer_suppressed,
+              (UW)state->mentorship_counters.offer_selected,
+              (UW)state->mentorship_counters.sid8_unknown_drop,
+              (UW)state->mentorship_counters.sid8_collision_drop,
+              (UW)state->mentorship_counters.sid8_reserved_drop,
+              (UW)state->mentorship_counters.bootstrap_admitted_while_sid8,
+              (UW)state->mentorship_counters.gated_data_aodv,
+              (UW)state->mentorship_counters.transition_cleared,
+              (UW)state->mentorship_counters.join_originated,
+              (UW)state->mentorship_counters.join_received,
+              (UW)state->mentorship_counters.join_duplicate,
+              (UW)state->mentorship_counters.join_dedupe_expired,
+              (UW)state->mentorship_counters.join_dedupe_replaced,
+              (UW)state->mentorship_counters.join_obligation_overflow,
+               (UW)state->mentorship_counters.join_relayed,
+               (UW)state->mentorship_counters.sync_dedupe_capacity_full);
+    tm_printf((UB *)"routed maintenance armed=%u pending=%u next_due_ms=%lu next_topology_sample_ms=%lu current_interval_ms=%lu liveness_floor_ms=%lu liveness_timeout_ms=%lu direct_one_hop_count=%u next_node_sequence=%u due=%lu enqueued=%lu busy=%lu rx_unique=%lu rx_duplicate=%lu rx_rejected=%lu dedupe_capacity=%lu interval_advanced=%lu interval_snapped=%lu local_broadcast_suppressed=%lu topology_reset=%lu topology_unchanged=%lu liveness_sample=%lu liveness_floor_decayed=%lu\n",
+               (UINT)state->maintenance.armed, (UINT)state->maintenance.pending,
+               (UW)state->maintenance.next_hello_due_ms,
+               (UW)state->maintenance.next_topology_sample_ms,
+               (UW)state->maintenance.current_interval_ms,
+               (UW)state->maintenance.liveness_floor_ms,
+               (UW)state->maintenance.liveness_timeout_ms,
+               (UINT)state->maintenance.direct_one_hop_count,
+               (UINT)state->maintenance.next_node_sequence,
+              (UW)state->maintenance_counters.due,
+              (UW)state->maintenance_counters.enqueued,
+              (UW)state->maintenance_counters.busy,
+               (UW)state->maintenance_counters.rx_unique,
+               (UW)state->maintenance_counters.rx_duplicate,
+               (UW)state->maintenance_counters.rx_rejected,
+               (UW)state->maintenance_counters.dedupe_capacity,
+               (UW)state->maintenance_counters.interval_advanced,
+               (UW)state->maintenance_counters.interval_snapped,
+               (UW)state->maintenance_counters.local_broadcast_suppressed,
+               (UW)state->maintenance_counters.topology_reset,
+               (UW)state->maintenance_counters.topology_unchanged,
+               (UW)state->maintenance_counters.liveness_sample,
+               (UW)state->maintenance_counters.liveness_floor_decayed);
+    if (queue_guard_begin()) {
+        routed_full_logger_summary_active = 0u;
+        queue_guard_end();
+    }
+#endif
+}
+
+static void record_router_fault(tavrn_router_fault_reason_t reason)
+{
+    if (reason == TAVRN_ROUTER_FAULT_NONE) {
+        return;
+    }
+    if (pending_router_fault != reason && logged_router_fault != reason) {
+        pending_router_fault = reason;
+        routed_counters.router_fault++;
+    }
+}
+
+static void record_router_status(tavrn_router_event_status_t status)
+{
+    tavrn_router_fault_reason_t reason;
+
+    if (status != TAVRN_ROUTER_EVENT_INVALID) {
+        return;
+    }
+    reason = tavrn_router_fault_reason(&routed_router);
+    if (reason == TAVRN_ROUTER_FAULT_NONE) {
         routed_counters.local_custody_fault++;
+        return;
     }
+    record_router_fault(reason);
 }
 
-static void retry_pending_failure(uint32_t now)
+static void record_router_terminal(const tavrn_router_phase_trace_t *trace)
 {
-    aodv_failure_status_t status;
-
-    if (pending_failure.active == 0u) {
-        return;
-    }
-    status = aodv_core_report_link_failure(&routed_aodv,
-                                           &pending_failure.failed_next_hop, NULL,
-                                           AODV_LINK_FAILURE_IMMEDIATE_RERR, now);
-    if (status == AODV_FAILURE_OK) {
-        pending_failure.active = 0u;
-    } else if (status == AODV_FAILURE_INVALID) {
-        pending_failure.active = 0u;
-        routed_counters.local_custody_fault++;
+    if (trace != NULL &&
+        trace->terminal_fault_present == TAVRN_ROUTER_TRACE_PRESENT) {
+        record_router_fault(trace->terminal_fault);
     }
 }
 
-static void handle_terminal_link_event(const tavrn_link_event_t *event, uint32_t now)
-{
-    const tavrn_link_data_t *data;
-
-    if (event == NULL || event->type == TAVRN_LINK_EVENT_NONE) {
-        return;
-    }
-    if (event->type == TAVRN_LINK_EVENT_CUSTODY_TRANSFERRED) {
-        routed_counters.custody_transferred++;
-        release_transit_rx_custody(&event->detail.transferred_data.data, now);
-        return;
-    }
-    if (event->type < TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED ||
-        event->type > TAVRN_LINK_EVENT_SERVICE_FAULT_TERMINAL) {
-        return;
-    }
-    data = &event->detail.owned_data.data;
-    release_transit_rx_custody(data, now);
-    if (event->type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
-        routed_counters.retry_exhausted++;
-        queue_link_failure(&event->detail.owned_data, now);
-    } else {
-        routed_counters.local_custody_fault++;
-    }
-}
-
-static void resolve_data_candidate(const tavrn_rx_data_candidate_t *candidate,
-                                   uint32_t now)
-{
-    aodv_data_input_t input;
-    aodv_status_t status;
-    tavrn_rx_decision_t decision;
-    tavrn_link_event_t outcome;
-    tavrn_link_resolve_status_t resolved;
-    int final_destination;
-
-    if (candidate == NULL) {
-        return;
-    }
-    memset(&input, 0, sizeof(input));
-    input.transmitter = candidate->transmitter;
-    input.data = candidate->data;
-    final_destination = logical_id_equal(&candidate->data.final_destination,
-                                         &local_peer.logical_id);
-    if (final_destination && !delivery_reserve(&candidate->transmitter)) {
-        decision = TAVRN_RX_BUSY;
-    } else {
-        status = aodv_core_ingest_data(&routed_aodv, &input, now);
-        if (status == AODV_STATUS_OK) {
-            decision = TAVRN_RX_ACCEPTED;
-        } else if (status == AODV_STATUS_BUSY) {
-            decision = TAVRN_RX_BUSY;
-            if (final_destination) {
-                delivery_cancel();
-            }
-        } else {
-            decision = TAVRN_RX_REJECTED;
-            if (final_destination) {
-                delivery_cancel();
-            }
-        }
-    }
-    resolved = tavrn_link_v2_resolve_rx(&routed_link, candidate->token, decision,
-                                        now, &outcome);
-    if (resolved != TAVRN_LINK_RESOLVE_OK && final_destination &&
-        decision == TAVRN_RX_ACCEPTED) {
-        delivery_cancel();
-        routed_counters.local_custody_fault++;
-    }
-    handle_terminal_link_event(&outcome, now);
-}
-
-static void handle_control_event(const tavrn_rx_control_event_t *control,
-                                 uint32_t now)
-{
-    aodv_control_input_t input;
-    aodv_status_t status;
-
-    if (control == NULL) {
-        return;
-    }
-    input.transmitter = control->transmitter;
-    input.control = control->control;
-    status = aodv_core_ingest_control(&routed_aodv, &input, now);
-    if (status == AODV_STATUS_BUSY) {
-        routed_counters.local_custody_fault++;
-    }
-}
-
-static void handle_link_event(const tavrn_link_event_t *event, uint32_t now)
+static void handle_dispatch_event(const tavrn_router_dispatch_event_t *event)
 {
     if (event == NULL) {
         return;
     }
-    if (event->type == TAVRN_LINK_EVENT_RX_DATA_CANDIDATE) {
-        resolve_data_candidate(&event->detail.candidate, now);
-    } else if (event->type == TAVRN_LINK_EVENT_RX_CONTROL) {
-        handle_control_event(&event->detail.control, now);
+    if (event->type == TAVRN_ROUTER_DISPATCH_EVENT_NONE) {
+        return;
+    } else if (event->type == TAVRN_ROUTER_DISPATCH_EVENT_PENDING_DATA_FAILED) {
+        routed_counters.pending_failed++;
+    } else if (event->type == TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR) {
+        routed_counters.blacklisted++;
     } else {
-        handle_terminal_link_event(event, now);
+        routed_counters.local_custody_fault++;
+        mesh_fault_latched = 1u;
+        return;
+    }
+    if (!local_event_push(event)) {
+        routed_counters.local_custody_fault++;
+        mesh_fault_latched = 1u;
     }
 }
 
-static int link_send_is_transient(tavrn_link_send_status_t status)
+static int trace_has_router_terminal(const routed_cycle_trace_t *trace)
 {
-    return status == TAVRN_LINK_SEND_BUSY || status == TAVRN_LINK_SEND_NO_SLOT;
-}
+    const tavrn_router_phase_trace_t *router_trace = NULL;
 
-static void count_control(tavrn_wire_type_t type)
-{
-    if (type == TAVRN_WIRE_E_RREQ) {
-        routed_counters.control_rreq++;
-    } else if (type == TAVRN_WIRE_E_RREP) {
-        routed_counters.control_rrep++;
-    } else if (type == TAVRN_WIRE_E_RERR) {
-        routed_counters.control_rerr++;
-    } else if (type == TAVRN_WIRE_E_RREP_ACK) {
-        routed_counters.control_rrep_ack++;
-    }
-}
-
-static int dispatch_aodv_action(const aodv_action_t *action, uint32_t now)
-{
-    tavrn_link_event_t outcome;
-    tavrn_link_send_status_t status;
-
-    if (action == NULL) {
+    if (trace == NULL) {
         return 0;
     }
-    if (action->type == AODV_ACTION_SEND_RREQ ||
-        action->type == AODV_ACTION_SEND_RREP ||
-        action->type == AODV_ACTION_FORWARD_RREP ||
-        action->type == AODV_ACTION_SEND_RERR ||
-        action->type == AODV_ACTION_SEND_RREP_ACK) {
-        const tavrn_direct_peer_t *next_hop =
-            action->detail.control.controlled_flood != 0u ? NULL :
-            &action->detail.control.next_hop;
-
-        status = tavrn_link_v2_send_control(&routed_link,
-                                            &action->detail.control.control,
-                                            next_hop,
-                                            action->detail.control.controlled_flood,
-                                            now, &outcome);
-        if (status == TAVRN_LINK_SEND_OK) {
-            count_control(action->detail.control.control.type);
-            if (action->detail.control.token != 0u &&
-                aodv_core_mark_action_sent(&routed_aodv,
-                                           action->detail.control.token, now) !=
-                    AODV_STATUS_OK) {
-                routed_counters.local_custody_fault++;
-            }
-            handle_terminal_link_event(&outcome, now);
-            return 1;
-        }
-        if (link_send_is_transient(status)) {
+    if (trace->phase == ROUTED_CYCLE_PHASE_APPLICATION_SUBMIT) {
+        if (trace->detail.application_submit.submit_present !=
+            TAVRN_ROUTER_TRACE_PRESENT) {
             return 0;
         }
-        routed_counters.local_custody_fault++;
-        return 1;
+        router_trace = &trace->detail.application_submit.submit;
+    } else if (trace->phase == ROUTED_CYCLE_PHASE_SCHEDULER_EVENT ||
+               trace->phase == ROUTED_CYCLE_PHASE_ROUTER_TICK ||
+               trace->phase == ROUTED_CYCLE_PHASE_AODV_ACTION_DISPATCH ||
+               trace->phase == ROUTED_CYCLE_PHASE_LINK_SERVICE) {
+        router_trace = &trace->detail.router;
     }
-    if (action->type == AODV_ACTION_FORWARD_DATA) {
-        status = tavrn_link_v2_send_unicast(&routed_link, &action->detail.data.next_hop,
-                                            &action->detail.data.data, now, &outcome);
-        if (status == TAVRN_LINK_SEND_OK) {
-            routed_counters.forwarded++;
-            handle_terminal_link_event(&outcome, now);
-            return 1;
-        }
-        if (link_send_is_transient(status)) {
-            return 0;
-        }
-        release_transit_rx_custody(&action->detail.data.data, now);
-        routed_counters.local_custody_fault++;
-        handle_terminal_link_event(&outcome, now);
-        return 1;
-    }
-    if (action->type == AODV_ACTION_DELIVER_DATA) {
-        if (!delivery_commit(&action->detail.data.data, now)) {
-            mesh_fault_latched = 1u;
-            routed_counters.local_custody_fault++;
-        } else {
-            routed_counters.delivered++;
-        }
-        return 1;
-    }
-    if (action->type == AODV_ACTION_PENDING_DATA_FAILED) {
-        routed_counters.pending_failed++;
-        return 1;
-    }
-    if (action->type == AODV_ACTION_BLACKLIST_NEIGHBOR) {
-        routed_counters.local_custody_fault++;
-        return 1;
-    }
-    return 1;
+    return router_trace != NULL &&
+        router_trace->terminal_fault_present == TAVRN_ROUTER_TRACE_PRESENT;
 }
 
-static void drain_one_aodv_action(uint32_t now)
+static int trace_is_scheduler_fault(const routed_cycle_trace_t *trace)
 {
-    aodv_action_t action;
+    if (trace == NULL || trace->phase != ROUTED_CYCLE_PHASE_SCHEDULER_POLL) {
+        return 0;
+    }
+    return trace->detail.scheduler_poll.event.fault != BLE_MESH_SCHED_FAULT_NONE ||
+           trace->detail.scheduler_poll.event.type ==
+               BLE_MESH_SCHED_EVENT_RADIO_FAULT ||
+           trace->detail.scheduler_poll.event.type ==
+               BLE_MESH_SCHED_EVENT_SERVICE_FAULT;
+}
 
-    if (retained_action_valid != 0u) {
-        if (dispatch_aodv_action(&retained_action, now)) {
-            retained_action_valid = 0u;
+static int trace_needs_diagnostic(const routed_cycle_trace_t *trace)
+{
+    return trace != NULL &&
+        (trace->fault_latched == ROUTED_CYCLE_BOOLEAN_TRUE ||
+         trace->timing.over_budget == ROUTED_CYCLE_BOOLEAN_TRUE ||
+         trace_is_scheduler_fault(trace) || trace_has_router_terminal(trace));
+}
+
+static void routed_cycle_trace_sink(void *context, const routed_cycle_trace_t *trace)
+{
+    uint32_t *maximum;
+
+    (void)context;
+    if (trace == NULL) {
+        return;
+    }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    routed_max_scheduler_gap_ms = routed_full_telemetry_max_scheduler_gap(
+        routed_max_scheduler_gap_ms,
+        trace->timing.elapsed_since_scheduler_return_ms);
+#endif
+    if (trace->fault_latched == ROUTED_CYCLE_BOOLEAN_FALSE &&
+        trace->phase > ROUTED_CYCLE_PHASE_NOT_APPLICABLE &&
+        trace->phase < ROUTED_CYCLE_PHASE_UNKNOWN) {
+        maximum = &routed_phase_max_elapsed_ms[trace->phase];
+        if (trace->timing.phase_elapsed_ms > *maximum) {
+            *maximum = trace->timing.phase_elapsed_ms;
         }
-        return;
     }
-    if (aodv_core_poll_action(&routed_aodv, &action) != AODV_ACTION_POLL_OK) {
-        return;
-    }
-    if (!dispatch_aodv_action(&action, now)) {
-        retained_action = action;
-        retained_action_valid = 1u;
-        routed_counters.retained_action++;
+    if (trace_needs_diagnostic(trace) && queue_guard_begin()) {
+        (void)routed_cycle_diagnostic_enqueue(&routed_diagnostic_queue, trace);
+        queue_guard_end();
     }
 }
 
-static void maybe_submit_initiator(uint32_t now, uint32_t *next_submit_at)
+static void routed_rreq_lifecycle(void *context,
+                                  const aodv_rreq_lifecycle_record_t *record)
 {
-    tron_application_data_t data;
-    aodv_status_t status;
+    (void)context;
+    if (record != NULL && queue_guard_begin()) {
+        (void)routed_cycle_rreq_enqueue(&routed_rreq_queue, record);
+        queue_guard_end();
+    }
+}
 
-    if (next_submit_at == NULL || TRON_BUILD_LINK_INITIATOR == 0 ||
-        TRON_BUILD_LINK_PEER_ADVA_ENABLED == 0 || mesh_fault_latched != 0u ||
-        routed_counters.submitted >= TRON_BUILD_LINK_TRANSACTION_TARGET ||
-        (int32_t)(now - *next_submit_at) < 0) {
-        return;
+static int routed_diagnostic_pop(void)
+{
+    routed_cycle_result_t status;
+
+    if (!queue_guard_begin()) {
+        return 0;
     }
-    memset(&data, 0, sizeof(data));
-    data.final_destination = configured_destination.logical_id;
-    data.app_kind = 0x7fu;
-    data.app_source = 0u;
-    data.app_len = 4u;
-    data.app_bytes[0] = (uint8_t)(routed_counters.submitted & 0xffu);
-    data.app_bytes[1] = (uint8_t)((routed_counters.submitted >> 8) & 0xffu);
-    data.app_bytes[2] = (uint8_t)((routed_counters.submitted >> 16) & 0xffu);
-    data.app_bytes[3] = (uint8_t)((routed_counters.submitted >> 24) & 0xffu);
-    status = aodv_core_submit_application(&routed_aodv, &data, now);
-    if (status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED) {
-        routed_counters.submitted++;
+    status = routed_cycle_diagnostic_dequeue(&routed_diagnostic_queue,
+                                             &routed_logged_diagnostic);
+    if (status == ROUTED_CYCLE_RESULT_OK) {
+        routed_logger_progress_epoch++;
     }
-    *next_submit_at = now + TRON_BUILD_LINK_TX_INTERVAL_MS;
+    queue_guard_end();
+    return status == ROUTED_CYCLE_RESULT_OK;
+}
+
+static int routed_diagnostic_pending(uint32_t *progress_epoch_out)
+{
+    int pending;
+
+    if (progress_epoch_out == NULL || !queue_guard_begin()) {
+        return -1;
+    }
+    pending = routed_diagnostic_queue.count != 0u;
+    *progress_epoch_out = routed_logger_progress_epoch;
+    queue_guard_end();
+    return pending;
+}
+
+static int routed_rreq_pop(void)
+{
+    routed_cycle_result_t status;
+
+    if (!queue_guard_begin()) {
+        return 0;
+    }
+    status = routed_cycle_rreq_dequeue(&routed_rreq_queue, &routed_logged_rreq);
+    queue_guard_end();
+    return status == ROUTED_CYCLE_RESULT_OK;
 }
 
 static void latch_scheduler_fault(uint32_t now)
 {
     ble_mesh_sched_event_t fault;
-    tavrn_link_event_t outcome;
 
     if (mesh_fault_latched != 0u) {
         return;
@@ -603,96 +907,919 @@ static void latch_scheduler_fault(uint32_t now)
     fault.fault = BLE_MESH_SCHED_FAULT_POLL_OVERRUN;
     mesh_fault_latched = 1u;
     routed_counters.scheduler_fault++;
-    (void)tavrn_link_v2_on_scheduler_event(&routed_link, &fault, now, &outcome);
-    handle_link_event(&outcome, now);
+    (void)tavrn_router_handle_scheduler_event_ex(&routed_router, &fault, now,
+                                                  &routed_scheduler_fault_trace);
+    routed_scheduler_fault_trace.completed_at_ms = now_ms();
+    record_router_status(routed_scheduler_fault_trace.detail.scheduler_event.status);
+    record_router_terminal(&routed_scheduler_fault_trace);
 }
 
-static void handle_scheduler_event(const ble_mesh_sched_event_t *event, uint32_t now)
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static int routed_expiry_sweep_enqueue(
+    uint32_t now, const tavrn_maintenance_expiry_sweep_snapshot_t *sweep)
 {
-    tavrn_link_event_t outcome;
+    routed_expiry_sweep_record_t *record;
 
-    if (event == NULL) {
+    if (sweep == NULL || sweep->pass_performed == 0u || !queue_guard_begin()) {
+        return 0;
+    }
+    if (routed_expiry_sweep_queue.count == ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY) {
+        queue_guard_end();
+        return 0;
+    }
+    routed_expiry_sweep_passes++;
+    if (routed_expiry_sweep_passes == 0u) {
+        routed_expiry_sweep_passes = 1u;
+    }
+    if (sweep->trace_count == TAVRN_GTT_CAPACITY) {
+        routed_expiry_complete_passes++;
+        if (routed_expiry_complete_passes == 0u) {
+            routed_expiry_complete_passes = 1u;
+        }
+    }
+    record = &routed_expiry_sweep_queue.records[routed_expiry_sweep_queue.tail];
+    memset(record, 0, sizeof(*record));
+    record->now_ms = now;
+    record->received_evidence_count = sweep->received_evidence_count;
+    record->pass = routed_expiry_sweep_passes;
+    record->complete_passes = routed_expiry_complete_passes;
+    record->max_scheduler_gap_ms = routed_max_scheduler_gap_ms;
+    record->scheduler_fault_count = routed_counters.scheduler_fault;
+    record->router_fault = tavrn_router_fault_reason(&routed_router);
+    record->trace_count = sweep->trace_count;
+    record->cursor = sweep->next_cursor;
+    record->soft_selected_count = sweep->soft_selected_count;
+    record->hard_selected_count = sweep->hard_selected_count;
+    record->demand_deferred_count = sweep->demand_deferred_count;
+    record->unavailable_count = sweep->unavailable_count;
+    record->departed_count = sweep->departed_count;
+    record->purged_count = sweep->purged_count;
+    record->maximum_copied_candidates = sweep->maximum_copied_candidates;
+    record->targeted_control_count = sweep->targeted_control_count;
+    record->rreq_control_count = sweep->rreq_control_count;
+    record->expiry_tc_control_count = sweep->expiry_tc_control_count;
+    record->mesh_fault_latched = mesh_fault_latched;
+    routed_expiry_sweep_queue.tail = (uint8_t)(
+        (routed_expiry_sweep_queue.tail + 1u) % ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY);
+    routed_expiry_sweep_queue.count++;
+    queue_guard_end();
+    return 1;
+}
+
+static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
+{
+    if (record_out == NULL || !queue_guard_begin()) {
+        return 0;
+    }
+    if (routed_expiry_sweep_queue.count == 0u) {
+        queue_guard_end();
+        return 0;
+    }
+    *record_out = routed_expiry_sweep_queue.records[routed_expiry_sweep_queue.head];
+    routed_expiry_sweep_queue.head = (uint8_t)(
+        (routed_expiry_sweep_queue.head + 1u) % ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY);
+    routed_expiry_sweep_queue.count--;
+    queue_guard_end();
+    return 1;
+}
+
+#if TRON_BUILD_TEST_EXPIRY_FULL_TABLE
+static int routed_expiry_table_has_identity(const tavrn_adva_t *identity)
+{
+    uint8_t index;
+
+    if (identity == NULL) {
+        return 0;
+    }
+    for (index = 0u; index < TAVRN_GTT_CAPACITY; index++) {
+        const tavrn_gtt_entry_t *entry = &routed_gtt_storage.entries[index];
+
+        if (entry->occupied != 0u &&
+            memcmp(entry->identity.bytes, identity->bytes, TAVRN_ADVA_LEN) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static tavrn_adva_t routed_expiry_table_synthetic_identity(uint8_t ordinal)
+{
+    tavrn_adva_t identity = {
+        .bytes = { ordinal, 0x5eu, 0x54u, 0x46u, 0x54u,
+                   (uint8_t)(0xc0u | (ordinal & 0x3fu)) },
+    };
+
+    return identity;
+}
+
+/* The hook seeds once after all FULL owner state is initialized.  It never
+ * refreshes entries: each synthetic member must naturally progress through
+ * soft and hard expiry on every later due sweep. */
+static int routed_expiry_full_table_seed(uint32_t now)
+{
+    uint8_t seeded = 0u;
+    uint8_t ordinal = 1u;
+
+    if (!routed_expiry_table_has_identity(&routed_gtt.config.local_identity)) {
+        return 0;
+    }
+    while (seeded < TAVRN_GTT_CAPACITY - 1u) {
+        tavrn_gtt_evidence_t evidence;
+        tavrn_gtt_expiry_observe_status_t status;
+        tavrn_esc_context_match_t context;
+        tavrn_logical_id_t resolved;
+        tavrn_adva_t identity;
+
+        if (ordinal == 0u) {
+            return 0;
+        }
+        identity = routed_expiry_table_synthetic_identity(ordinal);
+        ordinal++;
+        /* Reject every full AdvA collision first, then use the real ESC
+         * mapping to reject local, existing, or already-seeded SID8 aliases. */
+        if (routed_expiry_table_has_identity(&identity) ||
+            tavrn_esc_resolve_sid8(&routed_gtt, identity.bytes[0], now,
+                                    &context) != TAVRN_ESC_CONTEXT_UNKNOWN) {
+            continue;
+        }
+        memset(&evidence, 0, sizeof(evidence));
+        evidence.identity = identity;
+        evidence.serial = identity.bytes[0];
+        evidence.serial_present = 1u;
+        evidence.hop_count = 2u;
+        evidence.kind = TAVRN_GTT_EVIDENCE_LIVENESS;
+        status = tavrn_gtt_observe_with_provenance(
+            &routed_gtt, &evidence, TAVRN_GTT_PROVENANCE_IMPORTED_HOP_ONE, now, NULL);
+        if (status != TAVRN_GTT_EXPIRY_OBSERVE_ADDED ||
+            tavrn_full_resolve_unique_sid8(&routed_full, &identity, &resolved) !=
+                TAVRN_ESC_CONTEXT_UNIQUE ||
+            resolved.width != TAVRN_IDENTITY_SID8 ||
+            resolved.value != identity.bytes[0] ||
+            tavrn_gtt_application_request(
+                &routed_gtt, TAVRN_PHASE5_EXPIRY_LANE_MESH_OWNER, &identity, now,
+                NULL) != TAVRN_GTT_APPLICATION_CHANGED) {
+            return 0;
+        }
+        seeded++;
+    }
+    return seeded == TAVRN_GTT_CAPACITY - 1u;
+}
+#endif
+
+static tavrn_maintenance_status_t routed_observe_local_broadcast(void)
+{
+    tavrn_router_local_broadcast_snapshot_t broadcast;
+    tavrn_maintenance_status_t status;
+
+    if (tavrn_router_local_broadcast_snapshot(&routed_router, &broadcast) !=
+        TAVRN_ROUTER_LOCAL_BROADCAST_OK) {
+        return TAVRN_MAINTENANCE_INVALID;
+    }
+    if (broadcast.generation == routed_local_broadcast_generation_seen) {
+        return TAVRN_MAINTENANCE_OK;
+    }
+    routed_local_broadcast_generation_seen = broadcast.generation;
+    status = tavrn_maintenance_observe_local_broadcast(
+        &routed_maintenance, broadcast.accepted_at_ms);
+    return status == TAVRN_MAINTENANCE_GATED ? TAVRN_MAINTENANCE_OK : status;
+}
+
+static void routed_full_snapshot_request(void)
+{
+    if (!queue_guard_begin()) {
         return;
     }
-    if (event->type == BLE_MESH_SCHED_EVENT_RADIO_FAULT ||
-        event->type == BLE_MESH_SCHED_EVENT_SERVICE_FAULT) {
+    if (routed_gtt_snapshot_request_pending != 0u ||
+        routed_gtt_snapshot_ready != 0u) {
+        routed_gtt_snapshot_request_dropped++;
+    } else {
+        routed_gtt_snapshot_request_pending = 1u;
+    }
+    queue_guard_end();
+}
+
+static void routed_full_snapshot_service(void)
+{
+    routed_full_telemetry_status_t status;
+    uint8_t requested = 0u;
+
+    if (queue_guard_begin()) {
+        requested = routed_gtt_snapshot_request_pending != 0u &&
+                    routed_full_logger_summary_active == 0u;
+        queue_guard_end();
+    }
+    if (requested == 0u) {
+        return;
+    }
+    if (queue_guard_begin()) {
+        if (routed_full_logger_summary_active != 0u) {
+            queue_guard_end();
+            return;
+        }
+        status = routed_full_telemetry_snapshot_gtt(
+            &routed_gtt, now_ms(), &routed_full_logger_storage.gtt_snapshot);
+        routed_gtt_snapshot_request_pending = 0u;
+        if (status == ROUTED_FULL_TELEMETRY_OK) {
+            routed_gtt_snapshot_ready = 1u;
+        } else {
+            routed_gtt_snapshot_failed++;
+        }
+        queue_guard_end();
+    }
+}
+
+static int routed_full_snapshot_is_ready(void)
+{
+    int ready = 0;
+
+    if (queue_guard_begin()) {
+        ready = routed_gtt_snapshot_ready != 0u;
+        queue_guard_end();
+    }
+    return ready;
+}
+
+static void routed_full_snapshot_clear_ready(void)
+{
+    if (queue_guard_begin()) {
+        routed_gtt_snapshot_ready = 0u;
+        queue_guard_end();
+    }
+}
+#endif
+
+static uint32_t routed_cycle_now_ms(void *context)
+{
+    (void)context;
+    return now_ms();
+}
+
+static routed_cycle_start_rx_result_t routed_cycle_start_rx(void *context)
+{
+    routed_cycle_start_rx_result_t result;
+
+    (void)context;
+    ble_mesh_scheduler_start_rx(&routed_scheduler, now_ms());
+    result.returned_at_ms = now_ms();
+    result.status = ROUTED_CYCLE_START_RX_OK;
+    return result;
+}
+
+static routed_cycle_scheduler_poll_result_t routed_cycle_scheduler_poll(
+    void *context, uint32_t poll_started_at_ms)
+{
+    routed_cycle_scheduler_poll_result_t result;
+
+    (void)context;
+    memset(&result, 0, sizeof(result));
+    (void)ble_mesh_scheduler_poll(&routed_scheduler, poll_started_at_ms,
+                                  &result.event);
+    result.returned_at_ms = now_ms();
+    result.status = ROUTED_CYCLE_SCHEDULER_POLL_OK;
+    return result;
+}
+
+static void routed_cycle_capture_scheduler_input(
+    tavrn_router_phase_trace_t *trace, const ble_mesh_sched_event_t *event)
+{
+    tavrn_router_scheduler_trace_t *scheduler_trace;
+
+    if (trace == NULL || event == NULL) {
+        return;
+    }
+    scheduler_trace = &trace->detail.scheduler_event;
+    scheduler_trace->input_event_type = event->type;
+    scheduler_trace->input_fault = event->fault;
+    scheduler_trace->input_channel = event->channel;
+    scheduler_trace->input_rssi_magnitude_db = event->rssi_magnitude_db;
+    memcpy(scheduler_trace->input_advertiser.bytes, event->adv_addr,
+           sizeof(scheduler_trace->input_advertiser.bytes));
+    scheduler_trace->input_adv_len = event->adv_len;
+    scheduler_trace->input_present = TAVRN_ROUTER_TRACE_PRESENT;
+}
+
+static void routed_cycle_mark_predecode_gate(tavrn_router_phase_trace_t *trace,
+                                             tavrn_router_event_status_t status)
+{
+    tavrn_router_scheduler_trace_t *scheduler_trace;
+
+    if (trace == NULL) {
+        return;
+    }
+    scheduler_trace = &trace->detail.scheduler_event;
+    scheduler_trace->status = status;
+    scheduler_trace->wire_decode_present = TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    scheduler_trace->decoded_frame_present = TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    scheduler_trace->link_step_present = TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    scheduler_trace->link_event_present = TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    scheduler_trace->rx_control_present = TAVRN_ROUTER_TRACE_NOT_PRESENT;
+}
+
+static tavrn_router_phase_trace_t routed_cycle_router_scheduler_event(
+    void *context, const ble_mesh_sched_event_t *event, uint32_t now)
+{
+    tavrn_router_phase_trace_t trace;
+
+    (void)context;
+    memset(&trace, 0, sizeof(trace));
+    trace.phase = TAVRN_ROUTER_TRACE_SCHEDULER_EVENT;
+    routed_cycle_capture_scheduler_input(&trace, event);
+    if (TRON_BUILD_TEST_HOOKS != 0 && TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 &&
+        event != NULL && event->type == BLE_MESH_SCHED_EVENT_RX_ADV &&
+        adva_equal(event->adv_addr, configured_rx_block_adva)) {
+        routed_counters.rx_blocked++;
+        trace.completed_at_ms = now_ms();
+        routed_cycle_mark_predecode_gate(&trace, TAVRN_ROUTER_EVENT_IGNORED);
+        return trace;
+    }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        tavrn_mentorship_event_trace_t mentorship_trace;
+        tavrn_mentorship_status_t mentorship_status;
+
+        memset(&mentorship_trace, 0, sizeof(mentorship_trace));
+        mentorship_status = tavrn_mentorship_handle_scheduler_event(
+            &routed_mentorship, event, now, &mentorship_trace);
+        if (mentorship_status == TAVRN_MENTORSHIP_GATED) {
+            routed_cycle_mark_predecode_gate(&trace, TAVRN_ROUTER_EVENT_REJOINING);
+        } else {
+            trace.detail.scheduler_event.status = mentorship_trace.router_result;
+            trace.detail.scheduler_event.wire_decode_result =
+                mentorship_trace.wire_decode_result;
+            trace.detail.scheduler_event.decoded_frame_type = mentorship_trace.wire_type;
+            trace.detail.scheduler_event.link_event_type = mentorship_trace.link_event_type;
+            if (mentorship_trace.reached_wire_link_router != 0u) {
+                trace.detail.scheduler_event.wire_decode_present =
+                    TAVRN_ROUTER_TRACE_PRESENT;
+                trace.detail.scheduler_event.link_step_present =
+                    TAVRN_ROUTER_TRACE_PRESENT;
+                trace.detail.scheduler_event.link_event_present =
+                    TAVRN_ROUTER_TRACE_PRESENT;
+            }
+            if (mentorship_trace.rx_control_present != 0u) {
+                trace.detail.scheduler_event.rx_control = mentorship_trace.rx_control;
+                trace.detail.scheduler_event.rx_control_present =
+                    TAVRN_ROUTER_TRACE_PRESENT;
+            }
+            if (mentorship_trace.rx_control_present != 0u &&
+                mentorship_status != TAVRN_MENTORSHIP_INVALID &&
+                tavrn_maintenance_handle_rx_control(
+                        &routed_maintenance, &mentorship_trace.rx_control,
+                        now) == TAVRN_MAINTENANCE_INVALID) {
+                trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_INVALID;
+            }
+        }
+        if (mentorship_status == TAVRN_MENTORSHIP_INVALID) {
+            trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_INVALID;
+        }
+    }
+#else
+    (void)tavrn_router_handle_scheduler_event_ex(&routed_router, event, now, &trace);
+#endif
+    trace.completed_at_ms = now_ms();
+    record_router_status(trace.detail.scheduler_event.status);
+    record_router_terminal(&trace);
+    if (event != NULL && (event->type == BLE_MESH_SCHED_EVENT_RADIO_FAULT ||
+                          event->type == BLE_MESH_SCHED_EVENT_SERVICE_FAULT)) {
         mesh_fault_latched = 1u;
         routed_counters.scheduler_fault++;
     }
-    if (TRON_BUILD_TEST_HOOKS != 0 && TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 &&
-        event->type == BLE_MESH_SCHED_EVENT_RX_ADV &&
-        adva_equal(event->adv_addr, configured_rx_block_adva)) {
-        routed_counters.rx_blocked++;
-        return;
+    return trace;
+}
+
+static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
+                                                               uint32_t now)
+{
+    aodv_status_t status;
+
+    (void)context;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        tavrn_router_phase_trace_t *trace = &routed_binding_result_storage.router_trace;
+        tavrn_full_maintenance_binding_status_t binding_status;
+        tavrn_full_application_mailbox_status_t mailbox_status;
+        uint8_t application_present = 0u;
+        uint8_t scheduler_return_requested = 0u;
+
+        memset(&routed_binding_input_storage, 0, sizeof(routed_binding_input_storage));
+        memset(&routed_binding_command_storage, 0, sizeof(routed_binding_command_storage));
+        if (!queue_guard_begin()) {
+            status = AODV_STATUS_INVALID;
+            memset(trace, 0, sizeof(*trace));
+            trace->phase = TAVRN_ROUTER_TRACE_TICK;
+            trace->detail.tick.status = AODV_STATUS_INVALID;
+        } else if ((mailbox_status = tavrn_full_application_mailbox_owner_take(
+                        &routed_application_mailbox, &routed_binding_command_storage)) ==
+                       TAVRN_FULL_APPLICATION_MAILBOX_PROCESSING ||
+                   mailbox_status == TAVRN_FULL_APPLICATION_MAILBOX_EMPTY) {
+            queue_guard_end();
+            if (mailbox_status == TAVRN_FULL_APPLICATION_MAILBOX_PROCESSING) {
+                application_present = 1u;
+                routed_binding_command_storage.now_ms = now;
+                routed_binding_command_storage.query_time_ms = now;
+            }
+            routed_binding_input_storage.router = &routed_router;
+            routed_binding_input_storage.mentorship = &routed_mentorship;
+            routed_binding_input_storage.maintenance = &routed_maintenance;
+            routed_binding_input_storage.application_command = routed_binding_command_storage;
+            routed_binding_input_storage.application_present = application_present;
+            binding_status = tavrn_full_maintenance_binding_tick(
+                routed_binding_input_storage, now, &routed_binding_result_storage);
+            if (binding_status == TAVRN_FULL_MAINTENANCE_BINDING_OK) {
+                status = routed_binding_result_storage.router_status;
+            } else {
+                status = AODV_STATUS_INVALID;
+            }
+            if (routed_binding_result_storage.post_tick.sweep_status ==
+                    TAVRN_MAINTENANCE_EXPIRY_SWEEP_OK &&
+                routed_binding_result_storage.post_tick.sweep.pass_performed != 0u) {
+                if (!routed_expiry_sweep_enqueue(
+                        now, &routed_binding_result_storage.post_tick.sweep)) {
+                    status = AODV_STATUS_INVALID;
+                    trace->detail.tick.status = AODV_STATUS_INVALID;
+                } else {
+                    scheduler_return_requested = 1u;
+                }
+            }
+            if (application_present != 0u &&
+                routed_binding_result_storage.application_result.status <=
+                    TAVRN_GTT_APPLICATION_UNAVAILABLE) {
+                if (!queue_guard_begin()) {
+                    status = AODV_STATUS_INVALID;
+                    trace->detail.tick.status = AODV_STATUS_INVALID;
+                } else {
+                    mailbox_status = tavrn_full_application_mailbox_owner_publish(
+                        &routed_application_mailbox,
+                        routed_binding_result_storage.application_result);
+                    queue_guard_end();
+                    if (mailbox_status != TAVRN_FULL_APPLICATION_MAILBOX_READY) {
+                        status = AODV_STATUS_INVALID;
+                        trace->detail.tick.status = AODV_STATUS_INVALID;
+                    }
+                }
+            } else if (application_present != 0u) {
+                status = AODV_STATUS_INVALID;
+                trace->phase = TAVRN_ROUTER_TRACE_TICK;
+                trace->detail.tick.status = AODV_STATUS_INVALID;
+            }
+            if (routed_binding_result_storage.status != TAVRN_FULL_MAINTENANCE_BINDING_OK) {
+                status = AODV_STATUS_INVALID;
+                trace->detail.tick.status = AODV_STATUS_INVALID;
+            }
+        } else {
+            queue_guard_end();
+            status = AODV_STATUS_INVALID;
+            memset(trace, 0, sizeof(*trace));
+            trace->phase = TAVRN_ROUTER_TRACE_TICK;
+            trace->detail.tick.status = AODV_STATUS_INVALID;
+        }
+        if (status == AODV_STATUS_INVALID) {
+            record_router_status(TAVRN_ROUTER_EVENT_INVALID);
+        } else if (scheduler_return_requested != 0u) {
+            routed_router_tick_scheduler_return_requested = 1u;
+        }
+        record_router_terminal(trace);
+        return *trace;
     }
-    (void)tavrn_link_v2_on_scheduler_event(&routed_link, event, now, &outcome);
-    handle_link_event(&outcome, now);
+#else
+    {
+        tavrn_router_phase_trace_t trace;
+
+        memset(&trace, 0, sizeof(trace));
+    status = tavrn_router_tick_ex(&routed_router, now, &trace);
+        if (status == AODV_STATUS_INVALID) {
+            record_router_status(TAVRN_ROUTER_EVENT_INVALID);
+        }
+        record_router_terminal(&trace);
+        return trace;
+    }
+#endif
+}
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static uint8_t routed_cycle_router_tick_take_scheduler_return(void *context)
+{
+    uint8_t requested;
+
+    (void)context;
+    requested = routed_router_tick_scheduler_return_requested;
+    routed_router_tick_scheduler_return_requested = 0u;
+    return requested;
+}
+#endif
+
+static routed_cycle_application_request_t routed_cycle_application_prepare(
+    void *context, uint32_t now)
+{
+    routed_cycle_application_request_t request;
+
+    (void)context;
+    memset(&request, 0, sizeof(request));
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    routed_full_snapshot_service();
+#endif
+    request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+    if (TRON_BUILD_LINK_INITIATOR == 0 ||
+        TRON_BUILD_LINK_PEER_ADVA_ENABLED == 0 || mesh_fault_latched != 0u ||
+        tavrn_router_fault_reason(&routed_router) != TAVRN_ROUTER_FAULT_NONE ||
+        routed_counters.submitted >= TRON_BUILD_LINK_TRANSACTION_TARGET ||
+        (int32_t)(now - routed_next_submit_at) < 0) {
+        request.prepared_at_ms = now_ms();
+        return request;
+    }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        tavrn_mentorship_state_snapshot_t mentorship_state;
+
+        if (tavrn_mentorship_state_snapshot(&routed_mentorship, &mentorship_state) !=
+            TAVRN_MENTORSHIP_OK) {
+            request.prepared_at_ms = now_ms();
+            return request;
+        }
+        request.data.final_destination = configured_destination.logical_id;
+        if (mentorship_state.active_width == TAVRN_IDENTITY_SID8) {
+            request.data.final_destination.width = TAVRN_IDENTITY_SID8;
+            request.data.final_destination.value = configured_destination.adva.bytes[0];
+        }
+    }
+#else
+    request.data.final_destination = configured_destination.logical_id;
+#endif
+    request.data.app_kind = 0x7fu;
+    request.data.app_source = 0u;
+    request.data.app_len = 4u;
+    request.data.app_bytes[0] = (uint8_t)(routed_counters.submitted & 0xffu);
+    request.data.app_bytes[1] =
+        (uint8_t)((routed_counters.submitted >> 8) & 0xffu);
+    request.data.app_bytes[2] =
+        (uint8_t)((routed_counters.submitted >> 16) & 0xffu);
+    request.data.app_bytes[3] =
+        (uint8_t)((routed_counters.submitted >> 24) & 0xffu);
+    request.status = ROUTED_CYCLE_APPLICATION_READY;
+    request.prepared_at_ms = now_ms();
+    return request;
+}
+
+static tavrn_router_phase_trace_t routed_cycle_router_submit(
+    void *context, const tron_application_data_t *data, uint32_t now)
+{
+    tavrn_router_phase_trace_t trace;
+    aodv_status_t status;
+
+    (void)context;
+    memset(&trace, 0, sizeof(trace));
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    status = tavrn_mentorship_submit_application(&routed_mentorship, data, now);
+    trace.phase = TAVRN_ROUTER_TRACE_APPLICATION_SUBMIT;
+    trace.detail.submit.status = status;
+#else
+    status = tavrn_router_submit_application_ex(&routed_router, data, now, &trace);
+#endif
+    trace.completed_at_ms = now_ms();
+    if (status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED) {
+        routed_counters.submitted++;
+    }
+    routed_next_submit_at = trace.completed_at_ms + TRON_BUILD_LINK_TX_INTERVAL_MS;
+    record_router_terminal(&trace);
+    return trace;
+}
+
+static tavrn_router_phase_trace_t routed_cycle_router_dispatch(void *context,
+                                                                uint32_t now)
+{
+    tavrn_router_phase_trace_t trace;
+    tavrn_router_event_status_t status;
+
+    (void)context;
+    memset(&trace, 0, sizeof(trace));
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    if (tavrn_mentorship_dispatch(&routed_mentorship, now, &trace) ==
+        TAVRN_MENTORSHIP_INVALID) {
+        status = TAVRN_ROUTER_EVENT_INVALID;
+    } else {
+        status = trace.detail.dispatch.status;
+    }
+#else
+    status = tavrn_router_dispatch_trace_ex(&routed_router, now, &trace);
+#endif
+    trace.completed_at_ms = now_ms();
+    record_router_status(status);
+    record_router_terminal(&trace);
+    handle_dispatch_event(&trace.detail.dispatch.dispatch_event);
+    return trace;
+}
+
+static tavrn_router_phase_trace_t routed_cycle_router_link_service(void *context,
+                                                                     uint32_t now)
+{
+    tavrn_router_phase_trace_t trace;
+    tavrn_router_event_status_t status;
+
+    (void)context;
+    memset(&trace, 0, sizeof(trace));
+    status = tavrn_router_service_link_ex(&routed_router, now, &trace);
+    trace.completed_at_ms = now_ms();
+    record_router_status(status);
+    record_router_terminal(&trace);
+    return trace;
+}
+
+static ER routed_wait_for_release(void)
+{
+    UINT pattern;
+    uint32_t progress_epoch;
+    int diagnostic_pending;
+
+    diagnostic_pending = routed_diagnostic_pending(&progress_epoch);
+    if (diagnostic_pending < 0) {
+        return E_CTX;
+    }
+    for (;;) {
+        ER wait_status = tk_wai_flg(routed_release_flag_id, ROUTED_RELEASE_BIT,
+                                    TWF_ORW | TWF_BITCLR, &pattern, TMO_FEVR);
+
+        if (wait_status != E_OK) {
+            return wait_status;
+        }
+        if (diagnostic_pending == 0 ||
+            routed_logger_progress_epoch != progress_epoch) {
+            return E_OK;
+        }
+        if ((uint32_t)(now_ms() - routed_cycle_state.last_scheduler_return_ms) >=
+            tron_timer_config.scheduler_poll_max_ms) {
+            return E_TMOUT;
+        }
+    }
+}
+
+static void routed_release_cyclic(void *exinf)
+{
+    (void)exinf;
+    (void)tk_set_flg(routed_release_flag_id, ROUTED_RELEASE_BIT);
+}
+
+static routed_cycle_yield_result_t routed_cycle_healthy_yield(
+    void *context, uint32_t requested_slack_ms, uint32_t now)
+{
+    routed_cycle_yield_result_t result;
+
+    (void)context;
+    (void)now;
+    (void)requested_slack_ms;
+    result.status = routed_wait_for_release() == E_OK ? ROUTED_CYCLE_YIELD_OK :
+                                                        ROUTED_CYCLE_YIELD_INVALID;
+    result.completed_at_ms = now_ms();
+    return result;
+}
+
+static routed_cycle_fault_idle_result_t routed_cycle_fault_idle(void *context,
+                                                                  uint32_t now)
+{
+    routed_cycle_fault_idle_result_t result;
+
+    (void)context;
+    if (routed_cycle_state.first_over_budget_phase !=
+        ROUTED_CYCLE_PHASE_NOT_APPLICABLE) {
+        latch_scheduler_fault(now);
+    }
+    result.status = routed_wait_for_release() == E_OK ?
+        ROUTED_CYCLE_FAULT_IDLE_OK : ROUTED_CYCLE_FAULT_IDLE_INVALID;
+    result.completed_at_ms = now_ms();
+    return result;
 }
 
 LOCAL void routed_mesh_task(INT stacd, void *exinf)
 {
-    routed_poll_gate_t poll_gate;
-    ble_mesh_sched_event_t scheduler_event;
-    tavrn_link_event_t link_event;
-    uint32_t next_submit_at = now_ms();
-    uint32_t start_rx_return;
-
     (void)stacd;
     (void)exinf;
-    memset(&poll_gate, 0, sizeof(poll_gate));
-    ble_mesh_scheduler_start_rx(&routed_scheduler, now_ms());
-    start_rx_return = now_ms();
-    poll_gate.last_poll_return_ms = start_rx_return;
-    poll_gate.have_poll_return = 1u;
-    while (1) {
-        uint32_t poll_start;
-        uint32_t poll_return;
-        uint32_t yield_delay;
+    (void)routed_cycle_run_task(&routed_cycle_state, &routed_cycle_operations,
+                                0u, &routed_cycle_result_storage);
+}
 
-        if (mesh_fault_latched == 0u) {
-            poll_start = now_ms();
-            if (poll_gate.fault_latched != 0u ||
-                (uint32_t)(poll_start - poll_gate.last_poll_return_ms) >
-                    tron_timer_config.scheduler_poll_max_ms) {
-                poll_gate.fault_latched = 1u;
-                latch_scheduler_fault(poll_start);
-            } else {
-                memset(&scheduler_event, 0, sizeof(scheduler_event));
-                (void)ble_mesh_scheduler_poll(&routed_scheduler, poll_start,
-                                              &scheduler_event);
-                poll_return = now_ms();
-                poll_gate.last_poll_return_ms = poll_return;
-                poll_gate.have_poll_return = 1u;
-                if (scheduler_event.type != BLE_MESH_SCHED_EVENT_NONE) {
-                    handle_scheduler_event(&scheduler_event, poll_return);
-                }
-            }
-        }
-
-        (void)tavrn_link_v2_tick(&routed_link, now_ms(), &link_event);
-        handle_link_event(&link_event, now_ms());
-        retry_pending_failure(now_ms());
-        (void)aodv_core_tick(&routed_aodv, now_ms());
-        if (mesh_fault_latched == 0u) {
-            maybe_submit_initiator(now_ms(), &next_submit_at);
-            drain_one_aodv_action(now_ms());
-            (void)tavrn_link_v2_dispatch(&routed_link, now_ms(), &link_event);
-            handle_link_event(&link_event, now_ms());
-        }
-
-        yield_delay = mesh_fault_latched == 0u ?
-            mesh_remaining_yield_ms(&poll_gate, now_ms()) :
-            (tron_timer_config.scheduler_poll_max_ms > 1u ?
-             tron_timer_config.scheduler_poll_max_ms - 1u : 0u);
-        if (yield_delay != 0u) {
-            (void)tk_dly_tsk(yield_delay);
-        }
+static void log_cycle_diagnostic(const routed_cycle_trace_t *trace)
+{
+    if (trace == NULL) {
+        return;
+    }
+    tm_printf((UB *)"routed cycle_diagnostic phase=%u cycle_started_ms=%lu phase_started_ms=%lu phase_completed_ms=%lu phase_elapsed_ms=%lu scheduler_return_ms=%lu scheduler_gap_ms=%lu poll_bound_ms=%lu over_budget=%u over_budget_phase=%u over_budget_source=%u fault_latched=%u\n",
+              (UINT)trace->phase, (UW)trace->timing.cycle_started_ms,
+              (UW)trace->timing.phase_started_ms,
+              (UW)trace->timing.phase_completed_ms,
+              (UW)trace->timing.phase_elapsed_ms,
+              (UW)trace->timing.scheduler_return_ms,
+              (UW)trace->timing.elapsed_since_scheduler_return_ms,
+              (UW)trace->timing.poll_bound_ms, (UINT)trace->timing.over_budget,
+              (UINT)trace->timing.over_budget_phase,
+              (UINT)trace->timing.over_budget_source,
+              (UINT)trace->fault_latched);
+    switch (trace->phase) {
+    case ROUTED_CYCLE_PHASE_PRE_POLL_BOUND:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=pre_poll status=%u\n",
+                  (UINT)trace->detail.pre_poll.status);
+        break;
+    case ROUTED_CYCLE_PHASE_SCHEDULER_POLL:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=scheduler_poll status=%u event_type=%u event_fault=%u\n",
+                  (UINT)trace->detail.scheduler_poll.status,
+                  (UINT)trace->detail.scheduler_poll.event.type,
+                  (UINT)trace->detail.scheduler_poll.event.fault);
+        break;
+    case ROUTED_CYCLE_PHASE_SCHEDULER_EVENT:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=scheduler_event status=%u input_present=%u input_type=%u input_fault=%u input_channel=%u input_rssi=%u input_advertiser=%02x:%02x:%02x:%02x:%02x:%02x input_adv_len=%u wire_decode_present=%u wire_decode_result=%u decoded_frame_present=%u decoded_frame_type=%u link_step_present=%u link_step_status=%u link_event_present=%u link_event_type=%u rx_control_present=%u control_transmitter=%02x:%02x:%02x:%02x:%02x:%02x control_rssi=%u control_type=%u control_pdu_len=%u control_pdu=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x terminal_present=%u terminal_fault=%u\n",
+                   (UINT)trace->detail.router.detail.scheduler_event.status,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_event_type,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_fault,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_channel,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_rssi_magnitude_db,
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[0],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[1],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[2],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[3],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[4],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_advertiser.bytes[5],
+                   (UINT)trace->detail.router.detail.scheduler_event.input_adv_len,
+                   (UINT)trace->detail.router.detail.scheduler_event.wire_decode_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.wire_decode_result,
+                   (UINT)trace->detail.router.detail.scheduler_event.decoded_frame_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.decoded_frame_type,
+                   (UINT)trace->detail.router.detail.scheduler_event.link_step_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.link_step_status,
+                   (UINT)trace->detail.router.detail.scheduler_event.link_event_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.link_event_type,
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control_present,
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[0],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[1],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[2],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[3],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[4],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.transmitter.adva.bytes[5],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.rssi_magnitude_db,
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.type,
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu_len,
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[0],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[1],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[2],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[3],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[4],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[5],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[6],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[7],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[8],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[9],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[10],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[11],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[12],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[13],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[14],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[15],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[16],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[17],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[18],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[19],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[20],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[21],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[22],
+                   (UINT)trace->detail.router.detail.scheduler_event.rx_control.control.pdu[23],
+                   (UINT)trace->detail.router.terminal_fault_present,
+                   (UINT)trace->detail.router.terminal_fault);
+        break;
+    case ROUTED_CYCLE_PHASE_ROUTER_TICK:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=router_tick status=%u terminal_present=%u terminal_fault=%u\n",
+                  (UINT)trace->detail.router.detail.tick.status,
+                  (UINT)trace->detail.router.terminal_fault_present,
+                  (UINT)trace->detail.router.terminal_fault);
+        break;
+    case ROUTED_CYCLE_PHASE_APPLICATION_SUBMIT:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=application_submit request_status=%u prepared_at_ms=%lu submit_present=%u submit_status=%u terminal_present=%u terminal_fault=%u\n",
+                  (UINT)trace->detail.application_submit.request.status,
+                  (UW)trace->detail.application_submit.request.prepared_at_ms,
+                  (UINT)trace->detail.application_submit.submit_present,
+                  (UINT)trace->detail.application_submit.submit.detail.submit.status,
+                  (UINT)trace->detail.application_submit.submit.terminal_fault_present,
+                  (UINT)trace->detail.application_submit.submit.terminal_fault);
+        break;
+    case ROUTED_CYCLE_PHASE_AODV_ACTION_DISPATCH:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=dispatch status=%u action_present=%u action_type=%u rreq_enqueue_present=%u rreq_enqueue_outcome=%u link_send_present=%u link_send_status=%u link_event_present=%u link_event_type=%u terminal_present=%u terminal_fault=%u\n",
+                  (UINT)trace->detail.router.detail.dispatch.status,
+                  (UINT)trace->detail.router.detail.dispatch.action_present,
+                  (UINT)trace->detail.router.detail.dispatch.action.type,
+                  (UINT)trace->detail.router.detail.dispatch.rreq_enqueue_present,
+                  (UINT)trace->detail.router.detail.dispatch.rreq_enqueue.outcome,
+                  (UINT)trace->detail.router.detail.dispatch.link_send_present,
+                  (UINT)trace->detail.router.detail.dispatch.link_send_status,
+                  (UINT)trace->detail.router.detail.dispatch.link_event_present,
+                  (UINT)trace->detail.router.detail.dispatch.link_event.type,
+                  (UINT)trace->detail.router.terminal_fault_present,
+                  (UINT)trace->detail.router.terminal_fault);
+        break;
+    case ROUTED_CYCLE_PHASE_LINK_SERVICE:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=link_service status=%u link_step_status=%u link_event_present=%u link_event_type=%u terminal_present=%u terminal_fault=%u\n",
+                  (UINT)trace->detail.router.detail.link_service.status,
+                  (UINT)trace->detail.router.detail.link_service.link_step_status,
+                  (UINT)trace->detail.router.detail.link_service.link_event_present,
+                  (UINT)trace->detail.router.detail.link_service.link_event.type,
+                  (UINT)trace->detail.router.terminal_fault_present,
+                  (UINT)trace->detail.router.terminal_fault);
+        break;
+    case ROUTED_CYCLE_PHASE_HEALTHY_YIELD:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=healthy_yield requested_slack_ms=%lu status=%u completed_at_ms=%lu\n",
+                  (UW)trace->detail.healthy_yield.requested_slack_ms,
+                  (UINT)trace->detail.healthy_yield.result.status,
+                  (UW)trace->detail.healthy_yield.result.completed_at_ms);
+        break;
+    case ROUTED_CYCLE_PHASE_FAULT_IDLE:
+        tm_printf((UB *)"routed cycle_diagnostic_detail kind=fault_idle status=%u completed_at_ms=%lu\n",
+                  (UINT)trace->detail.fault_idle.status,
+                  (UW)trace->detail.fault_idle.completed_at_ms);
+        break;
+    default:
+        break;
     }
 }
+
+static void log_rreq_lifecycle(const aodv_rreq_lifecycle_record_t *record)
+{
+    if (record == NULL) {
+        return;
+    }
+    tm_printf((UB *)"routed rreq_lifecycle stage=%u discovery_correlation=%lu origin=0x%04x destination=0x%04x request_id=%u initial_scope=%u current_scope=%u ring_ordinal=%u action_created_at_ms=%lu action_created_state=%u link_enqueue_at_ms=%lu link_enqueue_state=%u scope_source=%u ordinary=%u scoped=%u hint_used=%u fallback=%u full_diameter=%u action_outcome=%u enqueue_outcome=%u\n",
+              (UINT)record->stage,
+              (UW)record->attempt.discovery_correlation,
+              (UINT)record->attempt.origin.value,
+              (UINT)record->attempt.destination.value,
+              (UINT)record->attempt.request_id,
+              (UINT)record->attempt.initial_scope,
+              (UINT)record->attempt.current_scope,
+              (UINT)record->attempt.ring_ordinal,
+              (UW)record->action_created_at_ms,
+              (UINT)record->action_created_at_state,
+              (UW)record->link_enqueue_at_ms,
+              (UINT)record->link_enqueue_at_state,
+              (UINT)record->scope_source, (UINT)record->ordinary,
+              (UINT)record->scoped, (UINT)record->hint_used,
+              (UINT)record->fallback, (UINT)record->full_diameter,
+              (UINT)record->action_outcome, (UINT)record->enqueue_outcome);
+}
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static void log_expiry_sweep(const routed_expiry_sweep_record_t *record)
+{
+    if (record == NULL) {
+        return;
+    }
+    tm_printf((UB *)"routed expiry_sweep now_ms=%lu pass=%lu trace_count=%u cursor=%u soft_selected=%u hard_selected=%u demand_deferred=%u unavailable_count=%u departed=%u purged=%u max_copied=%u targeted_controls=%u rreq_controls=%u expiry_tc_controls=%u received_evidence=%lu complete_passes=%lu max_scheduler_gap_ms=%lu scheduler_fault=%lu mesh_fault=%u router_fault=%u\n",
+               (UW)record->now_ms, (UW)record->pass, (UINT)record->trace_count,
+               (UINT)record->cursor, (UINT)record->soft_selected_count,
+               (UINT)record->hard_selected_count,
+               (UINT)record->demand_deferred_count,
+               (UINT)record->unavailable_count, (UINT)record->departed_count,
+               (UINT)record->purged_count,
+              (UINT)record->maximum_copied_candidates,
+              (UINT)record->targeted_control_count,
+              (UINT)record->rreq_control_count,
+              (UINT)record->expiry_tc_control_count,
+              (UW)record->received_evidence_count, (UW)record->complete_passes,
+              (UW)record->max_scheduler_gap_ms,
+               (UW)record->scheduler_fault_count,
+               (UINT)record->mesh_fault_latched, (UINT)record->router_fault);
+}
+
+static void log_full_snapshot(void)
+{
+    uint8_t index;
+
+    tm_printf((UB *)"routed gtt_snapshot query_at_ms=%lu entry_count=%u nondeparted_count=%u snapshot_q_pending=%u snapshot_ready=%u snapshot_request_dropped=%lu snapshot_failed=%lu\n",
+              (UW)routed_full_logger_storage.gtt_snapshot.query_at_ms,
+              (UINT)routed_full_logger_storage.gtt_snapshot.entry_count,
+              (UINT)routed_full_logger_storage.gtt_snapshot.nondeparted_count,
+              (UINT)routed_gtt_snapshot_request_pending,
+              (UINT)routed_gtt_snapshot_ready,
+              (UW)routed_gtt_snapshot_request_dropped,
+              (UW)routed_gtt_snapshot_failed);
+    for (index = 0u; index < routed_full_logger_storage.gtt_snapshot.entry_count; index++) {
+        const routed_cycle_gtt_snapshot_entry_t *entry =
+            &routed_full_logger_storage.gtt_snapshot.entries[index];
+
+        tm_printf((UB *)"routed gtt_snapshot_entry index=%u adva=%02x:%02x:%02x:%02x:%02x:%02x last_evidence_ms=%lu soft_deadline_ms=%lu hard_deadline_ms=%lu departed_deadline_ms=%lu serial=%u serial_state=%u hop_count=%u hop_state=%u freshness=%u departed=%u\n",
+                  (UINT)index, (UINT)entry->canonical_adva.bytes[0],
+                  (UINT)entry->canonical_adva.bytes[1],
+                  (UINT)entry->canonical_adva.bytes[2],
+                  (UINT)entry->canonical_adva.bytes[3],
+                  (UINT)entry->canonical_adva.bytes[4],
+                  (UINT)entry->canonical_adva.bytes[5],
+                  (UW)entry->last_evidence_ms, (UW)entry->soft_deadline_ms,
+                  (UW)entry->hard_deadline_ms, (UW)entry->departed_deadline_ms,
+                  (UINT)entry->serial, (UINT)entry->serial_state,
+                  (UINT)entry->hop_count, (UINT)entry->hop_state,
+                  (UINT)entry->freshness, (UINT)entry->departed);
+    }
+}
+#endif
 
 LOCAL void routed_logger_task(INT stacd, void *exinf)
 {
     routed_delivery_t delivery;
+    routed_local_event_t local_event;
     uint32_t next_summary_at = now_ms() + tron_timer_config.stats_ms;
 
     (void)stacd;
@@ -702,7 +1829,41 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     while (1) {
         uint32_t now = now_ms();
 
-        if (delivery_pop(&delivery)) {
+        if (pending_router_fault != TAVRN_ROUTER_FAULT_NONE &&
+            pending_router_fault != logged_router_fault) {
+            tm_printf((UB *)"routed router_fault reason=%u\n",
+                      (UINT)pending_router_fault);
+            logged_router_fault = pending_router_fault;
+        }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+        if (routed_full_snapshot_is_ready()) {
+            log_full_snapshot();
+            routed_full_snapshot_clear_ready();
+        } else if (routed_expiry_sweep_dequeue(&routed_logged_expiry_sweep)) {
+            log_expiry_sweep(&routed_logged_expiry_sweep);
+        } else
+#endif
+        if (routed_diagnostic_pop()) {
+            log_cycle_diagnostic(&routed_logged_diagnostic);
+        } else if (routed_rreq_pop()) {
+            log_rreq_lifecycle(&routed_logged_rreq);
+        } else if (local_event_pop(&local_event)) {
+            if (local_event.event.type ==
+                TAVRN_ROUTER_DISPATCH_EVENT_PENDING_DATA_FAILED) {
+                tm_printf((UB *)"routed pending_data_failed destination=0x%04x\n",
+                          (UINT)local_event.event.destination.value);
+            } else if (local_event.event.type ==
+                       TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR) {
+                tm_printf((UB *)"routed blacklist_neighbor destination=0x%04x peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                          (UINT)local_event.event.destination.value,
+                          (UINT)local_event.event.peer.adva.bytes[0],
+                          (UINT)local_event.event.peer.adva.bytes[1],
+                          (UINT)local_event.event.peer.adva.bytes[2],
+                          (UINT)local_event.event.peer.adva.bytes[3],
+                          (UINT)local_event.event.peer.adva.bytes[4],
+                          (UINT)local_event.event.peer.adva.bytes[5]);
+            }
+        } else if (delivery_pop(&delivery)) {
             tm_printf((UB *)"routed final_data now=%lu origin=0x%04x destination=0x%04x seq=%u app_kind=0x%02x app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
                       (UW)delivery.delivered_at_ms,
                       (UINT)delivery.data.origin.value,
@@ -717,6 +1878,9 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                       (UINT)delivery.transmitter.adva.bytes[5]);
         } else if ((int32_t)(now - next_summary_at) >= 0) {
             log_summary(now);
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+            routed_full_snapshot_request();
+#endif
             next_summary_at = now + tron_timer_config.stats_ms;
         }
         (void)tk_dly_tsk(1u);
@@ -726,25 +1890,46 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
 EXPORT INT usermain(void)
 {
     T_CTSK mesh_task = { .exinf = NULL, .tskatr = TA_HLNG | TA_RNG3,
-                         .task = (FP)routed_mesh_task,
-                         .itskpri = ROUTED_MESH_TASK_PRIORITY, .stksz = 2304 };
+                          .task = (FP)routed_mesh_task,
+                          .itskpri = ROUTED_MESH_TASK_PRIORITY,
+                          .stksz = ROUTED_MESH_TASK_STACK_BYTES };
     T_CTSK logger_task = { .exinf = NULL, .tskatr = TA_HLNG | TA_RNG3,
-                           .task = (FP)routed_logger_task,
-                           .itskpri = ROUTED_LOGGER_TASK_PRIORITY, .stksz = 1536 };
+                            .task = (FP)routed_logger_task,
+                            .itskpri = ROUTED_LOGGER_TASK_PRIORITY, .stksz = 1536 };
+    T_CFLG release_flag = { .exinf = NULL, .flgatr = TA_TFIFO,
+                             .iflgptn = 0u };
+    T_CCYC release_cyclic = { .exinf = NULL, .cycatr = TA_HLNG | TA_PHS,
+                               .cychdr = (FP)routed_release_cyclic,
+                               .cyctim = 0u, .cycphs = 0u };
     tavrn_link_config_t link_config;
     aodv_core_config_t aodv_config;
+    tavrn_router_incarnation_config_t incarnation_config;
+    aodv_rreq_telemetry_config_t rreq_telemetry;
+    tavrn_router_application_hooks_t application_hooks;
+    uint16_t boot_nonce;
+    uint32_t release_period_ms;
     ID mesh_id;
     ID logger_id;
+    ID release_cyclic_id;
 
     ring_init(&delivery_state.published);
+    ring_init(&local_event_ring);
     if (!tron_timer_config_is_valid(&tron_timer_config) ||
         ble_radio_try_init(tron_timer_config.radio_state_timeout_ms) != BLE_RADIO_OP_OK ||
-        ble_radio_read_default_adva(runtime_ficr_adva) != BLE_RADIO_OP_OK) {
-        tm_printf((UB *)"routed bounded radio/FICR/timer initialization failed\n");
+        ble_radio_read_default_adva(runtime_ficr_adva) != BLE_RADIO_OP_OK ||
+        !routed_boot_nonce(&boot_nonce)) {
+        tm_printf((UB *)"routed bounded radio/FICR/RNG/timer initialization failed\n");
         return 1;
     }
-    if (TRON_BUILD_ADVA_OVERRIDE_ENABLED != 0) {
-        memcpy(local_adva, configured_override, sizeof(local_adva));
+    tm_printf((UB *)"routed boot_nonce=%u\n", (UINT)boot_nonce);
+    if (tron_timer_config.scheduler_poll_max_ms <= 1u) {
+        tm_printf((UB *)"routed scheduler poll bound cannot release mesh waits\n");
+        return 1;
+    }
+    release_period_ms = tron_timer_config.scheduler_poll_max_ms - 1u;
+    release_cyclic.cyctim = release_period_ms;
+    if (TRON_BUILD_LOCAL_ADVA_ENABLED != 0) {
+        memcpy(local_adva, configured_local_adva, sizeof(local_adva));
     } else {
         memcpy(local_adva, runtime_ficr_adva, sizeof(local_adva));
     }
@@ -794,21 +1979,197 @@ EXPORT INT usermain(void)
     aodv_config.rrep_dedupe_ms = tron_timer_config.aodv_rrep_dedupe_ms;
     aodv_config.rerr_dedupe_ms = tron_timer_config.aodv_rerr_dedupe_ms;
     aodv_config.rrep_ack_wait_ms = tron_timer_config.aodv_rrep_ack_wait_ms;
+    memset(&incarnation_config, 0, sizeof(incarnation_config));
+    incarnation_config.boot_nonce = boot_nonce;
+    incarnation_config.reboot_announce_ms = tron_timer_config.router_reboot_announce_ms;
     if (tavrn_link_v2_init(&routed_link, &routed_scheduler, &link_config, now_ms()) !=
             TAVRN_LINK_INIT_OK ||
         aodv_core_init(&routed_aodv, &aodv_config, now_ms()) != AODV_INIT_OK) {
         tm_printf((UB *)"routed generated link/AODV configuration rejected\n");
         return 1;
     }
-    mesh_id = tk_cre_tsk(&mesh_task);
-    logger_id = tk_cre_tsk(&logger_task);
-    if (mesh_id <= 0 || logger_id <= 0) {
-        tm_printf((UB *)"routed task creation failed mesh=%d logger=%d\n", mesh_id,
-                  logger_id);
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        tavrn_gtt_config_t gtt_config;
+        tavrn_router_augmentation_hooks_t full_hooks;
+
+        memset(&gtt_config, 0, sizeof(gtt_config));
+        gtt_config.local_identity = local_peer.adva;
+        gtt_config.soft_expiry_ms = tron_timer_config.gtt_soft_expiry_ms;
+        gtt_config.hard_expiry_ms = tron_timer_config.gtt_hard_expiry_ms;
+        gtt_config.departed_retention_ms = tron_timer_config.gtt_departed_ms;
+        if (tavrn_gtt_init(&routed_gtt, &routed_gtt_storage, &gtt_config, now_ms()) !=
+                TAVRN_GTT_INIT_OK ||
+            tavrn_full_init(&routed_full, &routed_gtt) != TAVRN_FULL_INIT_OK) {
+            tm_printf((UB *)"routed FULL_TAVRN mentorship initialization rejected\n");
+            return 1;
+        }
+        full_hooks = tavrn_full_router_hooks(&routed_full);
+        incarnation_config.feature_level = TAVRN_ROUTER_FEATURE_FULL_TAVRN;
+        if (tavrn_router_init_with_incarnation(&routed_router, &routed_link,
+                                               &routed_aodv, &full_hooks,
+                                               &incarnation_config, now_ms()) !=
+            TAVRN_ROUTER_INCARNATION_OK) {
+            tm_printf((UB *)"routed FULL_TAVRN router initialization rejected\n");
+            return 1;
+        }
+    }
+#else
+    incarnation_config.feature_level = TAVRN_ROUTER_FEATURE_AODV_ONLY;
+    if (tavrn_router_init_with_incarnation(&routed_router, &routed_link,
+                                           &routed_aodv, NULL,
+                                           &incarnation_config, now_ms()) !=
+        TAVRN_ROUTER_INCARNATION_OK) {
+        tm_printf((UB *)"routed AODV_ONLY router initialization rejected\n");
         return 1;
     }
-    tk_sta_tsk(logger_id, 0);
-    tk_sta_tsk(mesh_id, 0);
+#endif
+    memset(&application_hooks, 0, sizeof(application_hooks));
+    application_hooks.reserve = router_delivery_reserve;
+    application_hooks.commit = router_delivery_commit;
+    application_hooks.cancel = router_delivery_cancel;
+    if (tavrn_router_set_application_hooks(&routed_router, &application_hooks) !=
+        TAVRN_ROUTER_APPLICATION_HOOK_OK) {
+        tm_printf((UB *)"routed delivery binding rejected\n");
+        return 1;
+    }
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    {
+        tavrn_mentorship_config_t mentorship_config;
+        tavrn_maintenance_config_t maintenance_config;
+
+        memset(&mentorship_config, 0, sizeof(mentorship_config));
+        mentorship_config.offer_window_ms = tron_timer_config.mentor_offer_window_ms;
+        mentorship_config.page_timeout_ms = tron_timer_config.mentor_page_timeout_ms;
+        mentorship_config.self_bootstrap_ms =
+            tron_timer_config.mentor_self_bootstrap_ms;
+        mentorship_config.offer_suppression_ms =
+            tron_timer_config.mentor_offer_suppression_ms;
+        mentorship_config.join_dedupe_ms = tron_timer_config.tc_uuid_ms;
+        mentorship_config.sync_dedupe_ms = tron_timer_config.mentor_sync_dedupe_ms;
+        mentorship_config.rssi_weak_magnitude_db =
+            (uint16_t)tron_timer_config.mentor_rssi_weak_magnitude_db;
+        mentorship_config.rssi_strong_magnitude_db =
+            (uint16_t)tron_timer_config.mentor_rssi_strong_magnitude_db;
+        mentorship_config.rssi_weak_delay_ms =
+            tron_timer_config.mentor_rssi_weak_delay_ms;
+        mentorship_config.rssi_strong_delay_ms =
+            tron_timer_config.mentor_rssi_strong_delay_ms;
+        mentorship_config.jitter_min_ms = tron_timer_config.mentor_jitter_min_ms;
+        mentorship_config.jitter_max_ms = tron_timer_config.mentor_jitter_max_ms;
+        mentorship_config.page_attempts =
+            (uint8_t)tron_timer_config.mentor_page_attempts;
+        if (tavrn_mentorship_init(&routed_mentorship, &routed_router,
+                                   &routed_gtt, &mentorship_config, now_ms()) !=
+            TAVRN_MENTORSHIP_OK) {
+            tm_printf((UB *)"routed FULL_TAVRN mentorship initialization rejected\n");
+            return 1;
+        }
+        memset(&maintenance_config, 0, sizeof(maintenance_config));
+        maintenance_config.hello_change_ms = tron_timer_config.hello_change_ms;
+        maintenance_config.hello_stable_ms = tron_timer_config.hello_stable_ms;
+        maintenance_config.hello_alpha_permille =
+            ratio_to_permille(tron_timer_config.hello_alpha);
+        maintenance_config.hello_snap_permille =
+            ratio_to_permille(tron_timer_config.hello_snap_ratio);
+        maintenance_config.topology_sample_ms = tron_timer_config.gtt_maintenance_ms;
+        maintenance_config.hello_dedupe_ms = tron_timer_config.hello_dedupe_ms;
+        maintenance_config.initial_node_sequence = 1u;
+        if (tavrn_maintenance_init(&routed_maintenance, &routed_router,
+                                     &routed_gtt, &maintenance_config) !=
+                TAVRN_MAINTENANCE_OK ||
+            tavrn_full_application_mailbox_init(&routed_application_mailbox) !=
+                TAVRN_FULL_APPLICATION_MAILBOX_EMPTY) {
+            tm_printf((UB *)"routed FULL_TAVRN maintenance initialization rejected\n");
+            return 1;
+        }
+#if TRON_BUILD_TEST_EXPIRY_FULL_TABLE
+        if (!routed_expiry_full_table_seed(now_ms())) {
+            tm_printf((UB *)"routed expiry full-table hook seed failed\n");
+            return 1;
+        }
+#endif
+        {
+            tavrn_router_local_broadcast_snapshot_t broadcast;
+
+            if (tavrn_router_local_broadcast_snapshot(&routed_router, &broadcast) !=
+                TAVRN_ROUTER_LOCAL_BROADCAST_OK) {
+                tm_printf((UB *)"routed FULL_TAVRN broadcast observation binding rejected\n");
+                return 1;
+            }
+            routed_local_broadcast_generation_seen = broadcast.generation;
+        }
+    }
+#endif
+    routed_cycle_diagnostic_queue_init(&routed_diagnostic_queue);
+    routed_cycle_rreq_queue_init(&routed_rreq_queue);
+    memset(&routed_cycle_operations, 0, sizeof(routed_cycle_operations));
+    routed_cycle_operations.context = NULL;
+    routed_cycle_operations.start_rx = routed_cycle_start_rx;
+    routed_cycle_operations.scheduler_poll = routed_cycle_scheduler_poll;
+    routed_cycle_operations.router_scheduler_event =
+        routed_cycle_router_scheduler_event;
+    routed_cycle_operations.router_tick = routed_cycle_router_tick;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    routed_cycle_operations.take_scheduler_return_after_tick =
+        routed_cycle_router_tick_take_scheduler_return;
+#endif
+    routed_cycle_operations.application_prepare = routed_cycle_application_prepare;
+    routed_cycle_operations.router_submit = routed_cycle_router_submit;
+    routed_cycle_operations.router_dispatch = routed_cycle_router_dispatch;
+    routed_cycle_operations.router_link_service = routed_cycle_router_link_service;
+    routed_cycle_operations.healthy_yield = routed_cycle_healthy_yield;
+    routed_cycle_operations.fault_idle = routed_cycle_fault_idle;
+    routed_cycle_operations.now_ms = routed_cycle_now_ms;
+    routed_cycle_operations.trace_sink = routed_cycle_trace_sink;
+    routed_cycle_operations.healthy_wait_completion_guard_ms = 0u;
+    memset(&routed_cycle_result_storage, 0, sizeof(routed_cycle_result_storage));
+    memset(&rreq_telemetry, 0, sizeof(rreq_telemetry));
+    rreq_telemetry.context = NULL;
+    rreq_telemetry.on_lifecycle = routed_rreq_lifecycle;
+    routed_next_submit_at = now_ms();
+    if (routed_cycle_init(&routed_cycle_state,
+                          tron_timer_config.scheduler_poll_max_ms) !=
+            ROUTED_CYCLE_RESULT_OK ||
+        aodv_core_set_rreq_telemetry(&routed_aodv, &rreq_telemetry) !=
+            AODV_RREQ_TELEMETRY_OK) {
+        tm_printf((UB *)"routed runtime observability binding rejected\n");
+        return 1;
+    }
+    routed_release_flag_id = tk_cre_flg(&release_flag);
+    if (routed_release_flag_id <= 0) {
+        tm_printf((UB *)"routed release flag creation failed id=%d\n",
+                  routed_release_flag_id);
+        return 1;
+    }
+    release_cyclic_id = tk_cre_cyc(&release_cyclic);
+    if (release_cyclic_id <= 0) {
+        tm_printf((UB *)"routed release cyclic creation failed id=%d\n",
+                  release_cyclic_id);
+        return 1;
+    }
+    mesh_id = tk_cre_tsk(&mesh_task);
+    if (mesh_id <= 0) {
+        tm_printf((UB *)"routed mesh task creation failed id=%d\n", mesh_id);
+        return 1;
+    }
+    logger_id = tk_cre_tsk(&logger_task);
+    if (logger_id <= 0) {
+        tm_printf((UB *)"routed logger task creation failed id=%d\n", logger_id);
+        return 1;
+    }
+    if (tk_sta_tsk(logger_id, 0) != E_OK) {
+        tm_printf((UB *)"routed logger task start failed\n");
+        return 1;
+    }
+    if (tk_sta_cyc(release_cyclic_id) != E_OK) {
+        tm_printf((UB *)"routed release cyclic start failed\n");
+        return 1;
+    }
+    if (tk_sta_tsk(mesh_id, 0) != E_OK) {
+        tm_printf((UB *)"routed mesh task start failed\n");
+        return 1;
+    }
     tk_slp_tsk(TMO_FEVR);
     return 0;
 }

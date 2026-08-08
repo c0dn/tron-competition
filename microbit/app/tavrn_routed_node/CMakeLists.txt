@@ -25,3 +25,9 @@ target_include_directories(tavrn_routed_node PRIVATE
 
 target_compile_definitions(tavrn_routed_node PRIVATE _SIZE_T_DEFINED _SIZE_T_DECLARED)
 target_compile_options(tavrn_routed_node PRIVATE -include tk/tkernel.h)
+
+if(TRON_STACK_USAGE STREQUAL "ON")
+  target_compile_options(tavrn_routed_node PRIVATE -fstack-usage)
+  target_compile_options(mtkernel3_microbit_kernel_tavrn_routed_node PRIVATE
+    -fstack-usage)
+endif()

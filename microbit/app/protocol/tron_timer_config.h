@@ -58,6 +58,8 @@ typedef struct tron_timer_config {
     float hello_snap_ratio;
     uint32_t hello_dedupe_ms;
     uint32_t router_reboot_announce_ms;
+    uint32_t freshness_response_min_ms;
+    uint32_t freshness_response_max_ms;
     uint32_t verification_window_ms;
     uint32_t verification_new_cap;
     uint32_t verification_active_cap;
@@ -88,6 +90,8 @@ extern const tron_timer_config_t tron_timer_config;
 
 static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
 {
+    uint64_t expected_verification_window_ms;
+
     if (config == 0 || config->scheduler_dwell_ms == 0u ||
         config->scheduler_relay_spacing_ms == 0u ||
         config->scheduler_custody_bypass_max == 0u ||
@@ -105,8 +109,21 @@ static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
         config->legacy_relay_min_ms > config->legacy_relay_max_ms ||
         config->link_flood_jitter_min_ms > config->link_flood_jitter_max_ms ||
         config->mentor_jitter_min_ms > config->mentor_jitter_max_ms ||
+        config->freshness_response_min_ms == 0u ||
+        config->freshness_response_max_ms == 0u ||
+        config->freshness_response_min_ms > config->freshness_response_max_ms ||
+        config->verification_window_ms == 0u ||
         config->hello_alpha <= 0.0f || config->hello_alpha > 1.0f ||
         config->hello_snap_ratio <= 0.0f || config->hello_snap_ratio > 1.0f) {
+        return 0;
+    }
+    expected_verification_window_ms =
+        (uint64_t)config->aodv_net_traversal_ms +
+        2u * (uint64_t)config->aodv_path_discovery_ms;
+    if (config->verification_window_ms >= 0x80000000UL ||
+        expected_verification_window_ms >= 0x80000000ULL ||
+        expected_verification_window_ms !=
+            (uint64_t)config->verification_window_ms) {
         return 0;
     }
     return config->scheduler_dwell_ms < 0x80000000UL &&
@@ -120,6 +137,8 @@ static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
         config->link_hack_timeout_ms < 0x80000000UL &&
         config->link_retry_backoff_ms < 0x80000000UL &&
         config->link_data_deadline_ms < 0x80000000UL &&
+        config->freshness_response_min_ms < 0x80000000UL &&
+        config->freshness_response_max_ms < 0x80000000UL &&
         config->stats_ms < 0x80000000UL &&
         config->loop_delay_ms < 0x80000000UL;
 }

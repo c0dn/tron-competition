@@ -1,0 +1,102 @@
+[0.000001 0.000001] mesh counters id=0x0002 rx_ok=18 tx_ok=22 decode_error=1598 duplicate_drop=7 ttl_drop=0 queue_drop=0 relay_scheduled=11 relay_rate_limited=0 blocked_direct=0
+[0.013976 0.013975] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=11 pong_q=11 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[1.225961 1.211985] mesh PING received src=0x0001 dst=0x0002 seq=31 ttl=3
+[1.230974 0.005013] mesh PONG queued src=0x0002 dst=0x0001 seq=31
+[1.234976 0.004001] mesh relay queued src=0x0001 seq=31 ttl=2 backoff=87ms
+[5.000978 3.766003] mesh counters id=0x0002 rx_ok=19 tx_ok=24 decode_error=1940 duplicate_drop=7 ttl_drop=0 queue_drop=0 relay_scheduled=12 relay_rate_limited=0 blocked_direct=0
+[5.014991 0.014012] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=12 pong_q=12 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[5.225006 0.210016] mesh PING received src=0x0001 dst=0x0002 seq=33 ttl=3
+[5.229980 0.004974] mesh PONG queued src=0x0002 dst=0x0001 seq=33
+[5.234010 0.004030] mesh relay queued src=0x0001 seq=33 ttl=2 backoff=47ms
+[7.223993 1.989983] mesh PING received src=0x0001 dst=0x0002 seq=34 ttl=3
+[7.229014 0.005022] mesh PONG queued src=0x0002 dst=0x0001 seq=34
+[7.233030 0.004015] mesh relay queued src=0x0001 seq=34 ttl=2 backoff=20ms
+[9.223011 1.989981] mesh PING received src=0x0001 dst=0x0002 seq=35 ttl=3
+[9.228039 0.005028] mesh PONG queued src=0x0002 dst=0x0001 seq=35
+[9.232039 0.004000] mesh relay queued src=0x0001 seq=35 ttl=2 backoff=93ms
+[10.001013 0.768974] mesh counters id=0x0002 rx_ok=25 tx_ok=30 decode_error=2276 duplicate_drop=10 ttl_drop=0 queue_drop=0 relay_scheduled=15 relay_rate_limited=0 blocked_direct=0
+[10.015036 0.014023] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=15 pong_q=15 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[11.224028 1.208992] mesh PING received src=0x0001 dst=0x0002 seq=36 ttl=3
+[11.229025 0.004997] mesh PONG queued src=0x0002 dst=0x0001 seq=36
+[11.233047 0.004022] mesh relay queued src=0x0001 seq=36 ttl=2 backoff=72ms
+[13.223034 1.989987] mesh PING received src=0x0001 dst=0x0002 seq=37 ttl=3
+[13.228044 0.005010] mesh PONG queued src=0x0002 dst=0x0001 seq=37
+[13.232056 0.004012] mesh relay queued src=0x0001 seq=37 ttl=2 backoff=116ms
+[15.003066 1.771010] mesh counters id=0x0002 rx_ok=29 tx_ok=34 decode_error=2613 duplicate_drop=12 ttl_drop=0 queue_drop=0 relay_scheduled=17 relay_rate_limited=0 blocked_direct=0
+[15.017064 0.013997] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=17 pong_q=17 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[15.224046 0.206983] mesh PING received src=0x0001 dst=0x0002 seq=38 ttl=3
+[15.229058 0.005012] mesh PONG queued src=0x0002 dst=0x0001 seq=38
+[15.233062 0.004004] mesh relay queued src=0x0001 seq=38 ttl=2 backoff=94ms
+[17.223069 1.990008] mesh PING received src=0x0001 dst=0x0002 seq=39 ttl=3
+[17.228084 0.005015] mesh PONG queued src=0x0002 dst=0x0001 seq=39
+[17.232090 0.004005] mesh relay queued src=0x0001 seq=39 ttl=2 backoff=78ms
+[19.225091 1.993001] mesh PING received src=0x0001 dst=0x0002 seq=40 ttl=3
+[19.230063 0.004972] mesh PONG queued src=0x0002 dst=0x0001 seq=40
+[19.234072 0.004009] mesh relay queued src=0x0001 seq=40 ttl=2 backoff=30ms
+[20.003106 0.769034] mesh counters id=0x0002 rx_ok=33 tx_ok=40 decode_error=2939 duplicate_drop=13 ttl_drop=0 queue_drop=0 relay_scheduled=20 relay_rate_limited=0 blocked_direct=0
+[20.022096 0.018990] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=20 pong_q=20 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[21.223104 1.201008] mesh PING received src=0x0001 dst=0x0002 seq=41 ttl=3
+[21.228114 0.005010] mesh PONG queued src=0x0002 dst=0x0001 seq=41
+[21.232097 0.003983] mesh relay queued src=0x0001 seq=41 ttl=2 backoff=33ms
+[25.004133 3.772036] mesh counters id=0x0002 rx_ok=35 tx_ok=42 decode_error=3266 duplicate_drop=14 ttl_drop=0 queue_drop=0 relay_scheduled=21 relay_rate_limited=0 blocked_direct=0
+[25.018123 0.013991] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=21 pong_q=21 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[25.222120 0.203997] mesh PING received src=0x0001 dst=0x0002 seq=43 ttl=3
+[25.227148 0.005028] mesh PONG queued src=0x0002 dst=0x0001 seq=43
+[25.231190 0.004042] mesh relay queued src=0x0001 seq=43 ttl=2 backoff=37ms
+[29.222162 3.990972] mesh PING received src=0x0001 dst=0x0002 seq=45 ttl=3
+[29.227147 0.004985] mesh PONG queued src=0x0002 dst=0x0001 seq=45
+[29.231153 0.004006] mesh relay queued src=0x0001 seq=45 ttl=2 backoff=35ms
+[30.006174 0.775021] mesh counters id=0x0002 rx_ok=37 tx_ok=46 decode_error=3582 duplicate_drop=14 ttl_drop=0 queue_drop=0 relay_scheduled=23 relay_rate_limited=0 blocked_direct=0
+[30.020170 0.013997] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=23 pong_q=23 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[31.223183 1.203012] mesh PING received src=0x0001 dst=0x0002 seq=46 ttl=3
+[31.228148 0.004965] mesh PONG queued src=0x0002 dst=0x0001 seq=46
+[31.232168 0.004020] mesh relay queued src=0x0001 seq=46 ttl=2 backoff=82ms
+[33.222187 1.990019] mesh PING received src=0x0001 dst=0x0002 seq=47 ttl=3
+[33.227157 0.004970] mesh PONG queued src=0x0002 dst=0x0001 seq=47
+[33.231194 0.004037] mesh relay queued src=0x0001 seq=47 ttl=2 backoff=63ms
+[35.008226 1.777032] mesh counters id=0x0002 rx_ok=40 tx_ok=50 decode_error=3886 duplicate_drop=15 ttl_drop=0 queue_drop=0 relay_scheduled=25 relay_rate_limited=0 blocked_direct=0
+[35.022186 0.013960] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=25 pong_q=25 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[35.223235 0.201049] mesh PING received src=0x0001 dst=0x0002 seq=48 ttl=3
+[35.227262 0.004028] mesh PONG queued src=0x0002 dst=0x0001 seq=48
+[35.232198 0.004935] mesh relay queued src=0x0001 seq=48 ttl=2 backoff=38ms
+[37.222210 1.990013] mesh PING received src=0x0001 dst=0x0002 seq=49 ttl=3
+[37.226271 0.004060] mesh PONG queued src=0x0002 dst=0x0001 seq=49
+[37.231204 0.004933] mesh relay queued src=0x0001 seq=49 ttl=2 backoff=52ms
+[39.221251 1.990047] mesh PING received src=0x0001 dst=0x0002 seq=50 ttl=3
+[39.225278 0.004027] mesh PONG queued src=0x0002 dst=0x0001 seq=50
+[39.230206 0.004928] mesh relay queued src=0x0001 seq=50 ttl=2 backoff=102ms
+[40.007242 0.777036] mesh counters id=0x0002 rx_ok=46 tx_ok=56 decode_error=4186 duplicate_drop=18 ttl_drop=0 queue_drop=0 relay_scheduled=28 relay_rate_limited=0 blocked_direct=0
+[40.021290 0.014048] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=28 pong_q=28 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[41.222247 1.200957] mesh PING received src=0x0001 dst=0x0002 seq=51 ttl=3
+[41.226274 0.004027] mesh PONG queued src=0x0002 dst=0x0001 seq=51
+[41.231233 0.004959] mesh relay queued src=0x0001 seq=51 ttl=2 backoff=65ms
+[43.220257 1.989024] mesh PING received src=0x0001 dst=0x0002 seq=52 ttl=3
+[43.225344 0.005087] mesh PONG queued src=0x0002 dst=0x0001 seq=52
+[43.229329 0.003985] mesh relay queued src=0x0001 seq=52 ttl=2 backoff=113ms
+[45.009271 1.779942] mesh counters id=0x0002 rx_ok=49 tx_ok=60 decode_error=4445 duplicate_drop=19 ttl_drop=0 queue_drop=0 relay_scheduled=30 relay_rate_limited=0 blocked_direct=0
+[45.023331 0.014060] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=30 pong_q=30 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[45.221263 0.197932] mesh PING received src=0x0001 dst=0x0002 seq=53 ttl=3
+[45.226339 0.005076] mesh PONG queued src=0x0002 dst=0x0001 seq=53
+[45.230335 0.003995] mesh relay queued src=0x0001 seq=53 ttl=2 backoff=102ms
+[47.220287 1.989952] mesh PING received src=0x0001 dst=0x0002 seq=54 ttl=3
+[47.225311 0.005024] mesh PONG queued src=0x0002 dst=0x0001 seq=54
+[47.229358 0.004047] mesh relay queued src=0x0001 seq=54 ttl=2 backoff=118ms
+[49.219290 1.989933] mesh PING received src=0x0001 dst=0x0002 seq=55 ttl=3
+[49.224347 0.005056] mesh PONG queued src=0x0002 dst=0x0001 seq=55
+[49.228358 0.004011] mesh relay queued src=0x0001 seq=55 ttl=2 backoff=41ms
+[50.009338 0.780980] mesh counters id=0x0002 rx_ok=55 tx_ok=66 decode_error=4732 duplicate_drop=22 ttl_drop=0 queue_drop=0 relay_scheduled=33 relay_rate_limited=0 blocked_direct=0
+[50.023370 0.014032] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=33 pong_q=33 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[51.220304 1.196934] mesh PING received src=0x0001 dst=0x0002 seq=56 ttl=3
+[51.225340 0.005036] mesh PONG queued src=0x0002 dst=0x0001 seq=56
+[51.229365 0.004025] mesh relay queued src=0x0001 seq=56 ttl=2 backoff=100ms
+[53.219312 1.989947] mesh PING received src=0x0001 dst=0x0002 seq=57 ttl=3
+[53.224350 0.005038] mesh PONG queued src=0x0002 dst=0x0001 seq=57
+[53.228387 0.004037] mesh relay queued src=0x0001 seq=57 ttl=2 backoff=116ms
+[55.011345 1.782958] mesh counters id=0x0002 rx_ok=59 tx_ok=70 decode_error=5021 duplicate_drop=24 ttl_drop=0 queue_drop=0 relay_scheduled=35 relay_rate_limited=0 blocked_direct=0
+[55.025374 0.014030] bidi counters id=0x0002 sem_drop=0 ping_q=0 ping_qfail=0 ping_rx=35 pong_q=35 pong_qfail=0 pong_match=0 pong_unmatch=0 timeout=0 rtt=0/0/0ms
+[55.220367 0.194992] mesh PING received src=0x0001 dst=0x0002 seq=58 ttl=3
+[55.225380 0.005013] mesh PONG queued src=0x0002 dst=0x0001 seq=58
+[55.229396 0.004016] mesh relay queued src=0x0001 seq=58 ttl=2 backoff=63ms
+[57.219367 1.989971] mesh PING received src=0x0001 dst=0x0002 seq=59 ttl=3
+[57.224384 0.005017] mesh PONG queued src=0x0002 dst=0x0001 seq=59
+[57.228413 0.004029] mesh relay queued src=0x0001 seq=59 ttl=2 backoff=69ms

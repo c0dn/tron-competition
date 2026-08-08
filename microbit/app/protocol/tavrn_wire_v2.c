@@ -792,6 +792,19 @@ static tavrn_codec_result_t check_metadata_ids(const tavrn_codec_config_t *confi
     return TAVRN_CODEC_OK;
 }
 
+/* Bootstrap and topology controls carry complete AdvAs, not compressed route
+ * identities.  They deliberately remain admissible while a FULL node is in
+ * SID8 mode so a late/new incarnation can recover context without guessing a
+ * SID8 mapping. */
+static int is_full_identity_control(const uint8_t *pdu)
+{
+    tavrn_wire_type_t type = (tavrn_wire_type_t)pdu[4];
+
+    return type == TAVRN_WIRE_SYNC_OFFER || type == TAVRN_WIRE_SYNC_PULL ||
+        type == TAVRN_WIRE_SYNC_DATA || type == TAVRN_WIRE_TC_UPDATE ||
+        (type == TAVRN_WIRE_HELLO && pdu[5] == 0x40u);
+}
+
 static tavrn_codec_result_t check_pdu_identities(
     const tavrn_codec_config_t *config, const uint8_t *pdu,
     const uint8_t outer_adva[TAVRN_ADVA_LEN])
@@ -804,6 +817,9 @@ static tavrn_codec_result_t check_pdu_identities(
     tavrn_adva_t direct_adva;
     tavrn_codec_result_t result;
 
+    if (is_full_identity_control(pdu)) {
+        return TAVRN_CODEC_OK;
+    }
     if (width != config->local_peer.logical_id.width) {
         return TAVRN_CODEC_MALFORMED_FIELD;
     }
@@ -1025,8 +1041,9 @@ tavrn_codec_result_t tavrn_wire_v2_decode(
     if (result != TAVRN_CODEC_OK) {
         return result;
     }
-    width = type_has_identity_flag((tavrn_wire_type_t)pdu[4]) ?
-        width_from_flag(pdu[5]) : config->local_peer.logical_id.width;
+    width = is_full_identity_control(pdu) ? TAVRN_IDENTITY_SID16 :
+        (type_has_identity_flag((tavrn_wire_type_t)pdu[4]) ?
+             width_from_flag(pdu[5]) : config->local_peer.logical_id.width);
     result = check_pdu_identities(config, pdu, outer_adva);
     if (result != TAVRN_CODEC_OK) {
         return result;
@@ -1261,10 +1278,8 @@ tavrn_codec_result_t tavrn_wire_v2_encode(
     if (result != TAVRN_CODEC_OK) {
         return result;
     }
-    result = check_pdu_identities(config, pdu, validation_adva);
-    if (result != TAVRN_CODEC_OK) {
-        return result;
-    }
+    /* Context protects incoming SID8 state mutation.  Outbound frames already
+     * carry their direct identities and must not require a remote mapping. */
     adv_len = TAVRN_ADV_WRAPPER_LEN + pdu_len;
     if (adv_capacity < adv_len) {
         return TAVRN_CODEC_OUTPUT_TOO_SMALL;

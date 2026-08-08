@@ -1,0 +1,380 @@
++ source ./scripts/common.sh
+++ set -euo pipefail
+++++ dirname ./scripts/common.sh
++++ cd ./scripts/..
++++ pwd
+++ REPO_ROOT=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit
+++ DEFAULT_BUILD_DIR=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/build
+++ DEFAULT_TARGET=test_firmware
+++ TOOLCHAIN_FILE=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/cmake/arm-none-eabi-gcc.cmake
+++ find_tool pyocd
+++ local tool=pyocd
+++ command -v pyocd
+++ [[ -x /home/lucas/.local/bin/pyocd ]]
+++ printf '%s\n' /home/lucas/.local/bin/pyocd
+++ return 0
++ pyocd=/home/lucas/.local/bin/pyocd
++ root_uid=9906360200052820cf57b9f988a30e16000000006e052820
++ leaf_uid=99063602000528205539bee7957c8dea000000006e052820
++ root_elf=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.elf
++ leaf_elf=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.elf
++ root_manifest=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.manifest
++ leaf_manifest=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.manifest
++ /home/lucas/.local/bin/pyocd --version
+0.45.1
++ git -C /tmp/opencode/tavrn-linkv2-4afe720 rev-parse HEAD
+4afe7208f653a417dbfbab3ae3e5c150d33e179b
++ git -C /tmp/opencode/tavrn-linkv2-4afe720 rev-parse 'HEAD^{tree}'
+13c45934ff18d87770701ee46317007145174b20
++ git -C /tmp/opencode/tavrn-linkv2-4afe720 status --porcelain
++ git -C /tmp/opencode/tavrn-linkv2-4afe720 submodule status --recursive
+ 5606cfba1625350901ad2eb521572b0a3f7735cb microbit/libs/mtkernel_3 (heads/master)
++ sha256sum /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.elf /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.elf /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.manifest /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.manifest /tmp/opencode/tavrn-linkv2-inventory-4afe720.tsv
+741bc9cc4d8921010cebe65bd3d3b0c506ac9a68fcaff9897b2fc8d595f758b1  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.elf
+b7cf8edabc0be5c0d3f9976eb30603072a4a85eeb2fbbd321250f8231738e31d  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.elf
+bc66c8786f1f86a7e80705bccea8e4622e5bef1fde8a9a8f6d1171d7b0dbc95d  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.manifest
+3ff3e1fefaa6a73066e0ce3f158694df957876ff760de0c1c6b7abc708cfbcd4  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.manifest
+489f2fedbaee1dac1b3a1b80f9e41fa84065f21d38bd58a369bcf62cce3c134a  /tmp/opencode/tavrn-linkv2-inventory-4afe720.tsv
++ /home/lucas/.local/bin/pyocd list
+  #   Probe/Board                        Unique ID                                          Target
+--------------------------------------------------------------------------------------------------------
+  0   Arm BBC micro:bit CMSIS-DAP        99063602000528205539bee7957c8dea000000006e052820   ✔︎ nrf52833
+      Micro:bit Educational Foundation   BBC micro:bit V2
+
+  1   Arm BBC micro:bit CMSIS-DAP        9906360200052820cf57b9f988a30e16000000006e052820   ✔︎ nrf52833
+      Micro:bit Educational Foundation   BBC micro:bit V2
+++ serial_device_for_uid 9906360200052820cf57b9f988a30e16000000006e052820
+++ local uid=9906360200052820cf57b9f988a30e16000000006e052820
+++ local link
+++ matches=()
+++ local matches
+++ local target
+++ seen=()
+++ local -A seen
+++ IFS=
+++ read -r link
++++ serial_by_id_links
++++ local link
++++ [[ ! -d /dev/serial/by-id ]]
++++ for link in /dev/serial/by-id/*
++++ [[ -L /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01 ]]
++++ case "$(readlink -f "$link")" in
+++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ printf '%s\n' /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ for link in /dev/serial/by-id/*
++++ [[ -L /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01 ]]
++++ case "$(readlink -f "$link")" in
++++ basename /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
+++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
+++ [[ usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01 == *9906360200052820cf57b9f988a30e16000000006e052820* ]]
+++ continue
+++ IFS=
+++ read -r link
++++ printf '%s\n' /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
++++ basename /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
+++ [[ usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01 == *9906360200052820cf57b9f988a30e16000000006e052820* ]]
++++ serial_device_from_link /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
++++ local link=/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
+++ target=/dev/ttyACM1
+++ [[ -z '' ]]
+++ matches+=("$target")
+++ seen[$target]=1
+++ IFS=
+++ read -r link
+++ case "${#matches[@]}" in
+++ printf '%s\n' /dev/ttyACM1
++ printf 'root_serial=%s\n' /dev/ttyACM1
+root_serial=/dev/ttyACM1
+++ serial_device_for_uid 99063602000528205539bee7957c8dea000000006e052820
+++ local uid=99063602000528205539bee7957c8dea000000006e052820
+++ local link
+++ matches=()
+++ local matches
+++ local target
+++ seen=()
+++ local -A seen
+++ IFS=
+++ read -r link
++++ serial_by_id_links
++++ local link
++++ [[ ! -d /dev/serial/by-id ]]
++++ for link in /dev/serial/by-id/*
++++ [[ -L /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01 ]]
++++ case "$(readlink -f "$link")" in
+++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ printf '%s\n' /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ for link in /dev/serial/by-id/*
++++ [[ -L /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01 ]]
++++ case "$(readlink -f "$link")" in
+++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
++++ basename /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ printf '%s\n' /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
+++ [[ usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01 == *99063602000528205539bee7957c8dea000000006e052820* ]]
++++ serial_device_from_link /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ local link=/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
++++ readlink -f /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01
+++ target=/dev/ttyACM0
+++ [[ -z '' ]]
+++ matches+=("$target")
+++ seen[$target]=1
+++ IFS=
+++ read -r link
++++ basename /dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01
+++ [[ usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01 == *99063602000528205539bee7957c8dea000000006e052820* ]]
+++ continue
+++ IFS=
+++ read -r link
+++ case "${#matches[@]}" in
+++ printf '%s\n' /dev/ttyACM0
++ printf 'leaf_serial=%s\n' /dev/ttyACM0
+leaf_serial=/dev/ttyACM0
++ /home/lucas/.local/bin/pyocd commander --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 -c 'read32 0x100000a4 8'
+100000a4:  52de4218 73f05d4a                      |R.B.s.]J|
++ /home/lucas/.local/bin/pyocd commander --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 -c 'read32 0x100000a4 8'
+100000a4:  060a4bdc 6d643803                      |..K.md8.|
++ /home/lucas/.local/bin/pyocd erase --no-config --mass -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
+0000573 I Mass erasing device... [eraser]
+0000775 I Mass erase complete [eraser]
++ /home/lucas/.local/bin/pyocd load --no-config --no-reset -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.elf
+0000561 I Loading /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-advadc4b0a0603f8-4afe7208f653.elf [load_cmd]
+0000561 I Erasing... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0002968 I Programming... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0006632 I Erased 98304 bytes (24 sectors), programmed 98304 bytes (24 pages), identical 0 bytes (0 pages) at 15.81 kB/s [loader]
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ /home/lucas/.local/bin/pyocd erase --no-config --mass -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
+0000610 I Mass erasing device... [eraser]
+0000812 I Mass erase complete [eraser]
++ /home/lucas/.local/bin/pyocd load --no-config --no-reset -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.elf
+0000604 I Loading /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-root-adva1842de524add-4afe7208f653.elf [load_cmd]
+0000605 I Erasing... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0002994 I Programming... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0006626 I Erased 98304 bytes (24 sectors), programmed 98304 bytes (24 pages), identical 0 bytes (0 pages) at 15.94 kB/s [loader]
++ /home/lucas/.local/bin/pyocd reset --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
++ set +x
+uid-bound unhooked flash transcript complete
++ source ./scripts/common.sh
+++ set -euo pipefail
+++++ dirname ./scripts/common.sh
++++ cd ./scripts/..
++++ pwd
+++ REPO_ROOT=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit
+++ DEFAULT_BUILD_DIR=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/build
+++ DEFAULT_TARGET=test_firmware
+++ TOOLCHAIN_FILE=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/cmake/arm-none-eabi-gcc.cmake
+++ find_tool grabserial
+++ local tool=grabserial
+++ command -v grabserial
+++ [[ -x /home/lucas/.local/bin/grabserial ]]
+++ printf '%s\n' /home/lucas/.local/bin/grabserial
+++ return 0
++ grab=/home/lucas/.local/bin/grabserial
+++ find_tool pyocd
+++ local tool=pyocd
+++ command -v pyocd
+++ [[ -x /home/lucas/.local/bin/pyocd ]]
+++ printf '%s\n' /home/lucas/.local/bin/pyocd
+++ return 0
++ pyocd=/home/lucas/.local/bin/pyocd
++ root_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-root.log
++ leaf_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-leaf.log
++ root_pid=60904
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM1 -b 115200 -e 125 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-root.log
++ leaf_pid=60905
++ sleep 1
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM0 -b 115200 -e 125 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-leaf.log
++ /home/lucas/.local/bin/pyocd commander --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 -c halt
+Successfully halted device
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ sleep 0.1
++ /home/lucas/.local/bin/pyocd reset --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
++ wait 60904
++ wait 60905
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-root.log
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-leaf.log
++ set +x
+post-flash provenance gate capture complete
++ source ./scripts/common.sh
+++ set -euo pipefail
+++++ dirname ./scripts/common.sh
++++ cd ./scripts/..
++++ pwd
+++ REPO_ROOT=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit
+++ DEFAULT_BUILD_DIR=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/build
+++ DEFAULT_TARGET=test_firmware
+++ TOOLCHAIN_FILE=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/cmake/arm-none-eabi-gcc.cmake
+++ find_tool grabserial
+++ local tool=grabserial
+++ command -v grabserial
+++ [[ -x /home/lucas/.local/bin/grabserial ]]
+++ printf '%s\n' /home/lucas/.local/bin/grabserial
+++ return 0
++ grab=/home/lucas/.local/bin/grabserial
+++ find_tool pyocd
+++ local tool=pyocd
+++ command -v pyocd
+++ [[ -x /home/lucas/.local/bin/pyocd ]]
+++ printf '%s\n' /home/lucas/.local/bin/pyocd
+++ return 0
++ pyocd=/home/lucas/.local/bin/pyocd
++ root_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-root.log
++ leaf_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-leaf.log
++ root_pid=65027
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM1 -b 115200 -e 310 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-root.log
++ leaf_pid=65028
++ sleep 1
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM0 -b 115200 -e 310 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-leaf.log
++ /home/lucas/.local/bin/pyocd commander --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 -c halt
+Successfully halted device
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ sleep 0.1
++ /home/lucas/.local/bin/pyocd reset --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
++ wait 65027
++ wait 65028
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-root.log
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-leaf.log
++ set +x
+recorded-flash five-minute capture complete
++ source ./scripts/common.sh
+++ set -euo pipefail
+++++ dirname ./scripts/common.sh
++++ cd ./scripts/..
++++ pwd
+++ REPO_ROOT=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit
+++ DEFAULT_BUILD_DIR=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/build
+++ DEFAULT_TARGET=test_firmware
+++ TOOLCHAIN_FILE=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/cmake/arm-none-eabi-gcc.cmake
+++ find_tool grabserial
+++ local tool=grabserial
+++ command -v grabserial
+++ [[ -x /home/lucas/.local/bin/grabserial ]]
+++ printf '%s\n' /home/lucas/.local/bin/grabserial
+++ return 0
++ grab=/home/lucas/.local/bin/grabserial
+++ find_tool pyocd
+++ local tool=pyocd
+++ command -v pyocd
+++ [[ -x /home/lucas/.local/bin/pyocd ]]
+++ printf '%s\n' /home/lucas/.local/bin/pyocd
+++ return 0
++ pyocd=/home/lucas/.local/bin/pyocd
++ leaf_uid=99063602000528205539bee7957c8dea000000006e052820
++ hook_elf=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.elf
++ hook_manifest=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.manifest
++ sha256sum /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.elf /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.manifest
+517b556c3ac070dfc23fc9bf684617fd35884fa42cc9d2c694805b5922f41977  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.elf
+c46b46a22e01f9bc1b8ccda9a4fd24e595cb1a496290b1f7818ba385294dd0bb  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.manifest
++ /home/lucas/.local/bin/pyocd commander --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 -c 'read32 0x100000a4 8'
+100000a4:  060a4bdc 6d643803                      |..K.md8.|
++ /home/lucas/.local/bin/pyocd erase --no-config --mass -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
+0000559 I Mass erasing device... [eraser]
+0000761 I Mass erase complete [eraser]
++ /home/lucas/.local/bin/pyocd load --no-config --no-reset -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.elf
+0000566 I Loading /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-hackdrop-advadc4b0a0603f8-4afe7208f653.elf [load_cmd]
+0000567 I Erasing... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0002972 I Programming... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0006635 I Erased 98304 bytes (24 sectors), programmed 98304 bytes (24 pages), identical 0 bytes (0 pages) at 15.82 kB/s [loader]
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ root_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-root.log
++ leaf_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-leaf.log
++ root_pid=67157
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM1 -b 115200 -e 25 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-root.log
++ leaf_pid=67158
++ sleep 1
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM0 -b 115200 -e 25 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-leaf.log
++ /home/lucas/.local/bin/pyocd commander --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 -c halt
+Successfully halted device
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ sleep 0.1
++ /home/lucas/.local/bin/pyocd reset --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
++ wait 67157
++ wait 67158
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-root.log
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-leaf.log
++ set +x
+UID-bound HACK-drop capture complete
++ source ./scripts/common.sh
+++ set -euo pipefail
+++++ dirname ./scripts/common.sh
++++ cd ./scripts/..
++++ pwd
+++ REPO_ROOT=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit
+++ DEFAULT_BUILD_DIR=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/build
+++ DEFAULT_TARGET=test_firmware
+++ TOOLCHAIN_FILE=/home/lucas/Projects/tron-worktrees/ble-bidi-a098048/microbit/cmake/arm-none-eabi-gcc.cmake
+++ find_tool grabserial
+++ local tool=grabserial
+++ command -v grabserial
+++ [[ -x /home/lucas/.local/bin/grabserial ]]
+++ printf '%s\n' /home/lucas/.local/bin/grabserial
+++ return 0
++ grab=/home/lucas/.local/bin/grabserial
+++ find_tool pyocd
+++ local tool=pyocd
+++ command -v pyocd
+++ [[ -x /home/lucas/.local/bin/pyocd ]]
+++ printf '%s\n' /home/lucas/.local/bin/pyocd
+++ return 0
++ pyocd=/home/lucas/.local/bin/pyocd
++ leaf_uid=99063602000528205539bee7957c8dea000000006e052820
++ hook_elf=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.elf
++ hook_manifest=/tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.manifest
++ sha256sum /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.elf /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.manifest
+96d1eec3783a0abdf7d4f770a4462c68ee1e54ef38f5fcd6362c9376b270fb18  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.elf
+8cfa5b8f5aa7b78bfe3c1b8ad956a2bcbb067e5a8183231120216e87b06c06fd  /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.manifest
++ /home/lucas/.local/bin/pyocd commander --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 -c 'read32 0x100000a4 8'
+100000a4:  060a4bdc 6d643803                      |..K.md8.|
++ /home/lucas/.local/bin/pyocd erase --no-config --mass -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
+0000565 I Mass erasing device... [eraser]
+0000767 I Mass erase complete [eraser]
++ /home/lucas/.local/bin/pyocd load --no-config --no-reset -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833 /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.elf
+0000561 I Loading /tmp/opencode/tavrn-linkv2-4afe720-artifacts/tron-ble-linkv2-harness-balanced-candidate1-leaf-busy-advadc4b0a0603f8-4afe7208f653.elf [load_cmd]
+0000562 I Erasing... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0002968 I Programming... [loader]
+[---|---|---|---|---|---|---|---|---|----]
+[========================================]
+0006633 I Erased 98304 bytes (24 sectors), programmed 98304 bytes (24 pages), identical 0 bytes (0 pages) at 15.81 kB/s [loader]
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ root_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-root.log
++ leaf_log=hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-leaf.log
++ root_pid=67619
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM1 -b 115200 -e 25 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-root.log
++ leaf_pid=67620
++ sleep 1
++ /home/lucas/.local/bin/grabserial -d /dev/ttyACM0 -b 115200 -e 25 -T -t -Q -o hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-leaf.log
++ /home/lucas/.local/bin/pyocd commander --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833 -c halt
+Successfully halted device
++ /home/lucas/.local/bin/pyocd reset --no-config -u 99063602000528205539bee7957c8dea000000006e052820 -t nrf52833
++ sleep 0.1
++ /home/lucas/.local/bin/pyocd reset --no-config -u 9906360200052820cf57b9f988a30e16000000006e052820 -t nrf52833
++ wait 67619
++ wait 67620
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-root.log
++ test -s hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-leaf.log
++ set +x
+UID-bound BUSY capture complete
++ sha256sum hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-root.log hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-leaf.log hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-root.log hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-leaf.log hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-root.log hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-leaf.log hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-root.log hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-leaf.log
+9860e0838a0a4bf71e49aa99eccfd5de35eda13267a158217da17d6800556bad  hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-root.log
+00d7c82d5a036681cf4ee64747e7a9a570f039c8f89f34759e0cbfb1ad18fb9a  hardware-results/2026-08-05-linkv2-4afe720-provenance-gate-leaf.log
+6a76dddd7b251ba00f59caef0d42388640c65535f94e77e7c894fca56a09a720  hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-root.log
+37b282df486bfda07c2c57d6e01c9b610688c806e456e503c2b4aa30115b4333  hardware-results/2026-08-05-linkv2-4afe720-provenance-5m-leaf.log
+cd194772430aa32e14f068cd89ee11a9784c39685c61111b5ea356fdcc25f002  hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-root.log
+01eaa4073a59ebaa1504cc8ebf5dab35296d62207375c8a3f4a7f95f36caff90  hardware-results/2026-08-05-linkv2-4afe720-provenance-hackdrop-leaf.log
+b5988ac1174fb32df6c80c0c8bf62f7493c2adab329b80c59927b4a7bcaf7dba  hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-root.log
+2aa597e44bf9fb960113bac6a6e60c15a894aa9ec3882b7f103f17421a4c9f9a  hardware-results/2026-08-05-linkv2-4afe720-provenance-busy-leaf.log
++ set +x
+all recorded-flash capture hashes complete
