@@ -167,7 +167,7 @@ static void test_queue_and_identity_decode(void)
     };
     uint32_t origin_session = UINT32_MAX;
     uint32_t identity = UINT32_MAX;
-    uint8_t index;
+    uint16_t index;
 
     routed_benchmark_attempt_queue_init(&queue);
     memset(&attempt, 0, sizeof(attempt));

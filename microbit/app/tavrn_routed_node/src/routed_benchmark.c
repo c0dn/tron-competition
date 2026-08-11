@@ -297,8 +297,8 @@ routed_benchmark_attempt_queue_status_t routed_benchmark_attempt_queue_offer(
         return ROUTED_BENCHMARK_ATTEMPT_QUEUE_DROPPED;
     }
     queue->records[queue->tail] = *attempt;
-    queue->tail = (uint8_t)((queue->tail + 1u) %
-                            ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
+    queue->tail = (uint16_t)((queue->tail + 1u) %
+                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
     queue->count++;
     if (queue->count > queue->high_water) {
         queue->high_water = queue->count;
@@ -316,8 +316,8 @@ routed_benchmark_attempt_queue_status_t routed_benchmark_attempt_queue_take(
         return ROUTED_BENCHMARK_ATTEMPT_QUEUE_EMPTY;
     }
     *attempt_out = queue->records[queue->head];
-    queue->head = (uint8_t)((queue->head + 1u) %
-                            ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
+    queue->head = (uint16_t)((queue->head + 1u) %
+                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
     queue->count--;
     return ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
 }

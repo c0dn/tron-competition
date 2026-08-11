@@ -636,12 +636,15 @@ def monitor_captures(children: list[CaptureChild], state: Any, output_dir: Path,
                       snapshot_seconds: float, charts: bool, sleep: Callable[[float], None] = time.sleep,
                       input_ready: Callable[[], bool] | None = None, max_cycles: int | None = None,
                       chart_renderer: Callable[[Path, str], None] | None = None,
-                      killpg: Callable[[int, int], None] = os.killpg) -> str:
+                      killpg: Callable[[int, int], None] = os.killpg,
+                      duration_seconds: float | None = None) -> str:
     """Tail active logs; Ctrl-C is normal, one child exit is a failed run."""
     previous_snapshot = time.monotonic()
     cycles = 0
     provisional_number = 0
     periodic_number = 0
+    duration_deadline = (time.monotonic() + duration_seconds
+                         if duration_seconds is not None else None)
     try:
         while max_cycles is None or cycles < max_cycles:
             cycles += 1
@@ -650,6 +653,10 @@ def monitor_captures(children: list[CaptureChild], state: Any, output_dir: Path,
             for child in children:
                 _tail(child, state)
             now = time.monotonic()
+            if duration_deadline is not None and now >= duration_deadline:
+                events.append({"at": utc_now(), "event": "capture_duration", "status": "elapsed",
+                               "seconds": duration_seconds})
+                return "completed_by_duration"
             requested = input_ready() if input_ready is not None else False
             if input_ready is None and sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
                 requested = sys.stdin.readline().strip().lower() == "p"
@@ -687,11 +694,12 @@ def render_pinned_charts(uv: str, analyzer: str, bundle: Path, name: str, events
 
 
 def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: str, grabserial: str,
-                    uv: str, analyzer: str, run_dir: Path, events: list[dict[str, Any]], charts: bool,
-                    snapshot_seconds: float,
-                    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-                    popen: Callable[..., Any] = subprocess.Popen,
-                    killpg: Callable[[int, int], None] = os.killpg) -> tuple[str, Any, CaptureEnd]:
+                     uv: str, analyzer: str, run_dir: Path, events: list[dict[str, Any]], charts: bool,
+                     snapshot_seconds: float,
+                     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+                     popen: Callable[..., Any] = subprocess.Popen,
+                     killpg: Callable[[int, int], None] = os.killpg,
+                     duration_seconds: float | None = None) -> tuple[str, Any, CaptureEnd]:
     children: list[CaptureChild] = []
     logs = run_dir / "logs"
     state = analysis.ObservationState(
@@ -729,7 +737,8 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
         else:
             chart_renderer = lambda bundle, name: render_pinned_charts(uv, analyzer, bundle, name, events, run)
             status = monitor_captures(children, state, run_dir / "outputs", events, snapshot_seconds, charts,
-                                      chart_renderer=chart_renderer, killpg=killpg)
+                                      chart_renderer=chart_renderer, killpg=killpg,
+                                      duration_seconds=duration_seconds)
     except TerminationRequest as request:
         events.append({"at": utc_now(), "event": "termination_request", "status": "received",
                        "signal": signal.Signals(request.signum).name})
@@ -861,6 +870,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--snapshot-seconds", type=float, default=0.0); parser.add_argument("--charts", action="store_true")
+    parser.add_argument("--duration-seconds", type=float)
     args = parser.parse_args(argv)
     run_dir, inventory_path, plan_path = Path(args.run_dir), Path(args.inventory), Path(args.run_plan)
     plan: dict[str, Any] | None = None; checked: list[dict[str, Any]] = []; events: list[dict[str, Any]] = []; pinned: dict[str, Any] = {}
@@ -872,6 +882,8 @@ def main(argv: list[str]) -> int:
             raise RunError("run directory already exists; refusing overwrite")
         if args.dry_run and args.preflight_only:
             raise RunError("--dry-run and --preflight-only are mutually exclusive")
+        if args.duration_seconds is not None and args.duration_seconds <= 0:
+            raise RunError("--duration-seconds must be positive")
         # These must be taken before JSON/TSV parsing, then checked again after
         # copy2 so a mutable publisher cannot swap the accepted input bytes.
         input_hashes = {"inventory": sha256_file(inventory_path), "plan": sha256_file(plan_path)}
@@ -914,16 +926,18 @@ def main(argv: list[str]) -> int:
             return 0
         status, capture_state, capture_end = _execute_with_termination_handlers(
             lambda: execute_capture(plan, checked, pinned_pyocd, pinned_grabserial, pinned_uv,
-                                     pinned_analyzer, run_dir, events, args.charts, args.snapshot_seconds))
+                                     pinned_analyzer, run_dir, events, args.charts, args.snapshot_seconds,
+                                     duration_seconds=args.duration_seconds))
         chart_renderer = lambda bundle, name: render_pinned_charts(pinned_uv, pinned_analyzer, bundle, name,
                                                                       events, subprocess.run)
         final = _write_snapshot(capture_state, run_dir / "outputs", "final", args.charts, chart_renderer)
-        if status in {"completed_by_user", "test_stopped"} and final["proving_status"] != "VALID":
+        completed_statuses = {"completed_by_user", "completed_by_duration", "test_stopped"}
+        if status in completed_statuses and final["proving_status"] != "VALID":
             status = ("failed_invalid_evidence" if final["proving_status"] == "INVALID"
                       else "failed_incomplete_evidence")
         pin_observation_store(pinned, capture_state)
         _write_run_metadata(run_dir, plan, checked, pinned, events, status, started_utc, capture_end.utc)
-        return 0 if status in {"completed_by_user", "test_stopped"} and final["proving_status"] == "VALID" else 1
+        return 0 if status in completed_statuses and final["proving_status"] == "VALID" else 1
     except (RunError, analysis.CaptureError) as error:
         error_end = capture_end or getattr(error, "capture_end", None)
         failed_state = capture_state or getattr(error, "observation_state", None)

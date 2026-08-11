@@ -8,7 +8,7 @@
  * the same source boundary. */
 
 #define ROUTED_BENCHMARK_HALF_RANGE 0x80000000u
-#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 32u
+#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 512u
 #define ROUTED_BENCHMARK_STATUS_NOT_READY 0xffffffffu
 #define ROUTED_BENCHMARK_APP_KIND 0x7fu
 #define ROUTED_BENCHMARK_APP_PAYLOAD_BYTES 8u
@@ -23,7 +23,7 @@
 #define ROUTED_BENCHMARK_IDENTITY_BURST_MASK 0x001fffffu
 
 typedef char routed_benchmark_attempt_queue_capacity_guard[
-    (ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY == 32u) ? 1 : -1];
+    (ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY == 512u) ? 1 : -1];
 
 typedef enum routed_benchmark_workload {
     ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT = 0,
@@ -100,16 +100,16 @@ typedef struct routed_benchmark_attempt {
 typedef struct routed_benchmark_attempt_queue {
     routed_benchmark_attempt_t records[ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY];
     uint32_t dropped_count;
-    uint8_t high_water;
-    uint8_t head;
-    uint8_t tail;
-    uint8_t count;
+    uint16_t high_water;
+    uint16_t head;
+    uint16_t tail;
+    uint16_t count;
 } routed_benchmark_attempt_queue_t;
 
 typedef struct routed_benchmark_attempt_queue_snapshot {
     uint32_t dropped_count;
-    uint8_t high_water;
-    uint8_t count;
+    uint16_t high_water;
+    uint16_t count;
 } routed_benchmark_attempt_queue_snapshot_t;
 
 /* The workload is fixed: role A offers a heartbeat every second forever and a

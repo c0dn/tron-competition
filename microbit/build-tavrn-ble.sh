@@ -436,13 +436,13 @@ if [[ "$stack_usage" == "ON" ]]; then
             resource_declared_fixed_state_delta=5304
         fi
         if [[ "$benchmark" == "ON" ]]; then
-            # Continuous benchmark observability is hook-only and adds 2368
+            # Continuous benchmark observability is hook-only and adds 21572
             # bytes of aligned fixed state: its scheduler/counters, the
-            # 32-entry copied-attempt queue, the 760-byte static logger-copy
+            # 512-entry copied-attempt queue, the 760-byte static logger-copy
             # store (plus map alignment), the FULL GTT cursor, and the
             # control/scheduler proxy observer.
             resource_declared_fixed_state_delta=$((
-                resource_declared_fixed_state_delta + 2368))
+                resource_declared_fixed_state_delta + 21572))
         fi
     fi
 fi
