@@ -32,6 +32,15 @@ static void node_copy_bytes(void *dst, const void *src, uint8_t len)
     }
 }
 
+/* Heartbeats are liveness traffic, not incidents, and at the wearable's
+ * 500 ms cadence they would otherwise account for most of this log. Print
+ * one in this many; incidents are never throttled. */
+#ifndef NODE_HEARTBEAT_LOG_EVERY
+#define NODE_HEARTBEAT_LOG_EVERY 8u
+#endif
+
+static uint32_t hb_seen;
+
 /* Short labels for the wearable's incident types, for the serial log. */
 static const char *mind_event_name(uint8_t event_type)
 {
@@ -247,7 +256,8 @@ static void schedule_own_packet(ble_mesh_scheduler_t *sched,
 static void maybe_schedule_relay(ble_mesh_scheduler_t *sched,
                                  const tron_mesh_packet_t *packet,
                                  uint16_t self,
-                                 uint32_t now)
+                                 uint32_t now,
+                                 int verbose)
 {
     tron_mesh_packet_t relay;
     uint32_t backoff;
@@ -267,11 +277,13 @@ static void maybe_schedule_relay(ble_mesh_scheduler_t *sched,
 
     if (enqueue_packet(sched, &relay, BLE_MESH_SCHED_TX_RELAY, now + backoff)) {
         node_counters.relay_scheduled++;
-        tm_printf((UB *)"mesh relay queued src=0x%04x seq=%lu ttl=%u backoff=%lums\n",
-                  relay.src,
-                  (UW)relay.seq24,
-                  (UINT)relay.ttl,
-                  (UW)backoff);
+        if (verbose) {
+            tm_printf((UB *)"  relay -> src=0x%04x seq=%lu ttl=%u backoff=%lums\n",
+                      relay.src,
+                      (UW)relay.seq24,
+                      (UINT)relay.ttl,
+                      (UW)backoff);
+        }
     }
 }
 
@@ -282,6 +294,9 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
 {
     tron_mesh_packet_t packet;
     tron_mesh_packet_result_t result;
+    /* Whether this packet's relay is worth a log line. Heartbeat relays are
+     * throttled alongside their rx lines so the pair stays consistent. */
+    int verbose = 1;
 
     result = tron_mesh_packet_decode(event->adv_data, event->adv_len, &packet);
     if (result != TRON_MESH_PACKET_OK) {
@@ -336,17 +351,32 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
         }
         node_copy_bytes(&p, packet.payload, (uint8_t)MIND_PAYLOAD_SIZE);
 
-        tm_printf((UB *)"mesh rx event src=0x%04x seq=%lu ttl=%u rssi=-%u dBm "
-                        "type=%u(%s) conf=%u svm=%u mic=%u\n",
-                  packet.src,
-                  (UW)packet.seq24,
-                  (UINT)packet.ttl,
-                  (UINT)event->rssi_dbm,
-                  (UINT)p.event_type,
-                  mind_event_name(p.event_type),
-                  (UINT)p.confidence,
-                  (UINT)p.accel_svm,
-                  (UINT)p.mic_level);
+        /* Heartbeats arrive twice a second and incidents every few seconds,
+         * so logging both the same way buries the thing the log exists to
+         * show. Heartbeats get a short line, and only every Nth, while every
+         * incident is printed. Both stay under 80 columns: the old single
+         * format ran past it and wrapped mid-token, splitting the event name
+         * across two lines. */
+        if (p.event_type == MIND_EVT_HEARTBEAT) {
+            verbose = ((hb_seen++ % NODE_HEARTBEAT_LOG_EVERY) == 0u);
+            if (verbose) {
+                tm_printf((UB *)"hb    src=0x%04x seq=%lu -%udBm svm=%u\n",
+                          packet.src,
+                          (UW)packet.seq24,
+                          (UINT)event->rssi_dbm,
+                          (UINT)p.accel_svm);
+            }
+        } else {
+            tm_printf((UB *)"EVENT src=0x%04x seq=%lu ttl=%u -%udBm %s conf=%u svm=%u mic=%u\n",
+                      packet.src,
+                      (UW)packet.seq24,
+                      (UINT)packet.ttl,
+                      (UINT)event->rssi_dbm,
+                      mind_event_name(p.event_type),
+                      (UINT)p.confidence,
+                      (UINT)p.accel_svm,
+                      (UINT)p.mic_level);
+        }
         break;
     }
 
@@ -361,7 +391,7 @@ static void handle_packet(ble_mesh_scheduler_t *sched,
         return;
     }
 
-    maybe_schedule_relay(sched, &packet, self, now);
+    maybe_schedule_relay(sched, &packet, self, now, verbose);
 }
 
 LOCAL void mesh_node_task(INT stacd, void *exinf)

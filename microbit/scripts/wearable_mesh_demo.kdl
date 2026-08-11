@@ -1,0 +1,55 @@
+// Zellij layout for the wearable -> mesh-node demo.
+//
+// Run from the microbit/ directory; paths below are relative to it:
+//
+//   zellij -n scripts/wearable_mesh_demo.kdl -s tron-wearable-demo
+//
+// Use -n (--new-session-with-layout), not -l/--layout: with -s, -l means
+// "add these panes as a tab to an existing session" and fails if none exists.
+//
+// If you start this detached (e.g. wrapped in `script` so it gets a pty),
+// kill that bootstrap client once the panes are up:
+//
+//   ps -eo pid,comm | awk '$2=="script"{print $1}' | xargs -r kill
+//
+// Zellij sizes panes to the SMALLEST attached client, so an 80x24 bootstrap
+// pty left running will pin the whole session to 80x24 no matter how large
+// the window you later attach with.
+//
+// What the two panes show:
+//
+//   left   WEARABLE 0x0101  originates. Accel sampling, plus an
+//                           "EVENT injected ... admitted active=N" line per
+//                           incident. active=2 is two events resident at
+//                           once, which is the interleaving case.
+//
+//   right  MESH NODE 0x0002 receives. "mesh rx event src=0x0101" is the
+//                           incident arriving from the other board, decoded
+//                           out of the mesh frame; the "relay queued" line
+//                           after it is the node forwarding at ttl=2.
+//
+// Only one line appears per incident even though ~9 copies are sent: the
+// node's duplicate suppression collapses the spray, which is visible in the
+// duplicate_drop counter climbing rather than as repeated rx lines.
+//
+// Serial devices are addressed through /dev/serial/by-id so the layout does
+// not break when the two boards enumerate in a different order after a
+// replug. The wearable is the CMSIS-DAP probe ending e038c4d5, the mesh node
+// the one ending fc6f56ca.
+
+layout {
+    pane_template name="serial" {
+        command "grabserial"
+    }
+
+    pane split_direction="vertical" {
+        serial name="WEARABLE 0x0101 (originator)" {
+            args "-d" "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820e038c4d55262d96a000000006e052820-if01" \
+                 "-b" "115200" "-t"
+        }
+        serial name="MESH NODE 0x0002 (receiver + relay)" {
+            args "-d" "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820fc6f56ca396de6e8000000006e052820-if01" \
+                 "-b" "115200" "-t"
+        }
+    }
+}
