@@ -3039,10 +3039,10 @@ EXPORT INT usermain(void)
     ring_init(&delivery_state.published);
     ring_init(&local_event_ring);
 #if TRON_BUILD_BENCHMARK_MODE
-    /* This is intentionally before radio initialization.  The two-minute
-     * identification buffer continuously scans the immutable role digit, then
-     * leaves the matrix fully off before any measured radio activity starts. */
-    display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 120000u);
+    /* This is intentionally before radio initialization.  It never starts the
+     * continuous display task: after exactly 1500 ms of digit scanning the
+     * matrix is fully off. */
+    display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 1500u);
 #endif
     if (!tron_timer_config_is_valid(&tron_timer_config) ||
         ble_radio_try_init(tron_timer_config.radio_state_timeout_ms) != BLE_RADIO_OP_OK ||

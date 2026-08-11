@@ -187,12 +187,12 @@ else:
     cleanup_positions = [logger_failure_body.find(step) for step in cleanup_steps]
     if -1 in cleanup_positions or cleanup_positions != sorted(cleanup_positions):
         errors.append("logger start failure does not stop cyclic and terminate mesh")
-if ("display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 120000u);" not in usermain or
+if ("display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 1500u);" not in usermain or
         usermain.find("display_show_benchmark_role") > usermain.find("ble_radio_try_init")):
     errors.append("benchmark role scan is not before radio initialization")
 benchmark_branch = re.search(
     r"#if TRON_BUILD_BENCHMARK_MODE\s*\n\s*/\*.*?\*/\s*"
-    r"display_show_benchmark_role\(TRON_BUILD_BENCH_ROLE_NUMBER, 120000u\);\s*#endif",
+    r"display_show_benchmark_role\(TRON_BUILD_BENCH_ROLE_NUMBER, 1500u\);\s*#endif",
     main, re.S)
 identify_branch = re.search(
     r"#if TRON_BUILD_BENCH_IDENTIFY_DISPLAY && !TRON_BUILD_BENCHMARK_MODE\s*"
