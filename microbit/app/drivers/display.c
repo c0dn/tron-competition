@@ -33,10 +33,6 @@ static const UB role_digit_glyphs[6][5] = {
     { 0x0eu, 0x01u, 0x0fu, 0x11u, 0x0eu },
 };
 
-/* The static post-scan indication uses six distinct matrix positions. */
-static const UB role_static_x[6] = { 0u, 2u, 4u, 0u, 2u, 4u };
-static const UB role_static_y[6] = { 0u, 0u, 0u, 4u, 4u, 4u };
-
 static void all_off(void)
 {
     INT i;
@@ -163,17 +159,12 @@ void display_show_digit(UINT digit)
 
 void display_show_benchmark_role(UINT role, UINT scan_ms)
 {
-    UINT index;
-
     if (role < 1u || role > 6u) {
         return;
     }
-    index = role - 1u;
     configure_pins();
-    scan_rows(role_digit_glyphs[index], scan_ms);
+    scan_rows(role_digit_glyphs[role - 1u], scan_ms);
     all_off();
-    gpio_high(row_pin[role_static_y[index]]);
-    gpio_low(col_pin[role_static_x[index]]);
 }
 
 void display_set_rows(const UB rows[5])

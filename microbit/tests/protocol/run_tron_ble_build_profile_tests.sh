@@ -6,6 +6,7 @@ MICROBIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK_DIR="$(mktemp -d)"
 TOOLCHAIN="${MICROBIT_ROOT}/cmake/arm-none-eabi-gcc.cmake"
 FIXTURES="${MICROBIT_ROOT}/tests/protocol/fixtures"
+SIX_BOARD_INVENTORY="${MICROBIT_ROOT}/hardware-results/2026-08-11-tavrn-six-board-inventory.tsv"
 EXPIRY_REPORT=""
 EXPIRY_FIXTURES=""
 
@@ -87,6 +88,50 @@ publisher_fail_with() {
     fi
 }
 
+publisher_configure_fail_with() {
+    local name="$1"
+    local expected="$2"
+    local status
+    shift 2
+
+    set +e
+    bash "$MICROBIT_ROOT/build-tavrn-ble.sh" "$@" --out "$WORK_DIR/$name" \
+        >"$WORK_DIR/$name.log" 2>&1
+    status=$?
+    set -e
+    if [[ $status -ne 1 ]]; then
+        printf 'expected publisher configure failure status 1: %s (got %s)\n' \
+            "$name" "$status" >&2
+        return 1
+    fi
+    if ! grep -Fq -- "$expected" "$WORK_DIR/$name.log"; then
+        printf 'publisher configure failure %s lacks expected diagnostic: %s\n' \
+            "$name" "$expected" >&2
+        return 1
+    fi
+}
+
+make_clean_publisher_source() {
+    local source_root="$WORK_DIR/clean-publisher-source"
+    local kernel_origin="$WORK_DIR/clean-publisher-kernel-origin"
+
+    mkdir -p "$source_root"
+    cp -a "$MICROBIT_ROOT/." "$source_root/"
+    cp -a "$MICROBIT_ROOT/libs/mtkernel_3" "$kernel_origin"
+    rm -rf "$source_root/libs/mtkernel_3" "$kernel_origin/.git"
+    git -C "$kernel_origin" init --quiet
+    git -C "$kernel_origin" add .
+    git -C "$kernel_origin" -c user.name=profile-test -c user.email=profile-test@example.invalid \
+        commit --quiet -m fixture
+    git -C "$source_root" init --quiet
+    git -C "$source_root" -c protocol.file.allow=always submodule add --quiet \
+        "$kernel_origin" libs/mtkernel_3
+    git -C "$source_root" add .
+    git -C "$source_root" -c user.name=profile-test -c user.email=profile-test@example.invalid \
+        commit --quiet -m fixture
+    printf '%s\n' "$source_root"
+}
+
 require_line() {
     local expected="$1"
     local file="$2"
@@ -144,6 +189,7 @@ import sys
 commands_path = pathlib.Path(sys.argv[1])
 source = pathlib.Path(sys.argv[2]).resolve()
 definition = "-D" + sys.argv[3]
+macro = definition.split("=", 1)[0]
 target = sys.argv[4]
 entries = json.loads(commands_path.read_text(encoding="utf-8"))
 matches = []
@@ -163,7 +209,7 @@ arguments = entry.get("arguments")
 if not isinstance(arguments, list):
     arguments = shlex.split(entry.get("command", ""))
 definitions = [argument for argument in arguments
-               if argument.startswith("-DINITTASK_STKSZ")]
+               if argument.startswith(macro)]
 if definitions != [definition]:
     raise SystemExit("compile command for %s has %r, expected [%r]" %
                      (source, definitions, definition))
@@ -264,13 +310,13 @@ expiry_manifest_path() {
     local manifests=()
     local candidate
 
-    for candidate in "$out_dir"/*.manifest; do
+    for candidate in "$out_dir"/*.manifest "$out_dir"/*/*.manifest; do
         [[ -f "$candidate" ]] || continue
         [[ "$candidate" == *.build-config.manifest ]] && continue
         manifests+=("$candidate")
     done
     if [[ ${#manifests[@]} -ne 1 ]]; then
-        printf 'expected one published artifact manifest in %s\n' "$out_dir" >&2
+        printf 'expected one published artifact manifest in or beneath %s\n' "$out_dir" >&2
         return 1
     fi
     printf '%s\n' "${manifests[0]}"
@@ -418,7 +464,7 @@ if not all(re.fullmatch(r"[0-9]+", value) for value in
            (map_unallocated, reserve, post_reserve)):
     raise SystemExit(1)
 map_unallocated, reserve, post_reserve = map(int, (map_unallocated, reserve, post_reserve))
-if reserve != 12288 or map_unallocated < reserve or \
+if reserve != 12592 or map_unallocated < reserve or \
         post_reserve != map_unallocated - reserve or post_reserve < 8192:
     raise SystemExit(1)
 PY
@@ -616,13 +662,13 @@ PY
     full_balanced_initial_task_static_frame="$(acceptance_log_value INITIAL_TASK_STATIC_FRAME_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
     full_balanced_initial_task_logical_headroom="$(acceptance_log_value INITIAL_TASK_LOGICAL_HEADROOM_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
     [[ "$full_fast_map_unallocated_ram" =~ ^[0-9]+$ &&
-       "$full_fast_runtime_ram_reserve" == 12288 &&
+       "$full_fast_runtime_ram_reserve" == 12592 &&
        "$full_fast_post_reserve_ram" =~ ^[0-9]+$ &&
        "$full_fast_initial_task_stack" == 4096 &&
        "$full_fast_initial_task_static_frame" == 440 &&
        "$full_fast_initial_task_logical_headroom" == 3656 &&
        "$full_balanced_map_unallocated_ram" =~ ^[0-9]+$ &&
-       "$full_balanced_runtime_ram_reserve" == 12288 &&
+       "$full_balanced_runtime_ram_reserve" == 12592 &&
        "$full_balanced_post_reserve_ram" =~ ^[0-9]+$ &&
        "$full_balanced_initial_task_stack" == 4096 &&
        "$full_balanced_initial_task_static_frame" == 440 &&
@@ -781,6 +827,22 @@ valid_candidate_args=(
     -DTRON_TARGET_PROBE_UID=board-a
     -DTRON_TARGET_INVENTORY_FILE="$FIXTURES/tavrn_inventory_valid.tsv"
 )
+six_board_routed_candidate_args=(
+    -DTRON_PHASE1_TARGET=ROUTED
+    -DTRON_NODE_MODE=TAVRN_ROUTED
+    -DTRON_HARDWARE_CANDIDATE=ON
+    -DTRON_ADVA_OVERRIDE=18:42:de:52:4a:dd
+    -DTRON_TARGET_PROBE_UID=9906360200052820cf57b9f988a30e16000000006e052820
+    -DTRON_TARGET_INVENTORY_FILE="$SIX_BOARD_INVENTORY"
+)
+ROUTED_SID8_STATUS_INVENTORY="$WORK_DIR/tavrn_inventory_routed_sid8_status.tsv"
+printf '%s\t%s\n' \
+    board-a 00:42:de:52:4a:dd \
+    board-b 00:43:0a:06:03:f8 \
+    board-c 1e:33:a7:2f:8e:d8 \
+    board-d 51:56:ae:12:21:ca \
+    board-e be:65:0b:2c:96:d0 \
+    board-f 56:a2:44:0e:9e:d6 > "$ROUTED_SID8_STATUS_INVENTORY"
 
 # STACK-INIT-RED: a routed build must publish a dedicated initial-task stack
 # capacity rather than silently inheriting the kernel's 1024-byte default.
@@ -797,6 +859,9 @@ require_line 'build.behavior=LEGACY_FLOOD' "$legacy_manifest"
 require_line 'build.initial_task_stack_bytes=1024' "$legacy_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$legacy_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
+require_line 'build.routed_logger_task_stack_bytes=1840' "$legacy_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes=1840' "$legacy_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
 require_line 'resource.runtime_ram_reserve_bytes=0' "$legacy_manifest"
 require_line 'identity.adva=NOT_APPLICABLE' "$legacy_manifest"
 require_line 'link_test.peer_adva=NOT_APPLICABLE' "$legacy_manifest"
@@ -843,6 +908,9 @@ require_line 'capacity.retry_log_mailbox.state=NOT_APPLICABLE' "$runtime_manifes
 require_line 'build.initial_task_stack_bytes=1024' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
+require_line 'build.routed_logger_task_stack_bytes=1840' "$runtime_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes=1840' "$runtime_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
 require_line 'resource.runtime_ram_reserve_bytes=0' "$runtime_manifest"
 require_line 'bench.identify_display=OFF' "$runtime_manifest"
 require_line 'bench.role_number=0' "$runtime_manifest"
@@ -891,7 +959,10 @@ require_line 'feature.level.effective=AODV_ONLY' "$routed_manifest"
 require_line 'build.initial_task_stack_bytes=4096' "$routed_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
-require_line 'resource.runtime_ram_reserve_bytes=12288' "$routed_manifest"
+require_line 'build.routed_logger_task_stack_bytes=1840' "$routed_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes=1840' "$routed_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=12592' "$routed_manifest"
 require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,aodv-only,typed-runtime-observability,rreq-scope-telemetry' "$routed_manifest"
 require_line 'capacity.aodv_routes.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.aodv_action_queue.state=IMPLEMENTED' "$routed_manifest"
@@ -921,8 +992,10 @@ require_line 'capacity.maintenance_pending.state=NOT_IMPLEMENTED' "$routed_manif
 require_line 'link_test.peer_adva=dc:4b:0a:06:03:f8' "$routed_manifest"
 require_line 'bench.identify_display=OFF' "$routed_manifest"
 require_line 'bench.role_number=0' "$routed_manifest"
-require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 1
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 47 ]]; then
+require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 0
+require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
+require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 48 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
 fi
@@ -944,14 +1017,17 @@ routed_aodv_config="$WORK_DIR/routed-aodv/app/tavrn_routed_node/generated/tavrn_
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_aodv_config" ||
-   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_aodv_config" ||
-   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_aodv_config"; then
+    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u' "$routed_aodv_config"; then
     printf '%s\n' 'AODV_ONLY generated config does not expose the selected feature macro' >&2
     exit 1
 fi
 require_compile_definition_once "$WORK_DIR/routed-aodv/compile_commands.json" \
     "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'INITTASK_STKSZ=4096'
+require_compile_definition_once "$WORK_DIR/routed-aodv/compile_commands.json" \
+    "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'TRON_ROUTED_LOGGER_TASK_STACK_BYTES=1840'
 require_compile_definition_once "$WORK_DIR/routed-aodv/compile_commands.json" \
     "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
     'mtkernel3_microbit_kernel_tavrn_routed_node'
@@ -970,7 +1046,10 @@ require_line 'capacity.repair_data.state=NOT_IMPLEMENTED' "$routed_full_manifest
 require_line 'build.initial_task_stack_bytes=4096' "$routed_full_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_full_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
-require_line 'resource.runtime_ram_reserve_bytes=12288' "$routed_full_manifest"
+require_line 'build.routed_logger_task_stack_bytes=1840' "$routed_full_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes=1840' "$routed_full_manifest"
+require_line 'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=12592' "$routed_full_manifest"
     require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,esc-k1,sid8-identity-context,mentorship-bootstrap,passive-gtt,smart-ttl,adaptive-sid8-hello,hello-ema-snap,hello-topology-reset,hello-broadcast-suppression,hello-liveness-hysteresis,hello-equality-dedupe,hello-gtt-liveness,local-expiry-demand,targeted-freshness-stage0,targeted-hello-request-response,targeted-runtime-binding,retained-hop-full-diameter-rreq-verification,tc-join-leave,general-route-metadata,maintenance-telemetry,tc-metadata-telemetry,typed-runtime-observability,rreq-scope-telemetry,gtt-snapshot' "$routed_full_manifest"
 require_line 'fixed_k.state=1' "$routed_full_manifest"
 require_line 'capacity.gtt_membership.state=IMPLEMENTED' "$routed_full_manifest"
@@ -1010,8 +1089,11 @@ require_line 'bound.mentor_failure_protocol_ms.scope=PROTOCOL_DEADLINES_ONLY_EXC
 require_line 'formula.mentor_failure_protocol_ms=timer.mentor_rssi_weak_delay_ms+timer.mentor_jitter_max_ms+timer.mentor_offer_window_ms+timer.mentor_page_attempts*timer.mentor_page_timeout_ms+timer.mentor_self_bootstrap_ms' "$routed_full_manifest"
 require_line 'bench.identify_display=OFF' "$routed_full_manifest"
 require_line 'bench.role_number=0' "$routed_full_manifest"
-require_selected_source_count "$routed_full_manifest" 'app/drivers/display.c' 1
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 47 ]]; then
+require_selected_source_count "$routed_full_manifest" 'app/drivers/display.c' 0
+require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
+require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 48 ]]; then
     printf '%s\n' 'routed FULL_TAVRN capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1047,14 +1129,17 @@ if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 1' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_LOCAL_REPAIR 0' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_full_config" ||
-   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_full_config" ||
+    ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_full_config" ||
+    ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_full_config" ||
-   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_full_config"; then
+    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u' "$routed_full_config"; then
     printf '%s\n' 'FULL_TAVRN generated config does not expose the selected feature macro' >&2
     exit 1
 fi
 require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
     "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'INITTASK_STKSZ=4096'
+require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
+    "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'TRON_ROUTED_LOGGER_TASK_STACK_BYTES=1840'
 require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
     "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
     'mtkernel3_microbit_kernel_tavrn_routed_node'
@@ -1175,9 +1260,9 @@ if ! grep -Fqx 'static const UB role_digit_glyphs[6][5] = {' "$display_driver" |
     exit 1
 fi
 
-# BENCH-OBS-01: benchmark builds are restricted routed artifacts.  Their
-# offered target, interval, warmup and fixed logger queue are manifest-visible
-# in both AODV_ONLY and FULL_TAVRN, while FULL keeps the resolver isolated.
+# BENCH-OBS-01: continuous control observability is restricted to explicit
+# routed builds.  Normal routed source closures contain none of its state or
+# callbacks; FULL keeps its destination resolver benchmark-only.
 benchmark_aodv_args=(
     -DTRON_PHASE1_TARGET=ROUTED
     -DTRON_NODE_MODE=TAVRN_ROUTED
@@ -1187,31 +1272,42 @@ benchmark_aodv_args=(
     -DTRON_BENCHMARK_MODE=ON
     -DTRON_BENCH_ROLE_NUMBER=1
     -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8
-    -DTRON_LINK_TEST_TX_INTERVAL_MS=100
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=3
+    -DTRON_TEST_RX_BLOCK_ADVA=dc:4b:0a:06:03:f8
 )
 configure_ok routed-benchmark-aodv "${benchmark_aodv_args[@]}"
 benchmark_aodv_manifest="$(routed_manifest_path routed-benchmark-aodv)"
 benchmark_aodv_config="$WORK_DIR/routed-benchmark-aodv/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
 for expected in \
     'bench.mode=ON' \
-    'bench.warmup_ms=60000' \
+    'bench.control_observability=COMPILE_TIME_OPTIONAL' \
+    'bench.heartbeat_interval_ms=1000' \
+    'bench.burst_start_ms=60000' \
+    'bench.burst_period_ms=450000' \
+    'bench.burst_interval_ms=100' \
+    'bench.burst_duration_ms=60000' \
+    'bench.burst_slots=600' \
+    'bench.origin_role=1' \
+    'bench.destination_role=3' \
     'bench.role_number=1' \
     'bench.identify_display=OFF' \
-    'capacity.benchmark_attempt_queue=16' \
+    'build.routed_logger_task_stack_bytes=1840' \
+    'capacity.routed_logger_task_stack_bytes=1840' \
+    'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' \
+    'capacity.benchmark_attempt_queue=32' \
     'capacity.benchmark_attempt_queue.policy=RETAIN_OLDEST_DROP_NEWEST' \
     'capacity.benchmark_attempt_queue.dropped_telemetry=SATURATING_COUNTER' \
-    'capacity.benchmark_attempt_queue.state=IMPLEMENTED' \
-    'link_test.tx_interval_ms=100' \
-    'link_test.transaction_target=3'; do
+    'capacity.benchmark_attempt_queue.state=IMPLEMENTED'; do
     require_line "$expected" "$benchmark_aodv_manifest"
 done
 require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark.c' 1
 require_selected_source_count "$benchmark_aodv_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_observer.c' 1
+require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 if ! grep -Fqx '#define TRON_BUILD_BENCHMARK_MODE 1' "$benchmark_aodv_config" ||
-   ! grep -Fqx '#define TRON_BUILD_BENCH_WARMUP_MS 60000u' "$benchmark_aodv_config"; then
+    ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$benchmark_aodv_config" ||
+   grep -Fq 'TRON_BUILD_BENCH_WARMUP_MS' "$benchmark_aodv_config"; then
     printf '%s\n' 'AODV benchmark generated config lacks benchmark fields' >&2
     exit 1
 fi
@@ -1220,14 +1316,15 @@ build_target routed-benchmark-aodv tavrn_routed_node
 benchmark_full_args=("${benchmark_aodv_args[@]}")
 benchmark_full_args[2]=-DTAVRN_FEATURE_LEVEL=FULL_TAVRN
 benchmark_full_args[6]=-DTRON_BENCH_ROLE_NUMBER=6
-benchmark_full_args+=( -DTRON_BENCH_WARMUP_MS=1234 )
 configure_ok routed-benchmark-full "${benchmark_full_args[@]}"
 benchmark_full_manifest="$(routed_manifest_path routed-benchmark-full)"
 require_line 'feature.level.effective=FULL_TAVRN' "$benchmark_full_manifest"
 require_line 'bench.mode=ON' "$benchmark_full_manifest"
-require_line 'bench.warmup_ms=1234' "$benchmark_full_manifest"
+require_line 'bench.burst_period_ms=450000' "$benchmark_full_manifest"
 require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark.c' 1
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_observer.c' 1
 require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 1
 build_target routed-benchmark-full tavrn_routed_node
@@ -1236,10 +1333,6 @@ configure_fail_with benchmark-invalid-state \
     'TRON_BENCHMARK_MODE must be exactly ON or OFF' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCHMARK_MODE=MAYBE
-configure_fail_with benchmark-warmup-half-range \
-    'TRON_BENCH_WARMUP_MS is outside 0..2147483647' \
-    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
-    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_WARMUP_MS=2147483648
 configure_fail_with benchmark-target \
     'TRON_BENCHMARK_MODE=ON requires ROUTED target' \
     -DTRON_PHASE1_TARGET=LINK -DTRON_BENCHMARK_MODE=ON
@@ -1247,36 +1340,33 @@ configure_fail_with benchmark-hooks \
     'TRON_BENCHMARK_MODE=ON requires TRON_ENABLE_TEST_HOOKS=ON' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCHMARK_MODE=ON \
-    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8
 configure_fail_with benchmark-identify \
     'TRON_BENCHMARK_MODE=ON requires TRON_BENCH_IDENTIFY_DISPLAY=OFF' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
     -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_IDENTIFY_DISPLAY=ON \
     -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+    -DTRON_TEST_RX_BLOCK_ADVA=dc:4b:0a:06:03:f8
 configure_fail_with benchmark-fast \
     'TRON_BENCHMARK_MODE=ON requires TRON_TIMER_PROFILE=BALANCED' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
     -DTRON_BENCHMARK_MODE=ON -DTRON_TIMER_PROFILE=FAST_TEST \
     -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+    -DTRON_TEST_RX_BLOCK_ADVA=dc:4b:0a:06:03:f8
 configure_fail_with benchmark-role \
     'TRON_BENCHMARK_MODE=ON requires TRON_BENCH_ROLE_NUMBER in 1..6' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
-    -DTRON_BENCHMARK_MODE=ON -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+    -DTRON_BENCHMARK_MODE=ON -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8
 configure_fail_with benchmark-peer \
     'TRON_BENCHMARK_MODE=ON requires TRON_LINK_TEST_PEER_ADVA' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
-    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1 \
-    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
-configure_fail_with benchmark-target-zero \
-    'TRON_BENCHMARK_MODE=ON requires a nonzero TRON_LINK_TEST_TRANSACTION_TARGET' \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1
+configure_fail_with benchmark-direct-block \
+    'TRON_BENCHMARK_MODE roles 1 and 3 require TRON_TEST_RX_BLOCK_ADVA' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
     -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1 \
@@ -1435,8 +1525,6 @@ configure_fail routed-wrong-mode -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=NO
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY
 configure_fail routed-invalid-feature -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=SID8
-configure_fail routed-candidate -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
-    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_HARDWARE_CANDIDATE=ON
 
 # BUILD-P1-03: effective legacy alias is compiled and cannot bypass hooks OFF.
 configure_ok legacy-alias -DTRON_PHASE1_TARGET=LEGACY -DTRON_ENABLE_TEST_HOOKS=ON \
@@ -1468,9 +1556,9 @@ configure_fail invalid-full -DTRON_PHASE1_TARGET=LINK -DTAVRN_FEATURE_LEVEL=FULL
 configure_fail fake-repair -DTRON_PHASE1_TARGET=LINK -DTAVRN_ENABLE_LOCAL_REPAIR=ON
 configure_fail fake-patient -DTRON_PHASE1_TARGET=LINK -DTRON_ENABLE_PATIENT_BRIDGE=ON
 configure_fail invalid-network -DTRON_PHASE1_TARGET=LINK -DTRON_NETWORK_ID=0
-# BUILD-P1-05: candidate inventory validates every full AdvA and requires the
-# selected Phase 1 SID16 namespace, while SID8 collision/reservation remains
-# report-only until fixed-k is implemented.
+# BUILD-P1-05: generic inventory validation always gates full AdvA/SID16;
+# routed AODV candidates report SID8 without gating it, while FULL fixed-k=1
+# candidates require the complete fleet SID8 namespace to be safe.
 configure_fail candidate-missing -DTRON_PHASE1_TARGET=LINK -DTRON_HARDWARE_CANDIDATE=ON
 configure_fail inventory-malformed "${valid_candidate_args[@]}" \
     -DTRON_TARGET_INVENTORY_FILE="$FIXTURES/tavrn_inventory_malformed.tsv"
@@ -1511,6 +1599,79 @@ sid8_manifest="$(link_manifest_path sid8-status)"
 require_line 'identity.sid8=0' "$sid8_manifest"
 require_line 'identity.inventory.sid8.unique=no' "$sid8_manifest"
 require_line 'identity.inventory.sid8.nonreserved=no' "$sid8_manifest"
+configure_fail_with routed-candidate-inventory-count \
+    'ROUTED candidate requires exactly 6 inventory records' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_HARDWARE_CANDIDATE=ON \
+    -DTRON_ADVA_OVERRIDE=18:42:de:52:4a:dd -DTRON_TARGET_PROBE_UID=board-a \
+    -DTRON_TARGET_INVENTORY_FILE="$FIXTURES/tavrn_inventory_valid.tsv"
+configure_ok routed-candidate-aodv "${six_board_routed_candidate_args[@]}" \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+routed_candidate_aodv_manifest="$(routed_manifest_path routed-candidate-aodv)"
+for expected in \
+    'candidate.configured=ON' \
+    'candidate.scope=UNHOOKED_ACCEPTANCE' \
+    'identity.width=SID16' \
+    'identity.inventory.record_count=6' \
+    'identity.inventory.full_adva.unique=yes' \
+    'identity.inventory.sid16.unique=yes' \
+    'identity.inventory.sid16.nonreserved=yes' \
+    'identity.inventory.sid8.unique=yes' \
+    'identity.inventory.sid8.nonreserved=yes' \
+    'identity.inventory.selected_width=SID16' \
+    'identity.target_probe_uid=9906360200052820cf57b9f988a30e16000000006e052820' \
+    'identity.adva=18:42:de:52:4a:dd'; do
+    require_line "$expected" "$routed_candidate_aodv_manifest"
+done
+configure_ok routed-candidate-full-repair "${six_board_routed_candidate_args[@]}" \
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTAVRN_ENABLE_LOCAL_REPAIR=ON
+routed_candidate_full_manifest="$(routed_manifest_path routed-candidate-full-repair)"
+for expected in \
+    'candidate.configured=ON' \
+    'candidate.scope=UNHOOKED_ACCEPTANCE' \
+    'feature.repair.effective=ON' \
+    'identity.width=SID8' \
+    'identity.inventory.selected_width=SID8' \
+    'identity.inventory.sid8.unique=yes' \
+    'identity.inventory.sid8.nonreserved=yes'; do
+    require_line "$expected" "$routed_candidate_full_manifest"
+done
+configure_ok routed-candidate-full-benchmark "${six_board_routed_candidate_args[@]}" \
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTRON_TIMER_PROFILE=BALANCED \
+    -DTRON_ENABLE_TEST_HOOKS=ON -DTRON_BENCHMARK_MODE=ON \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=1e:33:a7:2f:8e:d8 \
+    -DTRON_TEST_RX_BLOCK_ADVA=1e:33:a7:2f:8e:d8
+routed_candidate_benchmark_manifest="$(routed_manifest_path routed-candidate-full-benchmark)"
+require_line 'candidate.scope=BENCH_HOOKED_RESTRICTED' "$routed_candidate_benchmark_manifest"
+require_line 'identity.width=SID8' "$routed_candidate_benchmark_manifest"
+require_line 'identity.inventory.selected_width=SID8' "$routed_candidate_benchmark_manifest"
+configure_ok routed-candidate-aodv-sid8-status -DTRON_PHASE1_TARGET=ROUTED \
+    -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=AODV_ONLY \
+    -DTRON_HARDWARE_CANDIDATE=ON -DTRON_ADVA_OVERRIDE=00:42:de:52:4a:dd \
+    -DTRON_TARGET_PROBE_UID=board-a \
+    -DTRON_TARGET_INVENTORY_FILE="$ROUTED_SID8_STATUS_INVENTORY"
+routed_candidate_aodv_sid8_manifest="$(routed_manifest_path routed-candidate-aodv-sid8-status)"
+require_line 'identity.inventory.record_count=6' "$routed_candidate_aodv_sid8_manifest"
+require_line 'identity.inventory.selected_width=SID16' "$routed_candidate_aodv_sid8_manifest"
+require_line 'identity.inventory.sid8.unique=no' "$routed_candidate_aodv_sid8_manifest"
+require_line 'identity.inventory.sid8.nonreserved=no' "$routed_candidate_aodv_sid8_manifest"
+configure_fail_with routed-candidate-full-sid8-status \
+    'FULL_TAVRN candidate requires unique nonreserved inventory SID8' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTRON_HARDWARE_CANDIDATE=ON \
+    -DTRON_ADVA_OVERRIDE=00:42:de:52:4a:dd -DTRON_TARGET_PROBE_UID=board-a \
+    -DTRON_TARGET_INVENTORY_FILE="$ROUTED_SID8_STATUS_INVENTORY"
+configure_fail_with routed-candidate-role-malformed \
+    'TRON_BENCH_ROLE must be a sanitized label' \
+    "${six_board_routed_candidate_args[@]}" -DTAVRN_FEATURE_LEVEL=AODV_ONLY \
+    -DTRON_BENCH_ROLE='role!'
+configure_fail_with routed-candidate-benchmark-topology-mismatch \
+    'Benchmark roles 1/3 require RX block equal peer AdvA' \
+    "${six_board_routed_candidate_args[@]}" -DTAVRN_FEATURE_LEVEL=FULL_TAVRN \
+    -DTRON_TIMER_PROFILE=BALANCED -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1 \
+    -DTRON_LINK_TEST_PEER_ADVA=1e:33:a7:2f:8e:d8 \
+    -DTRON_TEST_RX_BLOCK_ADVA=51:56:ae:12:21:ca
 
 # BUILD-P1-06: exact fixed-capacity/timer and generated source surfaces.
 if grep '^source\.selected\.[0-9].*=' "$runtime_manifest" | grep -q 'tron_mesh_\|aodv_\|tavrn_full\|tavrn_gtt\|tavrn_repair'; then
@@ -1659,7 +1820,7 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     exit 1
 fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 73 ]] ||
-    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 47 ]]; then
+    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 48 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1753,11 +1914,16 @@ set +e
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target ble_link_v2_testbed \
     --candidate --adva 18:42:de:52:4a:dd --probe-uid board-a \
     --inventory "$FIXTURES/tavrn_inventory_valid.tsv" --out "$publisher_out" \
-    >/dev/null 2>&1
+    >"$WORK_DIR/published.log" 2>&1
 candidate_status=$?
 set -e
 if [[ $candidate_status -ne 1 ]]; then
     printf 'dirty candidate publisher exit status=%s, expected 1\n' "$candidate_status" >&2
+    exit 1
+fi
+if ! grep -Fq 'Candidate publication refused: source_dirty=yes submodule_dirty=no' \
+    "$WORK_DIR/published.log"; then
+    printf '%s\n' 'dirty candidate publisher did not report the dirty source state' >&2
     exit 1
 fi
 
@@ -1801,6 +1967,24 @@ if [[ "$routed_published_name_a" != *full-tavrn-phase5-adaptive-hello* &&
     printf '%s\n' 'FULL publisher artifact lacks the Phase 5 adaptive-HELLO tag' >&2
     exit 1
 fi
+for manifest_path in "${routed_published_manifest[@]}"; do
+    routed_published_name="$(manifest_value artifact.name "$manifest_path")"
+    for expected in \
+        'candidate.configured=OFF' \
+        'candidate.scope=DEVELOPMENT_ONLY' \
+        'candidate.eligible=no' \
+        'candidate.hardware_purpose=no' \
+        'candidate.hook_bench_eligible=no' \
+        'candidate.unhooked_acceptance=no' \
+        'identity.adva=RUNTIME_FICR'; do
+        require_line "$expected" "$manifest_path"
+    done
+    if [[ "$routed_published_name" != *candidate0-development* ]]; then
+        printf 'generic routed artifact lacks clear ineligible candidate state: %s\n' \
+            "$routed_published_name" >&2
+        exit 1
+    fi
+done
 collision_publisher_out="$WORK_DIR/collision-published"
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
     --feature FULL_TAVRN --timer BALANCED --enable-hooks ON \
@@ -1821,6 +2005,402 @@ if [[ "$collision_published_name" != *full-tavrn-phase5-adaptive-hello*advadc42d
         "$collision_published_name" >&2
     exit 1
 fi
+
+# BUILD-P6-02: a disposable clean repository with a real clean submodule
+# exercises board-bound routed publication.  This must not borrow the dirty
+# parent worktree's status and uses the exact six-board inventory.
+clean_publisher_root="$(make_clean_publisher_source)"
+clean_inventory="$clean_publisher_root/hardware-results/2026-08-11-tavrn-six-board-inventory.tsv"
+clean_inventory_hash="$(sha256sum "$clean_inventory" | cut -d' ' -f1)"
+clean_uid=9906360200052820cf57b9f988a30e16000000006e052820
+clean_adva=18:42:de:52:4a:dd
+clean_candidate_args=(
+    --target tavrn_routed_node --candidate --adva "$clean_adva" --probe-uid "$clean_uid" \
+    --inventory "$clean_inventory"
+)
+clean_aodv_out="$WORK_DIR/clean-routed-aodv"
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$clean_aodv_out" >"$WORK_DIR/clean-aodv-publish.log"
+clean_aodv_manifest="$(expiry_manifest_path "$clean_aodv_out")"
+clean_aodv_name="$(manifest_value artifact.name "$clean_aodv_manifest")"
+clean_aodv_bundle="$(dirname "$clean_aodv_manifest")"
+if [[ "$clean_aodv_bundle" != "$clean_aodv_out/$clean_aodv_name" ]] ||
+   [[ "$clean_aodv_manifest" != "$clean_aodv_bundle/${clean_aodv_name}.manifest" ]] ||
+   ! grep -Fqx "Published ELF: $clean_aodv_bundle/${clean_aodv_name}.elf" \
+       "$WORK_DIR/clean-aodv-publish.log"; then
+    printf '%s\n' 'candidate publication did not create or report its immutable bundle path' >&2
+    exit 1
+fi
+for expected in \
+    'candidate.configured=ON' \
+    'candidate.scope=UNHOOKED_ACCEPTANCE' \
+    'candidate.clean_source=yes' \
+    'candidate.eligible=yes' \
+    'candidate.hardware_purpose=yes' \
+    'candidate.hook_bench_eligible=no' \
+    'candidate.unhooked_acceptance=yes' \
+    'identity.adva=18:42:de:52:4a:dd' \
+    "identity.target_probe_uid=${clean_uid}" \
+    'identity.width=SID16' \
+    'identity.inventory.record_count=6' \
+    'identity.inventory.full_adva.unique=yes' \
+    'identity.inventory.sid16.unique=yes' \
+    'identity.inventory.sid16.nonreserved=yes' \
+    'identity.inventory.sid8.unique=yes' \
+    'identity.inventory.sid8.nonreserved=yes' \
+    'identity.inventory.selected_width=SID16' \
+    "identity.inventory.sha256=${clean_inventory_hash}" \
+    'source.submodule.count=1' \
+    'source.submodule.0.path=libs/mtkernel_3' \
+    'source.submodule.0.state=clean' \
+    'source.submodule.0.dirty=no' \
+    'source.submodule_dirty=no'; do
+    require_line "$expected" "$clean_aodv_manifest"
+done
+if [[ "$clean_aodv_name" != *candidate1-unhooked-acceptance* ]]; then
+    printf 'routed AODV candidate artifact lacks unhooked state: %s\n' "$clean_aodv_name" >&2
+    exit 1
+fi
+for evidence_key in \
+    evidence.ninja_commands evidence.compile_commands evidence.build_ninja evidence.cmake_cache \
+    evidence.target_config_manifest evidence.target_config_header evidence.disassembly \
+    evidence.selected_sources; do
+    require_evidence_sidecar "$evidence_key" "$clean_aodv_bundle" "$clean_aodv_manifest"
+done
+if ! grep -Eq '^artifact\.elf\.sha256=[0-9a-f]{64}$' "$clean_aodv_manifest" ||
+   ! grep -Eq '^source\.selected\.sha256=[0-9a-f]{64}$' "$clean_aodv_manifest" ||
+   ! grep -Eq '^source\.inventory\.sha256=[0-9a-f]{64}$' "$clean_aodv_manifest"; then
+    printf '%s\n' 'clean AODV candidate is missing artifact/source hash provenance' >&2
+    exit 1
+fi
+clean_full_out="$WORK_DIR/clean-routed-full-repair"
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature FULL_TAVRN --repair ON --out "$clean_full_out" >/dev/null
+clean_full_manifest="$(expiry_manifest_path "$clean_full_out")"
+clean_full_name="$(manifest_value artifact.name "$clean_full_manifest")"
+clean_full_bundle="$(dirname "$clean_full_manifest")"
+if [[ "$clean_full_bundle" != "$clean_full_out/$clean_full_name" ]]; then
+    printf '%s\n' 'FULL candidate publication is not contained by its artifact bundle' >&2
+    exit 1
+fi
+for expected in \
+    'candidate.scope=UNHOOKED_ACCEPTANCE' \
+    'candidate.eligible=yes' \
+    'candidate.hook_bench_eligible=no' \
+    'candidate.unhooked_acceptance=yes' \
+    'feature.repair.effective=ON' \
+    'identity.width=SID8' \
+    'identity.inventory.selected_width=SID8' \
+    'identity.inventory.sid8.unique=yes' \
+    'identity.inventory.sid8.nonreserved=yes'; do
+    require_line "$expected" "$clean_full_manifest"
+done
+if [[ "$clean_full_name" != *repair1*candidate1-unhooked-acceptance* ]]; then
+    printf 'routed FULL repair candidate lacks clear unhooked state: %s\n' "$clean_full_name" >&2
+    exit 1
+fi
+clean_benchmark_out="$WORK_DIR/clean-routed-full-benchmark"
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature FULL_TAVRN --timer BALANCED --enable-hooks ON --benchmark ON \
+    --role A --role-number 1 --peer-adva 1e:33:a7:2f:8e:d8 \
+    --rx-block-adva 1e:33:a7:2f:8e:d8 --out "$clean_benchmark_out" >/dev/null
+clean_benchmark_manifest="$(expiry_manifest_path "$clean_benchmark_out")"
+clean_benchmark_name="$(manifest_value artifact.name "$clean_benchmark_manifest")"
+clean_benchmark_bundle="$(dirname "$clean_benchmark_manifest")"
+if [[ "$clean_benchmark_bundle" != "$clean_benchmark_out/$clean_benchmark_name" ]]; then
+    printf '%s\n' 'benchmark candidate publication is not contained by its artifact bundle' >&2
+    exit 1
+fi
+for expected in \
+    'candidate.configured=ON' \
+    'candidate.scope=BENCH_HOOKED_RESTRICTED' \
+    'candidate.clean_source=yes' \
+    'candidate.eligible=no' \
+    'candidate.hardware_purpose=yes' \
+    'candidate.hook_bench_eligible=yes' \
+    'candidate.unhooked_acceptance=no' \
+    'hook.enabled=ON' \
+    'bench.mode=ON' \
+    'identity.width=SID8' \
+    'identity.inventory.selected_width=SID8'; do
+    require_line "$expected" "$clean_benchmark_manifest"
+done
+if [[ "$clean_benchmark_name" != *candidate1-bench-hooked-restricted* ]]; then
+    printf 'hooked routed benchmark artifact lacks restricted state: %s\n' \
+        "$clean_benchmark_name" >&2
+    exit 1
+fi
+
+# Candidate publication writes its complete bundle only under a hidden staging
+# name.  A final-preparation copy failure must leave neither a final bundle nor
+# a hidden staging directory in the requested output directory.
+final_preparation_bin="$WORK_DIR/final-preparation-bin"
+mkdir -p "$final_preparation_bin"
+real_install="$(command -v install)"
+cat > "$final_preparation_bin/install" <<'EOF'
+#!/usr/bin/env bash
+for argument in "$@"; do
+    if [[ "$argument" == "$TRON_TEST_FINAL_PREPARATION_OUT"/.*.staging.* ]]; then
+        exit 97
+    fi
+done
+exec "$TRON_TEST_REAL_INSTALL" "$@"
+EOF
+chmod +x "$final_preparation_bin/install"
+final_preparation_out="$WORK_DIR/final-preparation-publish"
+mkdir -p "$final_preparation_out"
+touch "$final_preparation_out/unrelated-existing-artifact"
+set +e
+TRON_TEST_FINAL_PREPARATION_OUT="$final_preparation_out" \
+TRON_TEST_REAL_INSTALL="$real_install" PATH="$final_preparation_bin:$PATH" \
+    bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$final_preparation_out" \
+    >"$WORK_DIR/final-preparation.log" 2>&1
+final_preparation_status=$?
+set -e
+if [[ $final_preparation_status -ne 97 ]] ||
+   [[ -e "$final_preparation_out/$clean_aodv_name" ]] ||
+   [[ -L "$final_preparation_out/$clean_aodv_name" ]]; then
+    printf '%s\n' 'candidate final-preparation failure created a final bundle' >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+final_preparation_entries=("$final_preparation_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#final_preparation_entries[@]} -ne 1 ]] ||
+   [[ "${final_preparation_entries[0]}" != "$final_preparation_out/unrelated-existing-artifact" ]]; then
+    printf '%s\n' 'candidate final-preparation failure left staged output behind' >&2
+    exit 1
+fi
+
+# Repeating a candidate invocation must refuse the pre-existing immutable
+# bundle and leave the published provenance unchanged.
+clean_aodv_manifest_hash="$(sha256sum "$clean_aodv_manifest" | cut -d' ' -f1)"
+set +e
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$clean_aodv_out" \
+    >"$WORK_DIR/candidate-collision.log" 2>&1
+candidate_collision_status=$?
+set -e
+if [[ $candidate_collision_status -ne 1 ]] ||
+   ! grep -Fqx "Candidate publication refused: final bundle already exists: $clean_aodv_bundle" \
+       "$WORK_DIR/candidate-collision.log" ||
+   [[ "$(sha256sum "$clean_aodv_manifest" | cut -d' ' -f1)" != "$clean_aodv_manifest_hash" ]]; then
+    printf '%s\n' 'candidate bundle collision did not preserve the original bundle' >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+candidate_collision_entries=("$clean_aodv_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#candidate_collision_entries[@]} -ne 1 ]] ||
+   [[ "${candidate_collision_entries[0]}" != "$clean_aodv_bundle" ]]; then
+    printf '%s\n' 'candidate collision left or replaced output entries' >&2
+    exit 1
+fi
+
+# Six clean board-bound candidates may share one requested output directory,
+# but each role must contribute exactly one sibling immutable bundle.
+six_candidate_out="$WORK_DIR/six-candidate-bundles"
+six_candidate_roles=(A B C D E F)
+six_candidate_count=0
+while IFS=$'\t' read -r six_candidate_uid six_candidate_adva; do
+    [[ "$six_candidate_uid" == \#* ]] && continue
+    bash "$clean_publisher_root/build-tavrn-ble.sh" --target tavrn_routed_node \
+        --candidate --feature AODV_ONLY --role "${six_candidate_roles[six_candidate_count]}" \
+        --adva "$six_candidate_adva" --probe-uid "$six_candidate_uid" \
+        --inventory "$clean_inventory" --out "$six_candidate_out" >/dev/null
+    ((six_candidate_count += 1))
+done < "$clean_inventory"
+if [[ $six_candidate_count -ne 6 ]]; then
+    printf 'six-board candidate loop ran %s times, expected 6\n' "$six_candidate_count" >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+six_candidate_bundles=("$six_candidate_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#six_candidate_bundles[@]} -ne 6 ]]; then
+    printf 'six candidate invocations produced %s output entries, expected six bundles\n' \
+        "${#six_candidate_bundles[@]}" >&2
+    exit 1
+fi
+for six_candidate_bundle in "${six_candidate_bundles[@]}"; do
+    if [[ ! -d "$six_candidate_bundle" || -L "$six_candidate_bundle" ]]; then
+        printf 'six-board candidate output is not a real bundle directory: %s\n' \
+            "$six_candidate_bundle" >&2
+        exit 1
+    fi
+    six_candidate_manifest="$(expiry_manifest_path "$six_candidate_bundle")"
+    six_candidate_name="$(manifest_value artifact.name "$six_candidate_manifest")"
+    if [[ "$(basename "$six_candidate_bundle")" != "$six_candidate_name" ]] ||
+       [[ "$six_candidate_manifest" != "$six_candidate_bundle/${six_candidate_name}.manifest" ]] ||
+       [[ ! -s "$six_candidate_bundle/${six_candidate_name}.elf" ]]; then
+        printf 'six-board candidate bundle is incomplete or misnamed: %s\n' \
+            "$six_candidate_bundle" >&2
+        exit 1
+    fi
+done
+
+# Publication must remain staged until both the post-build candidate source
+# snapshot and evidence generation have passed.  The wrapper dirties the clean
+# source only while CMake is building, after the publisher's first snapshot.
+post_build_dirty_bin="$WORK_DIR/post-build-dirty-bin"
+mkdir -p "$post_build_dirty_bin"
+post_build_dirty_source="$clean_publisher_root/.candidate-post-build-dirty"
+real_cmake="$(command -v cmake)"
+cat > "$post_build_dirty_bin/cmake" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--build" ]]; then
+    touch "$TRON_TEST_POST_BUILD_DIRTY_SOURCE"
+fi
+exec "$TRON_TEST_REAL_CMAKE" "$@"
+EOF
+chmod +x "$post_build_dirty_bin/cmake"
+post_build_dirty_out="$WORK_DIR/post-build-dirty-publish"
+mkdir -p "$post_build_dirty_out"
+touch "$post_build_dirty_out/unrelated-existing-artifact"
+set +e
+TRON_TEST_POST_BUILD_DIRTY_SOURCE="$post_build_dirty_source" \
+TRON_TEST_REAL_CMAKE="$real_cmake" PATH="$post_build_dirty_bin:$PATH" \
+    bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$post_build_dirty_out" \
+    >"$WORK_DIR/post-build-dirty.log" 2>&1
+post_build_dirty_status=$?
+set -e
+rm -f "$post_build_dirty_source"
+if [[ $post_build_dirty_status -ne 1 ]] ||
+   ! grep -Fq 'Candidate publication refused: source state changed during build/evidence' \
+       "$WORK_DIR/post-build-dirty.log"; then
+    printf '%s\n' 'candidate publisher did not reject post-build source dirtiness' >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+post_build_dirty_entries=("$post_build_dirty_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#post_build_dirty_entries[@]} -ne 1 ]] ||
+   [[ "${post_build_dirty_entries[0]}" != "$post_build_dirty_out/unrelated-existing-artifact" ]]; then
+    printf '%s\n' 'post-build candidate failure published a new artifact' >&2
+    exit 1
+fi
+
+# Evidence and resource gates run against the staging directory.  Each forced
+# late failure must leave an existing output directory untouched.
+evidence_failure_bin="$WORK_DIR/evidence-failure-bin"
+mkdir -p "$evidence_failure_bin"
+cat > "$evidence_failure_bin/arm-none-eabi-objdump" <<'EOF'
+#!/usr/bin/env bash
+exit 97
+EOF
+chmod +x "$evidence_failure_bin/arm-none-eabi-objdump"
+evidence_failure_out="$WORK_DIR/evidence-failure-publish"
+mkdir -p "$evidence_failure_out"
+touch "$evidence_failure_out/unrelated-existing-artifact"
+set +e
+PATH="$evidence_failure_bin:$PATH" bash "$MICROBIT_ROOT/build-tavrn-ble.sh" \
+    --target ble_link_v2_testbed --out "$evidence_failure_out" \
+    >"$WORK_DIR/evidence-failure.log" 2>&1
+evidence_failure_status=$?
+set -e
+if [[ $evidence_failure_status -eq 0 ]]; then
+    printf '%s\n' 'forced evidence failure unexpectedly published successfully' >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+evidence_failure_entries=("$evidence_failure_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#evidence_failure_entries[@]} -ne 1 ]] ||
+   [[ "${evidence_failure_entries[0]}" != "$evidence_failure_out/unrelated-existing-artifact" ]]; then
+    printf '%s\n' 'evidence failure published a new artifact' >&2
+    exit 1
+fi
+
+resource_failure_baseline="$WORK_DIR/resource-failure-baseline"
+mkdir -p "$resource_failure_baseline"
+touch "$resource_failure_baseline/fast.before.map"
+printf '{}\n' > "$resource_failure_baseline/fast.baseline.manifest"
+printf 'invalid baseline hash\n' > "$resource_failure_baseline/fast.baseline.sha256"
+resource_failure_bin="$WORK_DIR/resource-failure-bin"
+mkdir -p "$resource_failure_bin"
+cat > "$resource_failure_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "$TRON_TEST_RESOURCE_CHECKER" && " $* " == *' --resource-manifest '* ]]; then
+    exit 97
+fi
+exec "$TRON_TEST_REAL_PYTHON3" "$@"
+EOF
+chmod +x "$resource_failure_bin/python3"
+resource_failure_out="$WORK_DIR/resource-failure-publish"
+mkdir -p "$resource_failure_out"
+touch "$resource_failure_out/unrelated-existing-artifact"
+real_python3="$(command -v python3)"
+set +e
+TRON_TEST_RESOURCE_CHECKER="$MICROBIT_ROOT/scripts/check_tavrn_expiry_resources.py" \
+TRON_TEST_REAL_PYTHON3="$real_python3" PATH="$resource_failure_bin:$PATH" \
+    bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
+    --feature FULL_TAVRN --timer FAST_TEST --stack-usage \
+    --resource-baseline "$resource_failure_baseline/fast.baseline.manifest" \
+    --out "$resource_failure_out" >"$WORK_DIR/resource-failure.log" 2>&1
+resource_failure_status=$?
+set -e
+if [[ $resource_failure_status -ne 97 ]] ||
+   ! grep -Fq 'Resource gate failed while staging artifacts' "$WORK_DIR/resource-failure.log"; then
+    printf '%s\n' 'forced resource gate failure did not reach the staged gate' >&2
+    exit 1
+fi
+shopt -s nullglob dotglob
+resource_failure_entries=("$resource_failure_out"/*)
+shopt -u nullglob dotglob
+if [[ ${#resource_failure_entries[@]} -ne 1 ]] ||
+   [[ "${resource_failure_entries[0]}" != "$resource_failure_out/unrelated-existing-artifact" ]]; then
+    printf '%s\n' 'resource gate failure published a new artifact' >&2
+    exit 1
+fi
+
+touch "$clean_publisher_root/.candidate-source-dirty"
+set +e
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$WORK_DIR/clean-dirty-source" \
+    >"$WORK_DIR/clean-dirty-source.log" 2>&1
+clean_dirty_source_status=$?
+set -e
+rm -f "$clean_publisher_root/.candidate-source-dirty"
+if [[ $clean_dirty_source_status -ne 1 ]] ||
+   ! grep -Fq 'Candidate publication refused: source_dirty=yes submodule_dirty=no' \
+       "$WORK_DIR/clean-dirty-source.log"; then
+    printf '%s\n' 'routed candidate did not reject a dirty source tree' >&2
+    exit 1
+fi
+touch "$clean_publisher_root/libs/mtkernel_3/.candidate-submodule-dirty"
+set +e
+bash "$clean_publisher_root/build-tavrn-ble.sh" "${clean_candidate_args[@]}" \
+    --feature AODV_ONLY --out "$WORK_DIR/clean-dirty-submodule" \
+    >"$WORK_DIR/clean-dirty-submodule.log" 2>&1
+clean_dirty_submodule_status=$?
+set -e
+if [[ $clean_dirty_submodule_status -ne 1 ]] ||
+   ! grep -Fq 'submodule_dirty=yes' "$WORK_DIR/clean-dirty-submodule.log"; then
+    printf '%s\n' 'routed candidate did not reject a dirty submodule' >&2
+    exit 1
+fi
+
+publisher_fail_with routed-candidate-missing-inputs \
+    '--candidate requires --adva, --probe-uid, and --inventory' \
+    --target tavrn_routed_node --candidate
+publisher_fail_with legacy-candidate-rejected \
+    'Candidate publication is available only for ble_link_v2_testbed or tavrn_routed_node' \
+    --target ble_mesh_node --candidate --adva "$clean_adva" --probe-uid "$clean_uid" \
+    --inventory "$SIX_BOARD_INVENTORY"
+publisher_configure_fail_with routed-candidate-unknown-uid \
+    'Candidate target UID has no inventory record' \
+    --target tavrn_routed_node --feature AODV_ONLY --candidate --adva "$clean_adva" \
+    --probe-uid not-in-inventory --inventory "$SIX_BOARD_INVENTORY"
+publisher_configure_fail_with routed-candidate-mismatch \
+    'Candidate override must byte-equal the selected inventory AdvA' \
+    --target tavrn_routed_node --feature AODV_ONLY --candidate --adva dc:4b:0a:06:03:f8 \
+    --probe-uid "$clean_uid" --inventory "$SIX_BOARD_INVENTORY"
+publisher_configure_fail_with routed-full-candidate-sid8 \
+    'FULL_TAVRN candidate requires unique nonreserved inventory SID8' \
+    --target tavrn_routed_node --feature FULL_TAVRN --candidate --adva 00:42:de:52:4a:dd \
+    --probe-uid board-a --inventory "$ROUTED_SID8_STATUS_INVENTORY"
 set +e
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target ble_link_v2_testbed \
     --feature FULL_TAVRN --out "$routed_publisher_out" >/dev/null 2>&1
@@ -1878,8 +2458,8 @@ publisher_fail_with identify-wrapper-role-zero \
 benchmark_publisher_out="$WORK_DIR/benchmark-published"
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
     --feature AODV_ONLY --timer BALANCED --enable-hooks ON --benchmark ON \
-    --warmup-ms 60000 --role-number 1 --peer-adva dc:4b:0a:06:03:f8 \
-    --tx-interval-ms 100 --transaction-target 3 \
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 \
+    --rx-block-adva dc:4b:0a:06:03:f8 \
     --out "$benchmark_publisher_out" >/dev/null
 benchmark_published_manifest=()
 for manifest_path in "$benchmark_publisher_out"/*.manifest; do
@@ -1890,45 +2470,42 @@ if [[ ${#benchmark_published_manifest[@]} -ne 1 ]]; then
     printf '%s\n' 'benchmark publisher did not create exactly one artifact manifest' >&2
     exit 1
 fi
-for expected in 'bench.mode=ON' 'bench.warmup_ms=60000' 'bench.role_number=1' \
-                'bench.identify_display=OFF' 'link_test.tx_interval_ms=100' \
-                'link_test.transaction_target=3'; do
+for expected in 'bench.mode=ON' 'bench.control_observability=COMPILE_TIME_OPTIONAL' \
+                'bench.heartbeat_interval_ms=1000' 'bench.burst_start_ms=60000' \
+                'bench.burst_period_ms=450000' 'bench.role_number=1' \
+                'bench.identify_display=OFF'; do
     require_line "$expected" "${benchmark_published_manifest[0]}"
 done
 publisher_fail_with benchmark-wrapper-invalid-state \
     '--benchmark must be ON or OFF' --target tavrn_routed_node --benchmark MAYBE
-publisher_fail_with benchmark-wrapper-warmup-malformed \
-    '--warmup-ms must be an unsigned decimal or hexadecimal integer below 2147483648' \
+publisher_fail_with benchmark-wrapper-warmup-obsolete \
+    'Unknown argument: --warmup-ms' \
     --target tavrn_routed_node --warmup-ms not-a-number
-publisher_fail_with benchmark-wrapper-warmup-half-range \
-    '--warmup-ms must be below 2147483648' \
-    --target tavrn_routed_node --warmup-ms 2147483648
 publisher_fail_with benchmark-wrapper-target \
     '--benchmark ON requires --target tavrn_routed_node' \
     --target ble_mesh_node --benchmark ON
 publisher_fail_with benchmark-wrapper-hooks \
     '--benchmark ON requires --enable-hooks ON' \
     --target tavrn_routed_node --benchmark ON --role-number 1 \
-    --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+    --peer-adva dc:4b:0a:06:03:f8 --rx-block-adva dc:4b:0a:06:03:f8
 publisher_fail_with benchmark-wrapper-identify \
     '--benchmark ON requires --identify-display OFF' \
     --target tavrn_routed_node --enable-hooks ON --benchmark ON --identify-display ON \
-    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --rx-block-adva dc:4b:0a:06:03:f8
 publisher_fail_with benchmark-wrapper-fast \
     '--benchmark ON requires --timer BALANCED' \
     --target tavrn_routed_node --timer FAST_TEST --enable-hooks ON --benchmark ON \
-    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --rx-block-adva dc:4b:0a:06:03:f8
 publisher_fail_with benchmark-wrapper-role \
     '--benchmark ON requires --role-number 1..6' \
     --target tavrn_routed_node --enable-hooks ON --benchmark ON \
-    --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+    --peer-adva dc:4b:0a:06:03:f8
 publisher_fail_with benchmark-wrapper-peer \
     '--benchmark ON requires --peer-adva' \
-    --target tavrn_routed_node --enable-hooks ON --benchmark ON --role-number 1 \
-    --transaction-target 1
-publisher_fail_with benchmark-wrapper-target-zero \
-    '--benchmark ON requires a nonzero --transaction-target' \
-    --target tavrn_routed_node --enable-hooks ON --benchmark ON --role-number 1 \
-    --peer-adva dc:4b:0a:06:03:f8
+    --target tavrn_routed_node --enable-hooks ON --benchmark ON --role-number 1
+publisher_fail_with benchmark-wrapper-direct-block \
+    '--benchmark ON roles 1 and 3 require --rx-block-adva' \
+    --target tavrn_routed_node --timer BALANCED --enable-hooks ON --benchmark ON \
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8
 
 printf '%s\n' 'tron BLE build/profile tests passed'

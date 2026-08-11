@@ -41,7 +41,8 @@ STACK_HEADROOM = 1024
 RAM_MINIMUM = 8192
 FIXED_DELTA_MAXIMUM = 512
 REQUIRED_ROUTED_INITIAL_TASK_STACK_BYTES = 4096
-REQUIRED_ROUTED_RUNTIME_RAM_RESERVE_BYTES = 12288
+REQUIRED_ROUTED_RUNTIME_RAM_RESERVE_BYTES = 12592
+REQUIRED_ROUTED_LOGGER_TASK_STACK_BYTES = 1840
 
 # The supplied manifest selects the measured path but is not allowed to weaken
 # the routed FULL root contract.  These edges cover both routed-cycle callbacks
@@ -55,6 +56,11 @@ REQUIRED_ROOTED_STACK_EDGES = frozenset({
     ("routed_cycle_router_tick", "tavrn_full_maintenance_binding_tick", "call", "binding"),
     ("tavrn_full_maintenance_binding_tick", "tavrn_maintenance_targeted_owner_tick",
      "call", "binding"),
+})
+
+REQUIRED_LOGGER_STACK_EDGES = frozenset({
+    ("routed_logger_task", "log_benchmark_control", "call", "always"),
+    ("log_benchmark_control", "tm_printf", "call", "always"),
 })
 
 RESOURCE_KEYS = {
@@ -89,6 +95,16 @@ class StackFrame:
 class RoutedRuntimeDeclaration:
     initial_task_stack_bytes: int
     runtime_ram_reserve_bytes: int
+    logger_task_stack_bytes: int
+
+
+@dataclass(frozen=True)
+class StackReport:
+    root: str
+    stack_bytes: int
+    chain: tuple[StackFrame, ...]
+    total_bytes: int
+    headroom_bytes: int
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,7 @@ class RunResult:
     stack_chain: str | None
     runtime_ram: RuntimeRamReport | None
     initial_task_stack: InitialTaskStackReport | None
+    logger_stack: StackReport | None
 
 
 class StackFrames:
@@ -403,6 +420,8 @@ def validate_routed_runtime_declarations(
         raise CheckFailure("provenance", "resource evidence is not a routed build manifest")
     if manifest.get("capacity.routed_initial_task_stack_bytes.state") != "IMPLEMENTED":
         raise CheckFailure("provenance", "routed initial-task capacity state is not IMPLEMENTED")
+    if manifest.get("capacity.routed_logger_task_stack_bytes.state") != "IMPLEMENTED":
+        raise CheckFailure("provenance", "routed logger-task capacity state is not IMPLEMENTED")
     initial_stack = require_manifest_decimal(
         manifest, "build.initial_task_stack_bytes",
         REQUIRED_ROUTED_INITIAL_TASK_STACK_BYTES)
@@ -412,15 +431,25 @@ def validate_routed_runtime_declarations(
     reserve = require_manifest_decimal(
         manifest, "resource.runtime_ram_reserve_bytes",
         REQUIRED_ROUTED_RUNTIME_RAM_RESERVE_BYTES)
+    logger_stack = require_manifest_decimal(
+        manifest, "build.routed_logger_task_stack_bytes",
+        REQUIRED_ROUTED_LOGGER_TASK_STACK_BYTES)
+    logger_capacity_stack = require_manifest_decimal(
+        manifest, "capacity.routed_logger_task_stack_bytes",
+        REQUIRED_ROUTED_LOGGER_TASK_STACK_BYTES)
     config_initial_stack = config_uint_macro(
         config_header, "TRON_BUILD_INITIAL_TASK_STACK_BYTES", "initial-task-stack")
     config_reserve = config_uint_macro(
         config_header, "TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES", "runtime-ram-reserve")
+    config_logger_stack = config_uint_macro(
+        config_header, "TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES", "logger-task-stack")
     if config_initial_stack != initial_stack or config_initial_stack != capacity_stack:
         raise CheckFailure("provenance", "generated initial-task stack declarations disagree")
     if config_reserve != reserve:
         raise CheckFailure("provenance", "generated runtime RAM reserve declarations disagree")
-    return RoutedRuntimeDeclaration(initial_stack, reserve)
+    if config_logger_stack != logger_stack or config_logger_stack != logger_capacity_stack:
+        raise CheckFailure("provenance", "generated logger-task stack declarations disagree")
+    return RoutedRuntimeDeclaration(initial_stack, reserve, logger_stack)
 
 
 def post_reserve_ram_bytes(map_unallocated_ram_bytes: int,
@@ -607,10 +636,12 @@ def load_stack_contract(path: Path, root: str) -> dict[str, Any]:
     return document
 
 
-def require_rooted_stack_edges(contract: dict[str, Any]) -> None:
+def require_rooted_stack_edges(contract: dict[str, Any],
+                               required: frozenset[tuple[str, str, str, str]] =
+                               REQUIRED_ROOTED_STACK_EDGES) -> None:
     supplied = {(edge["from"], edge["to"], edge["kind"], edge["when"])
                 for edge in contract["edges"]}
-    missing = sorted(REQUIRED_ROOTED_STACK_EDGES - supplied)
+    missing = sorted(required - supplied)
     if missing:
         raise CheckFailure(
             "stack", "required rooted stack edges are missing: " +
@@ -817,6 +848,20 @@ def require_routed_initial_task_compile_definitions(
     require_initial_task_compile_definition(
         commands_path, repo_root / "libs/mtkernel_3/kernel/inittask/inittask.c",
         initial_task_stack_bytes, "mtkernel3_microbit_kernel_tavrn_routed_node")
+
+
+def require_routed_logger_task_compile_definition(
+        commands_path: Path, logger_task_stack_bytes: int) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    arguments, _ = parse_compile_command(
+        commands_path, repo_root / "app/tavrn_routed_node/src/main.c")
+    definitions = [argument for argument in arguments
+                   if argument.startswith("-DTRON_ROUTED_LOGGER_TASK_STACK_BYTES")]
+    expected = "-DTRON_ROUTED_LOGGER_TASK_STACK_BYTES=%d" % logger_task_stack_bytes
+    if definitions != [expected]:
+        raise CheckFailure(
+            "provenance", "compile command for routed logger must contain exactly one %s" %
+            expected)
 
 
 def initial_task_stack_report(declaration: RoutedRuntimeDeclaration,
@@ -1145,6 +1190,41 @@ def mesh_stack_bytes(config_header: Path) -> int:
     return value
 
 
+def logger_stack_bytes(config_header: Path) -> int:
+    value = config_uint_macro(config_header,
+                              "TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES",
+                              "logger-stack-size", "stack")
+    if value == 0:
+        raise CheckFailure("stack", "generated logger stack size must be nonzero")
+    return value
+
+
+def stack_report(root: str, stack_bytes: int, chain: list[StackFrame]) -> StackReport:
+    total = sum(frame.frame_bytes for frame in chain)
+    return StackReport(root, stack_bytes, tuple(chain), total,
+                       max(0, stack_bytes - total))
+
+
+def require_benchmark_logger_evidence(manifest: dict[str, str],
+                                      args: argparse.Namespace) -> bool:
+    if manifest.get("bench.mode") != "ON":
+        return False
+    if args.logger_stack_root != "routed_logger_task":
+        raise CheckFailure("stack", "benchmark stack gate requires --logger-stack-root routed_logger_task")
+    if not args.logger_required_edge_manifest:
+        raise CheckFailure("stack", "benchmark stack gate requires --logger-required-edge-manifest")
+    return True
+
+
+def validate_logger_stack_threshold(report: StackReport) -> None:
+    if report.headroom_bytes < STACK_HEADROOM:
+        raise CheckFailure(
+            "stack_total", "logger stack total/headroom violates the generated %d/%d bound: "
+            "total=%d headroom=%d" %
+            (report.stack_bytes, STACK_HEADROOM,
+             report.total_bytes, report.headroom_bytes))
+
+
 def stack_usage_hash(paths: list[Path], pattern: str) -> str:
     if not paths:
         raise CheckFailure("stack", "no .su files matched")
@@ -1202,7 +1282,8 @@ def verify_baseline(args: argparse.Namespace, document: dict[str, Any]) -> Basel
     )
 
 
-def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
+def build_evidence_document(args: argparse.Namespace) -> tuple[dict[str, Any],
+                                                                StackReport | None]:
     if args.full_map is None or args.full_elf is None:
         raise CheckFailure("arguments", "resource evidence requires --full-map and --full-elf")
     map_path, elf_path = Path(args.full_map), Path(args.full_elf)
@@ -1212,6 +1293,8 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
         selected_hash = inventory_hash(Path(args.selected_sources))
     manifest: dict[str, str] = {}
     manifest_path: Path | None = None
+    benchmark_build = False
+    logger_report: StackReport | None = None
     config_header_path = Path(args.config_header) if args.config_header else None
     if args.full_manifest is not None:
         manifest_path = Path(args.full_manifest)
@@ -1238,11 +1321,16 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
         if config_header_path is None:
             raise CheckFailure("provenance", "routed build manifest lacks generated config header evidence")
         declaration = validate_routed_runtime_declarations(manifest, config_header_path)
+        benchmark_build = manifest.get("bench.mode") == "ON"
+        if benchmark_build and args.su_glob:
+            require_benchmark_logger_evidence(manifest, args)
         if args.selected_sources is not None:
             require_initial_task_source_provenance(Path(args.selected_sources))
         if args.compile_commands:
             require_routed_initial_task_compile_definitions(
                 Path(args.compile_commands), declaration.initial_task_stack_bytes)
+            require_routed_logger_task_compile_definition(
+                Path(args.compile_commands), declaration.logger_task_stack_bytes)
     uses_heap = False
     symbols = nm_symbols(elf_path)
     heap_names = ("malloc", "calloc", "realloc", "free", "_sbrk", "sbrk")
@@ -1289,11 +1377,23 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
             raise CheckFailure("stack", "stack analysis requires generated config stack evidence")
         chain = validate_edges(contract, resolvers, graph, frames, args.stack_root,
                                include_binding=not args.stack_baseline_only)
-        total = sum(frame.frame_bytes for frame in chain)
-        stack = {"root": args.stack_root,
+        mesh_report = stack_report(args.stack_root, stack_bytes, chain)
+        stack = {"root": mesh_report.root,
                  "chain": [{"function": frame.identity, "frame_bytes": frame.frame_bytes}
-                           for frame in chain],
-                 "total_bytes": total, "headroom_bytes": max(0, stack_bytes - total)}
+                           for frame in mesh_report.chain],
+                 "total_bytes": mesh_report.total_bytes,
+                 "headroom_bytes": mesh_report.headroom_bytes}
+        if benchmark_build:
+            logger_contract = load_stack_contract(
+                Path(args.logger_required_edge_manifest), args.logger_stack_root)
+            require_rooted_stack_edges(logger_contract, REQUIRED_LOGGER_STACK_EDGES)
+            verify_declared_leaf_evidence(logger_contract, manifest_path, manifest)
+            logger_frames = parse_su(su_paths)
+            logger_chain = validate_edges(
+                logger_contract, {}, graph, logger_frames, args.logger_stack_root,
+                include_binding=True)
+            logger_report = stack_report(
+                args.logger_stack_root, logger_stack_bytes(config_header_path), logger_chain)
     aodv_symbols = 0
     aodv_refs = 0
     if args.aodv_elf:
@@ -1329,7 +1429,7 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
                        "build_script_sha256": build_hash},
         "expected_failure": None, "preprocessed_main": {"source": ""},
     }
-    return validate_resource_document(document, "generated resource manifest")
+    return validate_resource_document(document, "generated resource manifest"), logger_report
 
 
 def routed_runtime_reports(args: argparse.Namespace) -> tuple[RuntimeRamReport,
@@ -1360,8 +1460,10 @@ def routed_runtime_reports(args: argparse.Namespace) -> tuple[RuntimeRamReport,
 
 def validate_live_evidence(args: argparse.Namespace,
                            document: dict[str, Any]) -> tuple[BaselineEvidence | None,
-                                                               RuntimeRamReport | None,
-                                                               InitialTaskStackReport | None]:
+                                                                RuntimeRamReport | None,
+                                                                InitialTaskStackReport | None,
+                                                                StackReport | None]:
+    logger_stack: StackReport | None = None
     if args.stack_baseline_only and args.require_binding_call:
         raise CheckFailure("arguments", "stack/baseline-only mode cannot require the binding")
     if args.stack_baseline_only:
@@ -1379,7 +1481,7 @@ def validate_live_evidence(args: argparse.Namespace,
                                        not args.full_manifest):
         raise CheckFailure("arguments", "binding gate requires main, stack, FULL and AODV evidence")
     if args.resource_manifest and args.full_map and args.full_elf:
-        observed = build_evidence_document(args)
+        observed, logger_stack = build_evidence_document(args)
         declared = document["fixed_state"]["declared_delta_bytes"]
         for key in ("ram", "stack", "heap", "binding", "provenance"):
             document[key] = observed[key]
@@ -1414,7 +1516,7 @@ def validate_live_evidence(args: argparse.Namespace,
     initial_task_stack: InitialTaskStackReport | None = None
     if args.full_manifest is not None and args.full_map is not None:
         runtime_ram, initial_task_stack = routed_runtime_reports(args)
-    return verify_baseline(args, document), runtime_ram, initial_task_stack
+    return verify_baseline(args, document), runtime_ram, initial_task_stack, logger_stack
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1438,6 +1540,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--su-glob")
     parser.add_argument("--stack-root")
     parser.add_argument("--required-edge-manifest")
+    parser.add_argument("--logger-stack-root")
+    parser.add_argument("--logger-required-edge-manifest")
     parser.add_argument("--resolve-operation-edge", action="append")
     parser.add_argument("--disassembly")
     parser.add_argument("--compile-commands")
@@ -1461,6 +1565,7 @@ def has_live_artifact_arguments(args: argparse.Namespace) -> bool:
         args.full_elf, args.full_map, args.full_manifest, args.before_map,
         args.baseline_manifest, args.baseline_sha256, args.selected_sources,
         args.su_glob, args.stack_root, args.required_edge_manifest,
+        args.logger_stack_root, args.logger_required_edge_manifest,
         args.resolve_operation_edge, args.disassembly, args.compile_commands,
         args.config_header, args.main_source, args.preprocessed_main_out,
         args.aodv_elf, args.aodv_map, args.aodv_manifest,
@@ -1490,6 +1595,7 @@ def run(args: argparse.Namespace) -> RunResult:
     baseline: BaselineEvidence | None = None
     runtime_ram: RuntimeRamReport | None = None
     initial_task_stack: InitialTaskStackReport | None = None
+    logger_stack: StackReport | None = None
     if args.declared_fixed_state_delta < 0:
         raise CheckFailure("arguments", "declared fixed-state delta must be nonnegative")
     if args.stack_baseline_only and args.fixture:
@@ -1504,7 +1610,7 @@ def run(args: argparse.Namespace) -> RunResult:
             # validate the real ELF/map/main/provenance first, then inject only
             # deterministic threshold values.  A failing fixture therefore
             # cannot conceal a missing binding or arbitrary CLI failure.
-            document = build_evidence_document(args)
+            document, logger_stack = build_evidence_document(args)
             live_fixture = fixture
         else:
             document = fixture
@@ -1514,17 +1620,18 @@ def run(args: argparse.Namespace) -> RunResult:
         document = validate_resource_document(load_json(Path(args.resource_manifest), "resource manifest"),
                                               "resource manifest")
     else:
-        document = build_evidence_document(args)
+        document, logger_stack = build_evidence_document(args)
     if args.emit_resource_manifest:
         if args.fixture or args.resource_manifest:
             raise CheckFailure("arguments", "emit mode cannot consume a fixture/manifest")
         target = Path(args.emit_resource_manifest)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return RunResult("EMITTED", None, None, None, None)
+        return RunResult("EMITTED", None, None, None, None, logger_stack)
     live_invocation = args.stack_baseline_only or live_artifacts
     if live_invocation:
-        baseline, runtime_ram, initial_task_stack = validate_live_evidence(args, document)
+        baseline, runtime_ram, initial_task_stack, logger_stack = validate_live_evidence(
+            args, document)
     if live_fixture is not None:
         # The real artifact must satisfy every normal gate before a synthetic
         # threshold-failing fixture is allowed to prove its one named boundary.
@@ -1543,6 +1650,8 @@ def run(args: argparse.Namespace) -> RunResult:
     binding_required = not args.stack_baseline_only and \
         (args.require_binding_call or document["expected_failure"] == "binding")
     validate_thresholds(document, binding_required, bool(args.aodv_elf))
+    if logger_stack is not None:
+        validate_logger_stack_threshold(logger_stack)
     stack_chain = json.dumps(document["stack"]["chain"], sort_keys=True,
                               separators=(",", ":")) if document["stack"]["chain"] else None
     if live_invocation:
@@ -1553,7 +1662,8 @@ def run(args: argparse.Namespace) -> RunResult:
         verdict = "MANIFEST_PASS"
     else:
         raise CheckFailure("arguments", "ordinary PASS requires fresh resource evidence")
-    return RunResult(verdict, baseline, stack_chain, runtime_ram, initial_task_stack)
+    return RunResult(verdict, baseline, stack_chain, runtime_ram, initial_task_stack,
+                     logger_stack)
 
 
 def main(argv: list[str]) -> int:
@@ -1591,6 +1701,13 @@ def main(argv: list[str]) -> int:
         print("SOURCE_INVENTORY_DRIFT=" + result.baseline.source_inventory_drift)
     if result.stack_chain is not None:
         print("STACK_CHAIN=" + result.stack_chain)
+        if args.config_header:
+            chain = json.loads(result.stack_chain)
+            total = sum(item["frame_bytes"] for item in chain)
+            print("MESH_STACK_ROOT=routed_mesh_task")
+            print("MESH_STACK_TOTAL_BYTES=" + str(total))
+            print("MESH_STACK_HEADROOM_BYTES=" + str(
+                max(0, mesh_stack_bytes(Path(args.config_header)) - total)))
     if result.runtime_ram is not None:
         print("MAP_UNALLOCATED_RAM_BYTES=" + str(result.runtime_ram.map_unallocated_ram_bytes))
         print("RUNTIME_RAM_RESERVE_BYTES=" + str(result.runtime_ram.runtime_ram_reserve_bytes))
@@ -1600,6 +1717,14 @@ def main(argv: list[str]) -> int:
         print("INITIAL_TASK_STATIC_FRAME_BYTES=" + str(result.initial_task_stack.static_frame_bytes))
         print("INITIAL_TASK_LOGICAL_HEADROOM_BYTES=" +
               str(result.initial_task_stack.logical_headroom_bytes))
+    if result.logger_stack is not None:
+        print("LOGGER_STACK_ROOT=" + result.logger_stack.root)
+        print("LOGGER_STACK_CHAIN=" + json.dumps(
+            [{"function": frame.identity, "frame_bytes": frame.frame_bytes}
+             for frame in result.logger_stack.chain], sort_keys=True,
+            separators=(",", ":")))
+        print("LOGGER_STACK_TOTAL_BYTES=" + str(result.logger_stack.total_bytes))
+        print("LOGGER_STACK_HEADROOM_BYTES=" + str(result.logger_stack.headroom_bytes))
     target = args.emit_resource_manifest or args.fixture or args.resource_manifest or "resource evidence"
     print("%s %s" % (result.verdict, target))
     return 0

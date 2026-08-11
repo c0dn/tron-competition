@@ -12,5 +12,5 @@ int main(void)
 {
     routed_benchmark_state_t state;
 
-    return routed_benchmark_init(&state, 0u, 1u, 1u, 1u) ? 0 : 1;
+    return routed_benchmark_init(&state, 0u, 1u) ? 0 : 1;
 }

@@ -13,7 +13,6 @@
 #include "aodv_core.h"
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
-#include "routed_benchmark.h"
 #include "routed_cycle.h"
 #include "tavrn_link_v2.h"
 #include "tavrn_router.h"
@@ -21,18 +20,25 @@
 #include "tron_build_info.h"
 #include "tron_timer_config.h"
 
+#if TRON_BUILD_BENCHMARK_MODE
+#include "routed_benchmark.h"
+#include "routed_benchmark_observer.h"
+#endif
+
 #if TRON_BUILD_BENCHMARK_MODE || TRON_BUILD_BENCH_IDENTIFY_DISPLAY
 #include "display.h"
 #endif
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN
-#include "routed_benchmark_full.h"
 #include "routed_full_telemetry.h"
 #include "tavrn_mentorship.h"
 #include "tavrn_maintenance.h"
 #include "tavrn_full.h"
 #include "tavrn_full_maintenance_binding.h"
 #include "tavrn_gtt.h"
+#if TRON_BUILD_BENCHMARK_MODE
+#include "routed_benchmark_full.h"
+#endif
 #if TRON_BUILD_LOCAL_REPAIR
 #include "tavrn_full_repair_binding.h"
 #endif
@@ -43,6 +49,7 @@
 #define ROUTED_LOGGER_TASK_PRIORITY 11u
 #define ROUTED_RELEASE_BIT 0x00000001u
 #define ROUTED_MESH_TASK_STACK_BYTES TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES
+#define ROUTED_LOGGER_TASK_STACK_BYTES TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES
 #define ROUTED_RNG_BASE 0x4000D000UL
 #define ROUTED_RNG_TASKS_START (ROUTED_RNG_BASE + 0x000UL)
 #define ROUTED_RNG_TASKS_STOP (ROUTED_RNG_BASE + 0x004UL)
@@ -156,11 +163,44 @@ typedef struct routed_snapshot {
 } routed_snapshot_t;
 
 #if TRON_BUILD_BENCHMARK_MODE
+typedef struct routed_benchmark_health_faults {
+    uint32_t attempt_queue_faults;
+    uint32_t guard_faults;
+    uint32_t snapshot_faults;
+} routed_benchmark_health_faults_t;
+
 typedef struct routed_benchmark_snapshot {
     routed_benchmark_state_t state;
     routed_benchmark_attempt_queue_snapshot_t attempts;
+    routed_benchmark_health_faults_t faults;
+    uint32_t diagnostic_dropped;
+    uint32_t rreq_dropped;
+    uint32_t retry_log_dropped;
+    tavrn_router_fault_reason_t router_fault;
     uint8_t final_queue_count;
+    uint8_t mesh_fault_latched;
 } routed_benchmark_snapshot_t;
+
+typedef struct routed_benchmark_gtt_emission {
+    uint32_t query_at_ms;
+    uint8_t entry_cursor;
+    uint8_t active;
+    uint8_t invalid;
+} routed_benchmark_gtt_emission_t;
+
+/* Benchmark copies are consumed only by the single logger task.  Producers
+ * populate them under queue_guard_begin(), then release the guard before the
+ * logger formats a record.  Keeping this storage benchmark-only preserves the
+ * normal routed image's state footprint while removing large logger frames. */
+typedef struct routed_benchmark_logger_storage {
+    routed_benchmark_observer_t observer;
+    tavrn_link_counters_t link;
+    aodv_counters_t aodv;
+    tavrn_router_counters_t router;
+    routed_benchmark_snapshot_t health;
+    routed_delivery_t delivery;
+    routed_local_event_t local_event;
+} routed_benchmark_logger_storage_t;
 #endif
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
@@ -199,8 +239,6 @@ static aodv_rreq_lifecycle_record_t routed_logged_rreq;
 static tavrn_router_phase_trace_t routed_scheduler_fault_trace;
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
 static routed_full_logger_storage_t routed_full_logger_storage;
-#elif TRON_BUILD_ROUTED_FULL_TAVRN
-static routed_cycle_gtt_snapshot_t routed_full_gtt_snapshot_storage;
 #elif !TRON_BUILD_BENCHMARK_MODE
 static routed_snapshot_t routed_aodv_logger_summary;
 #endif
@@ -213,7 +251,17 @@ static routed_benchmark_state_t routed_benchmark_state;
 static routed_benchmark_attempt_queue_t routed_benchmark_attempt_queue;
 static routed_benchmark_attempt_t routed_benchmark_logged_attempt;
 static routed_benchmark_attempt_t routed_benchmark_pending_attempt;
+static routed_benchmark_observer_t routed_benchmark_observer;
+static routed_benchmark_health_faults_t routed_benchmark_health_faults;
+static routed_benchmark_logger_storage_t routed_benchmark_logger_storage;
+static uint64_t routed_benchmark_logged_offer_record_id;
+static uint32_t routed_benchmark_logged_offer_identity;
+static uint8_t routed_benchmark_logged_offer_valid;
 static uint8_t routed_benchmark_pending_attempt_valid;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static routed_benchmark_gtt_emission_t routed_benchmark_gtt_emission;
+static routed_cycle_gtt_snapshot_t routed_benchmark_gtt_snapshot;
+#endif
 #endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN
 static tavrn_gtt_storage_t routed_gtt_storage;
@@ -236,18 +284,18 @@ static tavrn_full_repair_binding_tick_result_t routed_repair_tick_result;
 #endif
 #if !TRON_BUILD_BENCHMARK_MODE
 static uint32_t routed_gtt_snapshot_request_dropped;
-#endif
 static uint32_t routed_gtt_snapshot_failed;
 static uint32_t routed_local_broadcast_generation_seen;
 static uint8_t routed_gtt_snapshot_request_pending;
 static uint8_t routed_gtt_snapshot_ready;
 static uint8_t routed_full_logger_summary_active;
 static routed_expiry_sweep_queue_t routed_expiry_sweep_queue;
-#if !TRON_BUILD_BENCHMARK_MODE
 static routed_expiry_sweep_record_t routed_logged_expiry_sweep;
 #endif
+#if !TRON_BUILD_BENCHMARK_MODE
 static uint32_t routed_expiry_sweep_passes;
 static uint32_t routed_expiry_complete_passes;
+#endif
 static uint8_t routed_router_tick_scheduler_return_requested;
 #endif
 static tavrn_direct_peer_t local_peer;
@@ -513,18 +561,53 @@ static int delivery_pop(routed_delivery_t *delivery)
 }
 
 #if TRON_BUILD_BENCHMARK_MODE
+static void routed_benchmark_increment_saturating(uint32_t *value)
+{
+    if (value != NULL && *value != UINT32_MAX) {
+        (*value)++;
+    }
+}
+
+static void routed_benchmark_record_guard_fault(void)
+{
+    routed_benchmark_increment_saturating(
+        &routed_benchmark_health_faults.guard_faults);
+}
+
+static void routed_benchmark_record_attempt_queue_fault(void)
+{
+    routed_benchmark_increment_saturating(
+        &routed_benchmark_health_faults.attempt_queue_faults);
+}
+
+static void routed_benchmark_record_snapshot_fault(void)
+{
+    routed_benchmark_increment_saturating(
+        &routed_benchmark_health_faults.snapshot_faults);
+}
+
 /* The mesh task only copies a completed source-attempt record.  The logger
  * owns dequeueing and every print, so serial backpressure cannot alter route or
  * application admission. */
 static void routed_benchmark_offer_attempt(
     const routed_benchmark_attempt_t *attempt)
 {
-    if (attempt == NULL || !queue_guard_begin()) {
+    routed_benchmark_attempt_queue_status_t status;
+
+    if (attempt == NULL) {
+        routed_benchmark_record_attempt_queue_fault();
         return;
     }
-    (void)routed_benchmark_attempt_queue_offer(&routed_benchmark_attempt_queue,
-                                               attempt);
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return;
+    }
+    status = routed_benchmark_attempt_queue_offer(&routed_benchmark_attempt_queue,
+                                                  attempt);
     queue_guard_end();
+    if (status == ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID) {
+        routed_benchmark_record_attempt_queue_fault();
+    }
 }
 
 static int routed_benchmark_attempt_pop(void)
@@ -532,25 +615,80 @@ static int routed_benchmark_attempt_pop(void)
     routed_benchmark_attempt_queue_status_t status;
 
     if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
         return 0;
     }
     status = routed_benchmark_attempt_queue_take(&routed_benchmark_attempt_queue,
-                                                 &routed_benchmark_logged_attempt);
+                                                  &routed_benchmark_logged_attempt);
     queue_guard_end();
+    if (status == ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID) {
+        routed_benchmark_record_attempt_queue_fault();
+    }
     return status == ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
 }
 
-static void routed_benchmark_snapshot(routed_benchmark_snapshot_t *out)
+static routed_benchmark_schedule_status_t routed_benchmark_schedule(
+    uint32_t now, routed_benchmark_slot_t *slot_out)
 {
-    if (out == NULL || !queue_guard_begin()) {
+    routed_benchmark_schedule_status_t status = ROUTED_BENCHMARK_SCHEDULE_INVALID;
+
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return status;
+    }
+    status = routed_benchmark_schedule_due(&routed_benchmark_state, now, slot_out);
+    queue_guard_end();
+    return status;
+}
+
+static void routed_benchmark_record_submission_status(uint8_t accepted)
+{
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
         return;
     }
-    memset(out, 0, sizeof(*out));
-    out->state = routed_benchmark_state;
-    (void)routed_benchmark_attempt_queue_snapshot(&routed_benchmark_attempt_queue,
-                                                   &out->attempts);
-    out->final_queue_count = delivery_state.published.count;
+    routed_benchmark_record_submission(&routed_benchmark_state, accepted);
     queue_guard_end();
+}
+
+static void routed_benchmark_record_not_ready_status(void)
+{
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return;
+    }
+    routed_benchmark_record_not_ready(&routed_benchmark_state);
+    queue_guard_end();
+}
+
+static int routed_benchmark_snapshot(routed_benchmark_snapshot_t *out)
+{
+    routed_benchmark_attempt_queue_status_t status;
+
+    if (out == NULL) {
+        routed_benchmark_record_snapshot_fault();
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return 0;
+    }
+    out->state = routed_benchmark_state;
+    status = routed_benchmark_attempt_queue_snapshot(&routed_benchmark_attempt_queue,
+                                                       &out->attempts);
+    if (status != ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK) {
+        routed_benchmark_record_attempt_queue_fault();
+    }
+    out->final_queue_count = delivery_state.published.count;
+    out->diagnostic_dropped = routed_diagnostic_queue.dropped_count;
+    out->rreq_dropped = routed_rreq_queue.dropped_count;
+    out->retry_log_dropped = routed_retry_log.dropped_count;
+    out->router_fault = tavrn_router_fault_reason(&routed_router);
+    out->mesh_fault_latched = mesh_fault_latched;
+    out->faults = routed_benchmark_health_faults;
+    queue_guard_end();
+    return status == ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
 }
 #endif
 
@@ -893,37 +1031,406 @@ static void log_summary(uint32_t now)
 #endif
 
 #if TRON_BUILD_BENCHMARK_MODE
-static void log_benchmark_clock(uint32_t now)
+static int routed_benchmark_logger_record(uint32_t *session_out,
+                                           uint64_t *record_id_out,
+                                           uint32_t *started_at_ms_out)
 {
-    tm_printf((UB *)"routed bench_clock now=%lu role=%u\n", (UW)now,
-              (UINT)TRON_BUILD_BENCH_ROLE_NUMBER);
+    int result = 0;
+
+    if (session_out == NULL || record_id_out == NULL) {
+        routed_benchmark_record_snapshot_fault();
+        return 0;
+    }
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return 0;
+    }
+    *session_out = routed_benchmark_state.session_id;
+    if (started_at_ms_out != NULL) {
+        *started_at_ms_out = routed_benchmark_state.started_at_ms;
+    }
+    result = routed_benchmark_next_record_id(&routed_benchmark_state, record_id_out);
+    queue_guard_end();
+    return result;
+}
+
+static void log_benchmark_boot(void)
+{
+    uint32_t session;
+    uint32_t started_at_ms;
+    uint32_t emission_now;
+    uint64_t record_id;
+
+    if (routed_benchmark_logger_record(&session, &record_id, &started_at_ms)) {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_boot schema=observer-v2 now=%lu started_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu feature=%s\n",
+                    (UW)emission_now, (UW)started_at_ms,
+                    (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
+                    (UW)(record_id >> 32),
+                    (UW)record_id,
+                    (UB *)(TRON_BUILD_ROUTED_FULL_TAVRN != 0 ? "FULL_TAVRN" :
+                                                          "AODV_ONLY"));
+    }
+}
+
+static void log_benchmark_clock(void)
+{
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
+
+    if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_clock schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu\n",
+                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session,
+                   (UW)(record_id >> 32), (UW)record_id);
+    }
 }
 
 static void log_benchmark_attempt(const routed_benchmark_attempt_t *attempt)
 {
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
+
     if (attempt == NULL) {
         return;
     }
-    tm_printf((UB *)"routed bench_attempt now=%lu role=%u slot=%lu counter=%lu accepted=%u status=%lu destination=0x%04x width=%u\n",
-              (UW)attempt->now_ms, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
-              (UW)attempt->slot, (UW)attempt->counter, (UINT)attempt->accepted,
-              (UW)attempt->status, (UINT)attempt->destination,
-              (UINT)attempt->width);
+    if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        return;
+    }
+    if (attempt->kind == ROUTED_BENCHMARK_RECORD_OFFER) {
+        routed_benchmark_logged_offer_record_id = record_id;
+        routed_benchmark_logged_offer_identity = attempt->identity;
+        routed_benchmark_logged_offer_valid = 1u;
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_offer schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx offer=%lu attempted=%u accepted=0 destination=0x%04x width=%u status=%lu\n",
+                   (UW)emission_now, (UW)attempt->event_at_ms,
+                   (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session, (UW)(record_id >> 32), (UW)record_id,
+                  (UW)attempt->deadline_ms,
+                   (UINT)attempt->workload, (UW)attempt->burst,
+                   (UINT)attempt->sequence, (UINT)attempt->sequence,
+                   (UW)attempt->identity, (UW)record_id,
+                   (UINT)attempt->attempted,
+                   (UINT)attempt->destination, (UINT)attempt->width,
+                   (UW)attempt->status);
+    } else if (routed_benchmark_logged_offer_valid != 0u &&
+               routed_benchmark_logged_offer_identity == attempt->identity) {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=%lu offer_record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
+                   (UW)emission_now, (UW)attempt->event_at_ms,
+                   (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session, (UW)(record_id >> 32), (UW)record_id,
+                  (UW)(routed_benchmark_logged_offer_record_id >> 32),
+                  (UW)routed_benchmark_logged_offer_record_id,
+                  (UW)attempt->deadline_ms,
+                  (UINT)attempt->workload, (UW)attempt->burst,
+                   (UINT)attempt->sequence, (UINT)attempt->sequence,
+                   (UW)attempt->identity,
+                   (UINT)attempt->attempted,
+                   (UINT)attempt->accepted, (UW)attempt->status,
+                  (UINT)attempt->destination, (UINT)attempt->width);
+        routed_benchmark_logged_offer_valid = 0u;
+    } else {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=0 offer_record_id_lo=0 deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
+                   (UW)emission_now, (UW)attempt->event_at_ms,
+                   (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session, (UW)(record_id >> 32), (UW)record_id,
+                  (UW)attempt->deadline_ms, (UINT)attempt->workload,
+                   (UW)attempt->burst, (UINT)attempt->sequence,
+                   (UINT)attempt->sequence, (UW)attempt->identity,
+                   (UINT)attempt->attempted,
+                   (UINT)attempt->accepted, (UW)attempt->status,
+                  (UINT)attempt->destination, (UINT)attempt->width);
+    }
 }
 
-static void log_benchmark_summary(uint32_t now)
+static void log_benchmark_control(void)
 {
-    routed_benchmark_snapshot_t state;
+    routed_benchmark_logger_storage_t *storage = &routed_benchmark_logger_storage;
+    const tavrn_link_counters_t *link_source;
+    const aodv_counters_t *aodv_source;
+    const tavrn_router_counters_t *router_source;
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
 
-    routed_benchmark_snapshot(&state);
-    tm_printf((UB *)"routed bench_summary now=%lu role=%u offered=%lu attempted=%lu accepted=%lu rejected=%lu skipped=%lu not_ready=%lu attempt_q=%u attempt_q_dropped=%lu attempt_q_high_water=%u final_q=%u\n",
-              (UW)now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
-              (UW)state.state.offered, (UW)state.state.attempted,
-              (UW)state.state.accepted, (UW)state.state.rejected,
-              (UW)state.state.skipped, (UW)state.state.not_ready,
-              (UINT)state.attempts.count, (UW)state.attempts.dropped_count,
-              (UINT)state.attempts.high_water, (UINT)state.final_queue_count);
+    memset(&storage->observer, 0, sizeof(storage->observer));
+    memset(&storage->link, 0, sizeof(storage->link));
+    memset(&storage->aodv, 0, sizeof(storage->aodv));
+    memset(&storage->router, 0, sizeof(storage->router));
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return;
+    }
+    storage->observer = routed_benchmark_observer;
+    link_source = tavrn_link_v2_counters(&routed_link);
+    aodv_source = aodv_core_counters(&routed_aodv);
+    router_source = tavrn_router_counters(&routed_router);
+    if (link_source != NULL) {
+        storage->link = *link_source;
+    }
+    if (aodv_source != NULL) {
+        storage->aodv = *aodv_source;
+    }
+    if (router_source != NULL) {
+        storage->router = *router_source;
+    }
+    queue_guard_end();
+    if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        return;
+    }
+    emission_now = now_ms();
+    tm_printf((UB *)"obs_control schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu control_tx_scope=AODV_DISPATCH_PROXY_ONLY rx_control_proxy_rreq=%lu rx_control_proxy_rrep=%lu rx_control_proxy_rerr=%lu rx_control_proxy_hello=%lu rx_control_proxy_sync_offer=%lu rx_control_proxy_sync_pull=%lu rx_control_proxy_sync_data=%lu rx_control_proxy_tc_update=%lu rx_control_proxy_rrep_ack=%lu rx_control_proxy_bytes_rreq=%lu rx_control_proxy_bytes_rrep=%lu rx_control_proxy_bytes_rerr=%lu rx_control_proxy_bytes_hello=%lu rx_control_proxy_bytes_sync_offer=%lu rx_control_proxy_bytes_sync_pull=%lu rx_control_proxy_bytes_sync_data=%lu rx_control_proxy_bytes_tc_update=%lu rx_control_proxy_bytes_rrep_ack=%lu aodv_dispatch_enqueue_proxy_rreq=%lu aodv_dispatch_enqueue_proxy_rrep=%lu aodv_dispatch_enqueue_proxy_rerr=%lu aodv_dispatch_enqueue_proxy_hello=%lu aodv_dispatch_enqueue_proxy_sync_offer=%lu aodv_dispatch_enqueue_proxy_sync_pull=%lu aodv_dispatch_enqueue_proxy_sync_data=%lu aodv_dispatch_enqueue_proxy_tc_update=%lu aodv_dispatch_enqueue_proxy_rrep_ack=%lu aodv_dispatch_enqueue_proxy_bytes_rreq=%lu aodv_dispatch_enqueue_proxy_bytes_rrep=%lu aodv_dispatch_enqueue_proxy_bytes_rerr=%lu aodv_dispatch_enqueue_proxy_bytes_hello=%lu aodv_dispatch_enqueue_proxy_bytes_sync_offer=%lu aodv_dispatch_enqueue_proxy_bytes_sync_pull=%lu aodv_dispatch_enqueue_proxy_bytes_sync_data=%lu aodv_dispatch_enqueue_proxy_bytes_tc_update=%lu aodv_dispatch_enqueue_proxy_bytes_rrep_ack=%lu scheduler_rx_adv_proxy=%lu scheduler_tx_done_proxy=%lu scheduler_tx_failed_proxy=%lu scheduler_fault_proxy=%lu scheduler_rx_ch37_proxy=%lu scheduler_rx_ch38_proxy=%lu scheduler_rx_ch39_proxy=%lu link_tx_admitted_proxy=%lu link_tx_done_proxy=%lu link_tx_failed_proxy=%lu retry_due=%lu retry_exhausted=%lu aodv_rreq_duplicate=%lu aodv_rreq_rate_limited=%lu aodv_action_backpressure=%lu router_failure_invariant=%lu\n",
+               (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+               (UW)session,
+               (UW)(record_id >> 32), (UW)record_id,
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_E_RREQ],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_E_RREP],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_E_RERR],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_HELLO],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_SYNC_OFFER],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_SYNC_PULL],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_SYNC_DATA],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_TC_UPDATE],
+                (UW)storage->observer.rx_control_proxy_count[TAVRN_WIRE_E_RREP_ACK],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_E_RREQ],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_E_RREP],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_E_RERR],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_HELLO],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_SYNC_OFFER],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_SYNC_PULL],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_SYNC_DATA],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_TC_UPDATE],
+                (UW)storage->observer.rx_control_proxy_bytes[TAVRN_WIRE_E_RREP_ACK],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_E_RREQ],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_E_RREP],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_E_RERR],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_HELLO],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_SYNC_OFFER],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_SYNC_PULL],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_SYNC_DATA],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_TC_UPDATE],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_count[
+                   TAVRN_WIRE_E_RREP_ACK],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_E_RREQ],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_E_RREP],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_E_RERR],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_HELLO],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_SYNC_OFFER],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_SYNC_PULL],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_SYNC_DATA],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                   TAVRN_WIRE_TC_UPDATE],
+                (UW)storage->observer.aodv_dispatch_control_enqueue_proxy_bytes[
+                    TAVRN_WIRE_E_RREP_ACK],
+                (UW)storage->observer.scheduler_rx_adv_proxy,
+                (UW)storage->observer.scheduler_tx_done_proxy,
+                (UW)storage->observer.scheduler_tx_failed_proxy,
+                (UW)storage->observer.scheduler_fault_proxy,
+                (UW)storage->observer.scheduler_rx_channel_proxy[0],
+                (UW)storage->observer.scheduler_rx_channel_proxy[1],
+                (UW)storage->observer.scheduler_rx_channel_proxy[2],
+                (UW)storage->link.tx_admitted,
+               (UW)storage->link.tx_done, (UW)storage->link.tx_failed,
+               (UW)storage->link.retry_due, (UW)storage->link.retry_exhausted,
+               (UW)storage->aodv.rreq_duplicate,
+               (UW)storage->aodv.rreq_rate_limited,
+               (UW)storage->aodv.action_backpressure,
+               (UW)storage->router.failure_invariant);
 }
+
+static void log_benchmark_health(void)
+{
+    routed_benchmark_logger_storage_t *storage = &routed_benchmark_logger_storage;
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
+
+    (void)routed_benchmark_snapshot(&storage->health);
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        return;
+    }
+    storage->observer = routed_benchmark_observer;
+    queue_guard_end();
+    if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        return;
+    }
+    emission_now = now_ms();
+    tm_printf((UB *)"obs_health schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu record_seq=%lu offered=%lu accepted=%lu rejected=%lu not_ready=%lu skipped=%lu heartbeat_skipped=%lu throughput_skipped=%lu event_q=%u event_q_high_water=%u event_q_dropped=%lu attempt_queue_faults=%lu guard_faults=%lu snapshot_faults=%lu final_q=%u diagnostic_dropped=%lu rreq_dropped=%lu retry_log_dropped=%lu trace_over_budget=%lu trace_fault_latched=%lu mesh_fault=%u router_fault=%u\n",
+               (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+               (UW)session,
+              (UW)(record_id >> 32), (UW)record_id, (UW)record_id,
+               (UW)storage->health.state.offered,
+               (UW)storage->health.state.accepted,
+               (UW)storage->health.state.rejected,
+               (UW)storage->health.state.not_ready,
+               (UW)storage->health.state.skipped,
+               (UW)storage->health.state.heartbeat_skipped,
+                (UW)storage->health.state.throughput_skipped,
+                (UINT)storage->health.attempts.count,
+                (UINT)storage->health.attempts.high_water,
+                (UW)storage->health.attempts.dropped_count,
+                (UW)storage->health.faults.attempt_queue_faults,
+                (UW)storage->health.faults.guard_faults,
+                (UW)storage->health.faults.snapshot_faults,
+                (UINT)storage->health.final_queue_count,
+               (UW)storage->health.diagnostic_dropped,
+               (UW)storage->health.rreq_dropped,
+               (UW)storage->health.retry_log_dropped,
+               (UW)storage->observer.trace_over_budget,
+               (UW)storage->observer.trace_fault_latched,
+               (UINT)storage->health.mesh_fault_latched,
+               (UINT)storage->health.router_fault);
+}
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+static void log_benchmark_gtt_next(void)
+{
+    const routed_cycle_gtt_snapshot_entry_t *entry;
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
+
+    if (routed_benchmark_gtt_emission.active == 0u) {
+        return;
+    }
+    if (routed_benchmark_gtt_emission.entry_cursor == 0u) {
+        if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+            return;
+        }
+        routed_benchmark_gtt_emission.entry_cursor = 1u;
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_gtt_begin schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu slot_capacity=%u retained_entry_count=%u\n",
+                    (UW)emission_now,
+                   (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
+                   (UW)(record_id >> 32), (UW)record_id,
+                   (UW)routed_benchmark_gtt_emission.query_at_ms,
+                   (UINT)TAVRN_GTT_CAPACITY,
+                   (UINT)routed_benchmark_gtt_snapshot.entry_count);
+        return;
+    }
+    if (routed_benchmark_gtt_emission.invalid != 0u) {
+        if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+            return;
+        }
+        routed_benchmark_gtt_emission.active = 0u;
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_gtt_end schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu status=INVALID entry_count=0 nondeparted_count=0\n",
+                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                  (UW)session, (UW)(record_id >> 32), (UW)record_id,
+                  (UW)routed_benchmark_gtt_emission.query_at_ms);
+        return;
+    }
+    if (routed_benchmark_gtt_emission.entry_cursor <=
+        routed_benchmark_gtt_snapshot.entry_count) {
+        uint8_t entry_index = (uint8_t)(
+            routed_benchmark_gtt_emission.entry_cursor - 1u);
+
+        entry = &routed_benchmark_gtt_snapshot.entries[entry_index];
+        if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+            return;
+        }
+        routed_benchmark_gtt_emission.entry_cursor++;
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_gtt_entry schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu slot=%u adva=%02x:%02x:%02x:%02x:%02x:%02x serial=%u serial_state=%u hop_count=%u hop_state=%u freshness=%u departed=%u last_evidence_ms=%lu\n",
+                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                  (UW)session, (UW)(record_id >> 32), (UW)record_id,
+                  (UW)routed_benchmark_gtt_snapshot.query_at_ms,
+                  (UINT)entry_index,
+                  (UINT)entry->canonical_adva.bytes[0],
+                  (UINT)entry->canonical_adva.bytes[1],
+                  (UINT)entry->canonical_adva.bytes[2],
+                  (UINT)entry->canonical_adva.bytes[3],
+                  (UINT)entry->canonical_adva.bytes[4],
+                  (UINT)entry->canonical_adva.bytes[5], (UINT)entry->serial,
+                  (UINT)entry->serial_state, (UINT)entry->hop_count,
+                  (UINT)entry->hop_state, (UINT)entry->freshness,
+                  (UINT)entry->departed, (UW)entry->last_evidence_ms);
+        return;
+    }
+    if (!routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        return;
+    }
+    routed_benchmark_gtt_emission.active = 0u;
+    emission_now = now_ms();
+    tm_printf((UB *)"obs_gtt_end schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu status=OK entry_count=%u nondeparted_count=%u\n",
+                (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                (UW)session,
+               (UW)(record_id >> 32), (UW)record_id,
+               (UW)routed_benchmark_gtt_snapshot.query_at_ms,
+               (UINT)routed_benchmark_gtt_snapshot.entry_count,
+               (UINT)routed_benchmark_gtt_snapshot.nondeparted_count);
+}
+
+static void start_benchmark_gtt_emission(uint32_t now)
+{
+    routed_full_telemetry_status_t status = ROUTED_FULL_TELEMETRY_INVALID;
+
+    if (routed_benchmark_gtt_emission.active != 0u) {
+        return;
+    }
+    memset(&routed_benchmark_gtt_emission, 0,
+           sizeof(routed_benchmark_gtt_emission));
+    routed_benchmark_gtt_emission.query_at_ms = now;
+    if (!queue_guard_begin()) {
+        routed_benchmark_record_guard_fault();
+        routed_benchmark_record_snapshot_fault();
+        routed_benchmark_gtt_emission.invalid = 1u;
+        routed_benchmark_gtt_emission.active = 1u;
+        return;
+    }
+    status = routed_full_telemetry_snapshot_gtt(
+        &routed_gtt, now, &routed_benchmark_gtt_snapshot);
+    queue_guard_end();
+    routed_benchmark_gtt_emission.active = 1u;
+    if (status != ROUTED_FULL_TELEMETRY_OK) {
+        routed_benchmark_record_snapshot_fault();
+        routed_benchmark_gtt_emission.invalid = 1u;
+    }
+}
+#else
+static void log_benchmark_gtt_not_implemented(uint32_t now)
+{
+    uint32_t session;
+    uint32_t emission_now;
+    uint64_t record_id;
+
+    if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_gtt_begin schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu slot_capacity=0 status=NOT_IMPLEMENTED\n",
+                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session,
+                   (UW)(record_id >> 32), (UW)record_id, (UW)now);
+    }
+    if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+        emission_now = now_ms();
+        tm_printf((UB *)"obs_gtt_end schema=observer-v2 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu status=NOT_IMPLEMENTED entry_count=0 nondeparted_count=0\n",
+                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UW)session,
+                  (UW)(record_id >> 32), (UW)record_id, (UW)now);
+    }
+}
+#endif
 #endif
 
 static void record_router_fault(tavrn_router_fault_reason_t reason)
@@ -1047,6 +1554,9 @@ static void routed_cycle_trace_sink(void *context, const routed_cycle_trace_t *t
     if (trace == NULL) {
         return;
     }
+#if TRON_BUILD_BENCHMARK_MODE
+    routed_benchmark_observer_observe_trace(&routed_benchmark_observer, trace);
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     routed_max_scheduler_gap_ms = routed_full_telemetry_max_scheduler_gap(
         routed_max_scheduler_gap_ms,
@@ -1204,6 +1714,7 @@ static tavrn_router_control_intercept_status_t routed_verification_rrep_receive(
     return TAVRN_ROUTER_CONTROL_INTERCEPT_IGNORED;
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static int routed_expiry_sweep_enqueue(
     uint32_t now, const tavrn_maintenance_expiry_sweep_snapshot_t *sweep)
 {
@@ -1255,7 +1766,6 @@ static int routed_expiry_sweep_enqueue(
     return 1;
 }
 
-#if !TRON_BUILD_BENCHMARK_MODE
 static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
 {
     if (record_out == NULL || !queue_guard_begin()) {
@@ -1357,6 +1867,7 @@ static int routed_expiry_full_table_seed(uint32_t now)
 }
 #endif
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static tavrn_maintenance_status_t routed_observe_local_broadcast(void)
 {
     tavrn_router_local_broadcast_snapshot_t broadcast;
@@ -1374,6 +1885,7 @@ static tavrn_maintenance_status_t routed_observe_local_broadcast(void)
         &routed_maintenance, broadcast.accepted_at_ms);
     return status == TAVRN_MAINTENANCE_GATED ? TAVRN_MAINTENANCE_OK : status;
 }
+#endif
 
 #if !TRON_BUILD_BENCHMARK_MODE
 static void routed_full_snapshot_request(void)
@@ -1389,7 +1901,6 @@ static void routed_full_snapshot_request(void)
     }
     queue_guard_end();
 }
-#endif
 
 static void routed_full_snapshot_service(void)
 {
@@ -1410,11 +1921,7 @@ static void routed_full_snapshot_service(void)
             return;
         }
         status = routed_full_telemetry_snapshot_gtt(
-#if TRON_BUILD_BENCHMARK_MODE
-            &routed_gtt, now_ms(), &routed_full_gtt_snapshot_storage);
-#else
             &routed_gtt, now_ms(), &routed_full_logger_storage.gtt_snapshot);
-#endif
         routed_gtt_snapshot_request_pending = 0u;
         if (status == ROUTED_FULL_TELEMETRY_OK) {
             routed_gtt_snapshot_ready = 1u;
@@ -1425,7 +1932,6 @@ static void routed_full_snapshot_service(void)
     }
 }
 
-#if !TRON_BUILD_BENCHMARK_MODE
 static int routed_full_snapshot_is_ready(void)
 {
     int ready = 0;
@@ -1444,8 +1950,8 @@ static void routed_full_snapshot_clear_ready(void)
         queue_guard_end();
     }
 }
-#endif
-#endif
+#endif /* !TRON_BUILD_BENCHMARK_MODE */
+#endif /* TRON_BUILD_ROUTED_FULL_TAVRN */
 
 static uint32_t routed_cycle_now_ms(void *context)
 {
@@ -1671,6 +2177,7 @@ static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
                 trace->detail.tick.status = AODV_STATUS_INVALID;
             }
 #endif
+#if !TRON_BUILD_BENCHMARK_MODE
             if (routed_binding_result_storage.post_tick.sweep_status ==
                     TAVRN_MAINTENANCE_EXPIRY_SWEEP_OK &&
                 routed_binding_result_storage.post_tick.sweep.pass_performed != 0u) {
@@ -1682,6 +2189,7 @@ static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
                     scheduler_return_requested = 1u;
                 }
             }
+#endif
             if (application_present != 0u &&
                 routed_binding_result_storage.application_result.status <=
                     TAVRN_GTT_APPLICATION_UNAVAILABLE) {
@@ -1756,7 +2264,7 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
 
     (void)context;
     memset(&request, 0, sizeof(request));
-#if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
     routed_full_snapshot_service();
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
@@ -1765,14 +2273,18 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
         routed_benchmark_schedule_status_t schedule_status;
 
         routed_benchmark_pending_attempt_valid = 0u;
+        if (TRON_BUILD_BENCH_ROLE_NUMBER != 1u) {
+            request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+            request.prepared_at_ms = now_ms();
+            return request;
+        }
         if (mesh_fault_latched != 0u ||
             tavrn_router_fault_reason(&routed_router) != TAVRN_ROUTER_FAULT_NONE) {
             request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
             request.prepared_at_ms = now_ms();
             return request;
         }
-        schedule_status = routed_benchmark_schedule_due(&routed_benchmark_state,
-                                                        now, &slot);
+        schedule_status = routed_benchmark_schedule(now, &slot);
         if (schedule_status == ROUTED_BENCHMARK_SCHEDULE_NONE) {
             request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
             request.prepared_at_ms = now_ms();
@@ -1785,9 +2297,14 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
         }
         memset(&routed_benchmark_pending_attempt, 0,
                sizeof(routed_benchmark_pending_attempt));
-        routed_benchmark_pending_attempt.now_ms = now;
-        routed_benchmark_pending_attempt.slot = slot.slot;
-        routed_benchmark_pending_attempt.counter = slot.counter;
+        routed_benchmark_pending_attempt.event_at_ms = now;
+        routed_benchmark_pending_attempt.deadline_ms = slot.deadline_ms;
+        routed_benchmark_pending_attempt.identity = slot.identity;
+        routed_benchmark_pending_attempt.burst = slot.burst;
+        routed_benchmark_pending_attempt.session_id = slot.session_id;
+        routed_benchmark_pending_attempt.sequence = slot.sequence;
+        routed_benchmark_pending_attempt.workload = slot.workload;
+        routed_benchmark_pending_attempt.kind = ROUTED_BENCHMARK_RECORD_OFFER;
 #if TRON_BUILD_ROUTED_FULL_TAVRN
         {
             tavrn_mentorship_state_snapshot_t mentorship_state;
@@ -1805,8 +2322,12 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
                 routed_benchmark_pending_attempt.width = TAVRN_IDENTITY_SID8;
                 routed_benchmark_pending_attempt.status =
                     ROUTED_BENCHMARK_STATUS_NOT_READY;
-                routed_benchmark_record_not_ready(&routed_benchmark_state);
+                routed_benchmark_pending_attempt.attempted = 0u;
                 routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
+                routed_benchmark_pending_attempt.kind =
+                    ROUTED_BENCHMARK_RECORD_APPLICATION;
+                routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
+                routed_benchmark_record_not_ready_status();
                 request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
                 request.prepared_at_ms = now_ms();
                 return request;
@@ -1816,17 +2337,25 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
 #else
         request.data.final_destination = configured_destination.logical_id;
 #endif
-        request.data.app_kind = 0x7fu;
-        request.data.app_source = 0u;
-        request.data.app_len = 4u;
-        request.data.app_bytes[0] = (uint8_t)(slot.counter & 0xffu);
-        request.data.app_bytes[1] = (uint8_t)((slot.counter >> 8) & 0xffu);
-        request.data.app_bytes[2] = (uint8_t)((slot.counter >> 16) & 0xffu);
-        request.data.app_bytes[3] = (uint8_t)((slot.counter >> 24) & 0xffu);
         routed_benchmark_pending_attempt.destination =
             request.data.final_destination.value;
         routed_benchmark_pending_attempt.width =
             (uint8_t)request.data.final_destination.width;
+        routed_benchmark_pending_attempt.status = 0u;
+        routed_benchmark_pending_attempt.attempted = 1u;
+        routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
+        routed_benchmark_pending_attempt.kind = ROUTED_BENCHMARK_RECORD_APPLICATION;
+        request.data.app_kind = ROUTED_BENCHMARK_APP_KIND;
+        request.data.app_source = 0u;
+        request.data.app_len = ROUTED_BENCHMARK_APP_PAYLOAD_BYTES;
+        request.data.app_bytes[0] = (uint8_t)(slot.session_id & 0xffu);
+        request.data.app_bytes[1] = (uint8_t)((slot.session_id >> 8) & 0xffu);
+        request.data.app_bytes[2] = (uint8_t)((slot.session_id >> 16) & 0xffu);
+        request.data.app_bytes[3] = (uint8_t)((slot.session_id >> 24) & 0xffu);
+        request.data.app_bytes[4] = (uint8_t)(slot.identity & 0xffu);
+        request.data.app_bytes[5] = (uint8_t)((slot.identity >> 8) & 0xffu);
+        request.data.app_bytes[6] = (uint8_t)((slot.identity >> 16) & 0xffu);
+        request.data.app_bytes[7] = (uint8_t)((slot.identity >> 24) & 0xffu);
         routed_benchmark_pending_attempt_valid = 1u;
         request.status = ROUTED_CYCLE_APPLICATION_READY;
         request.prepared_at_ms = now_ms();
@@ -1896,11 +2425,11 @@ static tavrn_router_phase_trace_t routed_cycle_router_submit(
     if (routed_benchmark_pending_attempt_valid != 0u) {
         uint8_t accepted = status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED;
 
-        routed_benchmark_record_submission(&routed_benchmark_state, accepted);
+        routed_benchmark_record_submission_status(accepted);
         if (accepted != 0u) {
             routed_counters.submitted++;
         }
-        routed_benchmark_pending_attempt.now_ms = trace.completed_at_ms;
+        routed_benchmark_pending_attempt.event_at_ms = trace.completed_at_ms;
         routed_benchmark_pending_attempt.accepted = accepted;
         routed_benchmark_pending_attempt.status = (uint32_t)status;
         routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
@@ -2303,17 +2832,30 @@ static void log_full_snapshot(void)
 
 LOCAL void routed_logger_task(INT stacd, void *exinf)
 {
-    routed_delivery_t delivery;
-    routed_local_event_t local_event;
+#if TRON_BUILD_BENCHMARK_MODE
+    routed_delivery_t *delivery = &routed_benchmark_logger_storage.delivery;
+    routed_local_event_t *local_event = &routed_benchmark_logger_storage.local_event;
+#else
+    routed_delivery_t delivery_storage;
+    routed_local_event_t local_event_storage;
+    routed_delivery_t *delivery = &delivery_storage;
+    routed_local_event_t *local_event = &local_event_storage;
+#endif
+#if !TRON_BUILD_BENCHMARK_MODE
     uint32_t next_summary_at = now_ms() + tron_timer_config.stats_ms;
+#endif
 #if TRON_BUILD_BENCHMARK_MODE
     uint32_t next_clock_at = now_ms();
+    uint32_t next_observation_at = now_ms();
 #endif
 
     (void)stacd;
     (void)exinf;
     tm_printf((UB *)"%s\n", (UB *)tron_build_info_line());
     log_startup();
+#if TRON_BUILD_BENCHMARK_MODE
+    log_benchmark_boot();
+#endif
     while (1) {
         uint32_t now = now_ms();
 
@@ -2323,12 +2865,6 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                       (UINT)pending_router_fault);
             logged_router_fault = pending_router_fault;
         }
-#if TRON_BUILD_BENCHMARK_MODE
-        if ((int32_t)(now - next_clock_at) >= 0) {
-            log_benchmark_clock(now);
-            next_clock_at = now + 1000u;
-        }
-#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
         if (routed_full_snapshot_is_ready()) {
             log_full_snapshot();
@@ -2343,70 +2879,128 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             log_retry_exhausted_event(&routed_logger_record.retry_event);
         } else if (routed_rreq_pop()) {
             log_rreq_lifecycle(&routed_logged_rreq);
-        } else if (local_event_pop(&local_event)) {
-            if (local_event.event.type ==
+        } else if (local_event_pop(local_event)) {
+            if (local_event->event.type ==
                 TAVRN_ROUTER_DISPATCH_EVENT_PENDING_DATA_FAILED) {
                 tm_printf((UB *)"routed pending_data_failed destination=0x%04x\n",
-                          (UINT)local_event.event.destination.value);
-            } else if (local_event.event.type ==
+                          (UINT)local_event->event.destination.value);
+            } else if (local_event->event.type ==
                        TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR) {
                 tm_printf((UB *)"routed blacklist_neighbor destination=0x%04x peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                          (UINT)local_event.event.destination.value,
-                          (UINT)local_event.event.peer.adva.bytes[0],
-                          (UINT)local_event.event.peer.adva.bytes[1],
-                          (UINT)local_event.event.peer.adva.bytes[2],
-                          (UINT)local_event.event.peer.adva.bytes[3],
-                          (UINT)local_event.event.peer.adva.bytes[4],
-                          (UINT)local_event.event.peer.adva.bytes[5]);
+                          (UINT)local_event->event.destination.value,
+                          (UINT)local_event->event.peer.adva.bytes[0],
+                          (UINT)local_event->event.peer.adva.bytes[1],
+                          (UINT)local_event->event.peer.adva.bytes[2],
+                          (UINT)local_event->event.peer.adva.bytes[3],
+                          (UINT)local_event->event.peer.adva.bytes[4],
+                          (UINT)local_event->event.peer.adva.bytes[5]);
             }
-        } else if (delivery_pop(&delivery)) {
+        } else if (delivery_pop(delivery)) {
 #if TRON_BUILD_BENCHMARK_MODE
-            uint32_t counter = 0u;
-            int counter_valid = routed_benchmark_decode_counter(
-                delivery.data.app_kind, delivery.data.app_len,
-                delivery.data.app_bytes, &counter);
+            routed_benchmark_workload_t workload =
+                ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT;
+            uint32_t identity = 0u;
+            uint32_t origin_session = 0u;
+            uint32_t burst = 0u;
+            uint16_t sequence = 0u;
+            uint32_t session;
+            uint32_t emission_now;
+            uint64_t record_id;
+            int identity_valid = routed_benchmark_decode_payload(
+                delivery->data.app_kind, delivery->data.app_len,
+                delivery->data.app_bytes, &origin_session, &identity) &&
+                routed_benchmark_identity_decode(identity, &workload, &burst,
+                                                  &sequence);
 
-            tm_printf((UB *)"routed bench_final now=%lu role=%u origin=0x%04x destination=0x%04x counter_valid=%u counter=%lu app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                      (UW)delivery.delivered_at_ms,
-                      (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
-                      (UINT)delivery.data.origin.value,
-                      (UINT)delivery.data.final_destination.value,
-                      (UINT)(counter_valid != 0), (UW)counter,
-                      (UINT)delivery.data.app_len,
-                      (UINT)delivery.transmitter.adva.bytes[0],
-                      (UINT)delivery.transmitter.adva.bytes[1],
-                      (UINT)delivery.transmitter.adva.bytes[2],
-                      (UINT)delivery.transmitter.adva.bytes[3],
-                      (UINT)delivery.transmitter.adva.bytes[4],
-                      (UINT)delivery.transmitter.adva.bytes[5]);
+            if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+                if (identity_valid != 0) {
+                    emission_now = now_ms();
+                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=1 origin_session=%lu identity=0x%08lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                                (UW)emission_now, (UW)delivery->delivered_at_ms,
+                               (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
+                              (UW)(record_id >> 32), (UW)record_id,
+                               (UINT)delivery->data.origin.value,
+                               (UINT)delivery->data.final_destination.value,
+                               (UW)origin_session, (UW)identity,
+                               (UINT)workload, (UW)burst, (UINT)sequence,
+                               (UINT)sequence,
+                                (UINT)delivery->data.app_kind,
+                                (UINT)delivery->data.app_len,
+                               (UINT)delivery->transmitter.adva.bytes[0],
+                               (UINT)delivery->transmitter.adva.bytes[1],
+                               (UINT)delivery->transmitter.adva.bytes[2],
+                               (UINT)delivery->transmitter.adva.bytes[3],
+                               (UINT)delivery->transmitter.adva.bytes[4],
+                                (UINT)delivery->transmitter.adva.bytes[5]);
+                } else {
+                    emission_now = now_ms();
+                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=0 origin_session=0 identity=0x%08lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                                (UW)emission_now, (UW)delivery->delivered_at_ms,
+                               (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
+                              (UW)(record_id >> 32), (UW)record_id,
+                               (UINT)delivery->data.origin.value,
+                               (UINT)delivery->data.final_destination.value,
+                               (UW)identity, (UINT)workload, (UW)burst,
+                               (UINT)sequence, (UINT)sequence,
+                                (UINT)delivery->data.app_kind,
+                                (UINT)delivery->data.app_len,
+                               (UINT)delivery->transmitter.adva.bytes[0],
+                               (UINT)delivery->transmitter.adva.bytes[1],
+                               (UINT)delivery->transmitter.adva.bytes[2],
+                               (UINT)delivery->transmitter.adva.bytes[3],
+                               (UINT)delivery->transmitter.adva.bytes[4],
+                                (UINT)delivery->transmitter.adva.bytes[5]);
+                }
+            }
 #else
             tm_printf((UB *)"routed final_data now=%lu origin=0x%04x destination=0x%04x seq=%u app_kind=0x%02x app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                      (UW)delivery.delivered_at_ms,
-                      (UINT)delivery.data.origin.value,
-                      (UINT)delivery.data.final_destination.value,
-                      (UINT)delivery.data.data_seq, (UINT)delivery.data.app_kind,
-                      (UINT)delivery.data.app_len,
-                      (UINT)delivery.transmitter.adva.bytes[0],
-                      (UINT)delivery.transmitter.adva.bytes[1],
-                      (UINT)delivery.transmitter.adva.bytes[2],
-                      (UINT)delivery.transmitter.adva.bytes[3],
-                       (UINT)delivery.transmitter.adva.bytes[4],
-                       (UINT)delivery.transmitter.adva.bytes[5]);
+                       (UW)delivery->delivered_at_ms,
+                       (UINT)delivery->data.origin.value,
+                       (UINT)delivery->data.final_destination.value,
+                       (UINT)delivery->data.data_seq, (UINT)delivery->data.app_kind,
+                       (UINT)delivery->data.app_len,
+                       (UINT)delivery->transmitter.adva.bytes[0],
+                       (UINT)delivery->transmitter.adva.bytes[1],
+                       (UINT)delivery->transmitter.adva.bytes[2],
+                       (UINT)delivery->transmitter.adva.bytes[3],
+                        (UINT)delivery->transmitter.adva.bytes[4],
+                        (UINT)delivery->transmitter.adva.bytes[5]);
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
         } else if (routed_benchmark_attempt_pop()) {
             log_benchmark_attempt(&routed_benchmark_logged_attempt);
 #endif
-        } else if ((int32_t)(now - next_summary_at) >= 0) {
 #if TRON_BUILD_BENCHMARK_MODE
-            log_benchmark_summary(now);
+        }
+        /* Drain at most one copied event above, then give due periodic
+         * observer records a bounded one-turn latency under sustained load. */
+        if ((int32_t)(now - next_clock_at) >= 0) {
+            log_benchmark_clock();
+            next_clock_at += ((now - next_clock_at) /
+                              ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS + 1u) *
+                ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
+        } else if ((int32_t)(now - next_observation_at) >= 0) {
+            log_benchmark_control();
+            log_benchmark_health();
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+            start_benchmark_gtt_emission(now);
 #else
+            log_benchmark_gtt_not_implemented(now);
+#endif
+            next_observation_at += ((now - next_observation_at) / 10000u + 1u) *
+                10000u;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+        } else if (routed_benchmark_gtt_emission.active != 0u) {
+            log_benchmark_gtt_next();
+#endif
+#else
+        } else if ((int32_t)(now - next_summary_at) >= 0) {
             log_summary(now);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
             routed_full_snapshot_request();
 #endif
-#endif
             next_summary_at = now + tron_timer_config.stats_ms;
+#endif
         }
         (void)tk_dly_tsk(1u);
     }
@@ -2419,8 +3013,9 @@ EXPORT INT usermain(void)
                           .itskpri = ROUTED_MESH_TASK_PRIORITY,
                           .stksz = ROUTED_MESH_TASK_STACK_BYTES };
     T_CTSK logger_task = { .exinf = NULL, .tskatr = TA_HLNG | TA_RNG3,
-                            .task = (FP)routed_logger_task,
-                            .itskpri = ROUTED_LOGGER_TASK_PRIORITY, .stksz = 1536 };
+                             .task = (FP)routed_logger_task,
+                             .itskpri = ROUTED_LOGGER_TASK_PRIORITY,
+                             .stksz = ROUTED_LOGGER_TASK_STACK_BYTES };
     T_CFLG release_flag = { .exinf = NULL, .flgatr = TA_TFIFO,
                              .iflgptn = 0u };
     T_CCYC release_cyclic = { .exinf = NULL, .cycatr = TA_HLNG | TA_PHS,
@@ -2432,6 +3027,10 @@ EXPORT INT usermain(void)
     aodv_rreq_telemetry_config_t rreq_telemetry;
     tavrn_router_application_hooks_t application_hooks;
     uint16_t boot_nonce;
+#if TRON_BUILD_BENCHMARK_MODE
+    uint16_t benchmark_session_high;
+    uint32_t benchmark_session;
+#endif
     uint32_t release_period_ms;
     ID mesh_id;
     ID logger_id;
@@ -2441,17 +3040,26 @@ EXPORT INT usermain(void)
     ring_init(&local_event_ring);
 #if TRON_BUILD_BENCHMARK_MODE
     /* This is intentionally before radio initialization.  It never starts the
-     * continuous display task: after exactly 1500 ms of digit scanning one
-     * role-specific matrix pixel remains driven. */
+     * continuous display task: after exactly 1500 ms of digit scanning the
+     * matrix is fully off. */
     display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 1500u);
 #endif
     if (!tron_timer_config_is_valid(&tron_timer_config) ||
         ble_radio_try_init(tron_timer_config.radio_state_timeout_ms) != BLE_RADIO_OP_OK ||
         ble_radio_read_default_adva(runtime_ficr_adva) != BLE_RADIO_OP_OK ||
-        !routed_boot_nonce(&boot_nonce)) {
+        !routed_boot_nonce(&boot_nonce)
+#if TRON_BUILD_BENCHMARK_MODE
+        || !routed_boot_nonce(&benchmark_session_high)
+#endif
+        ) {
         tm_printf((UB *)"routed bounded radio/FICR/RNG/timer initialization failed\n");
         return 1;
     }
+#if TRON_BUILD_BENCHMARK_MODE
+    /* The router keeps the low sample as its 16-bit incarnation nonce; the
+     * benchmark payload session combines it with a second nonzero sample. */
+    benchmark_session = ((uint32_t)benchmark_session_high << 16) | boot_nonce;
+#endif
     tm_printf((UB *)"routed boot_nonce=%u\n", (UINT)boot_nonce);
 #if TRON_BUILD_BENCH_IDENTIFY_DISPLAY && !TRON_BUILD_BENCHMARK_MODE
     display_init();
@@ -2667,6 +3275,7 @@ EXPORT INT usermain(void)
             return 1;
         }
 #endif
+#if !TRON_BUILD_BENCHMARK_MODE
         {
             tavrn_router_local_broadcast_snapshot_t broadcast;
 
@@ -2677,6 +3286,7 @@ EXPORT INT usermain(void)
             }
             routed_local_broadcast_generation_seen = broadcast.generation;
         }
+#endif
     }
 #endif
     routed_cycle_diagnostic_queue_init(&routed_diagnostic_queue);
@@ -2708,10 +3318,9 @@ EXPORT INT usermain(void)
     rreq_telemetry.on_lifecycle = routed_rreq_lifecycle;
 #if TRON_BUILD_BENCHMARK_MODE
     routed_benchmark_attempt_queue_init(&routed_benchmark_attempt_queue);
+    routed_benchmark_observer_init(&routed_benchmark_observer);
     if (!routed_benchmark_init(&routed_benchmark_state, now_ms(),
-                               TRON_BUILD_BENCH_WARMUP_MS,
-                               TRON_BUILD_LINK_TX_INTERVAL_MS,
-                               TRON_BUILD_LINK_TRANSACTION_TARGET)) {
+                                 benchmark_session)) {
         tm_printf((UB *)"routed benchmark configuration rejected\n");
         return 1;
     }
@@ -2748,16 +3357,18 @@ EXPORT INT usermain(void)
         tm_printf((UB *)"routed logger task creation failed id=%d\n", logger_id);
         return 1;
     }
-    if (tk_sta_tsk(logger_id, 0) != E_OK) {
-        tm_printf((UB *)"routed logger task start failed\n");
-        return 1;
-    }
     if (tk_sta_cyc(release_cyclic_id) != E_OK) {
         tm_printf((UB *)"routed release cyclic start failed\n");
         return 1;
     }
     if (tk_sta_tsk(mesh_id, 0) != E_OK) {
         tm_printf((UB *)"routed mesh task start failed\n");
+        return 1;
+    }
+    if (tk_sta_tsk(logger_id, 0) != E_OK) {
+        tm_printf((UB *)"routed logger task start failed\n");
+        (void)tk_stp_cyc(release_cyclic_id);
+        (void)tk_ter_tsk(mesh_id);
         return 1;
     }
     tk_slp_tsk(TMO_FEVR);

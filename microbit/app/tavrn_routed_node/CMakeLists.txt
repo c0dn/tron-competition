@@ -26,6 +26,7 @@ target_include_directories(tavrn_routed_node PRIVATE
 target_compile_definitions(tavrn_routed_node PRIVATE _SIZE_T_DEFINED _SIZE_T_DECLARED)
 target_compile_definitions(tavrn_routed_node PRIVATE
   INITTASK_STKSZ=${TRON_ROUTED_INITIAL_TASK_STACK_BYTES}
+  TRON_ROUTED_LOGGER_TASK_STACK_BYTES=${TRON_ROUTED_LOGGER_TASK_STACK_BYTES}
 )
 target_compile_definitions(mtkernel3_microbit_kernel_tavrn_routed_node PRIVATE
   INITTASK_STKSZ=${TRON_ROUTED_INITIAL_TASK_STACK_BYTES}

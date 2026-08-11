@@ -1,5 +1,6 @@
 #include "routed_benchmark.h"
 #include "routed_benchmark_full.h"
+#include "routed_full_telemetry.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -10,7 +11,7 @@ static unsigned int failures;
 #define CHECK(tag, expression) \
     do { \
         if (!(expression)) { \
-            printf("FAIL %s: %s:%d: %s\n", (tag), __FILE__, __LINE__, #expression); \
+            printf("FAIL %s: %s:%d: %s\n", tag, __FILE__, __LINE__, #expression); \
             failures++; \
         } \
     } while (0)
@@ -39,95 +40,140 @@ static int observe(tavrn_gtt_t *gtt, tavrn_adva_t identity, uint32_t now)
     return tavrn_gtt_observe(gtt, &evidence, now) == TAVRN_GTT_OBSERVE_ADDED;
 }
 
-static void test_absolute_deadlines_and_exact_target(void)
+static void test_continuous_absolute_deadlines(void)
 {
     routed_benchmark_state_t state;
     routed_benchmark_slot_t slot;
+    routed_benchmark_workload_t workload;
+    uint32_t burst;
+    uint16_t sequence;
+    uint64_t record_id;
 
-    CHECK("BENCH-SCHEDULE", routed_benchmark_init(&state, 1000u, 60000u, 100u, 3u));
-    CHECK("BENCH-SCHEDULE", state.start_at_ms == 61000u &&
-                                routed_benchmark_schedule_due(&state, 60999u, &slot) ==
-                                    ROUTED_BENCHMARK_SCHEDULE_NONE);
-    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 61000u, &slot) ==
-                                    ROUTED_BENCHMARK_SCHEDULE_DUE &&
-                                slot.slot == 0u && slot.counter == 0u &&
-                                slot.deadline_ms == 61000u && state.offered == 1u);
+    CHECK("BENCH-SCHEDULE", !routed_benchmark_init(&state, 0u, 0u));
+    CHECK("BENCH-SCHEDULE", routed_benchmark_init(&state, 0u, 73u));
+    CHECK("BENCH-SCHEDULE", state.started_at_ms == 0u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 0u, &slot) ==
+                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT &&
+                                slot.deadline_ms == 0u && slot.burst == 0u &&
+                                slot.sequence == 0u && slot.identity == 0u &&
+                                state.offered == 1u);
     routed_benchmark_record_submission(&state, 0u);
-    CHECK("BENCH-SCHEDULE", state.attempted == 1u && state.rejected == 1u &&
-                                state.payload_counter == 0u &&
-                                routed_benchmark_schedule_due(&state, 61099u, &slot) ==
-                                    ROUTED_BENCHMARK_SCHEDULE_NONE);
-    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 61100u, &slot) ==
+    CHECK("BENCH-SCHEDULE", state.accepted == 0u && state.rejected == 1u &&
+                                routed_benchmark_schedule_due(&state, 999u, &slot) ==
+                                    ROUTED_BENCHMARK_SCHEDULE_NONE &&
+                                routed_benchmark_schedule_due(&state, 1000u, &slot) ==
                                     ROUTED_BENCHMARK_SCHEDULE_DUE &&
-                                slot.slot == 1u && slot.counter == 0u &&
-                                slot.deadline_ms == 61100u);
-    routed_benchmark_record_submission(&state, 1u);
-    CHECK("BENCH-SCHEDULE", state.accepted == 1u && state.payload_counter == 1u &&
-                                routed_benchmark_schedule_due(&state, 61200u, &slot) ==
-                                    ROUTED_BENCHMARK_SCHEDULE_DUE &&
-                                slot.slot == 2u && slot.counter == 1u);
-    routed_benchmark_record_submission(&state, 1u);
-    CHECK("BENCH-SCHEDULE", state.offered == 3u && state.attempted == 3u &&
-                                state.accepted == 2u && state.rejected == 1u &&
-                                routed_benchmark_schedule_due(&state, 61300u, &slot) ==
-                                    ROUTED_BENCHMARK_SCHEDULE_NONE);
+                                slot.sequence == 1u && slot.identity == 1u);
+    routed_benchmark_record_not_ready(&state);
+    CHECK("BENCH-SCHEDULE", state.rejected == 2u && state.not_ready == 1u);
+
+    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 60000u, &slot) ==
+                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                slot.deadline_ms == 60000u && slot.burst == 0u &&
+                                slot.sequence == 0u && slot.identity == 0x80000000u &&
+                                routed_benchmark_identity_decode(slot.identity, &workload,
+                                                                 &burst, &sequence) &&
+                                workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                burst == 0u && sequence == 0u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 60001u, &slot) ==
+                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT &&
+                                slot.deadline_ms == 60000u && slot.burst == 0u &&
+                                slot.sequence == 60u && state.heartbeat_skipped == 58u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 61050u, &slot) ==
+                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                slot.deadline_ms == 61000u && slot.sequence == 10u &&
+                                state.throughput_skipped == 9u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_schedule_due(&state, 510000u, &slot) ==
+                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                slot.deadline_ms == 510000u && slot.burst == 1u &&
+                                slot.sequence == 0u && state.throughput_skipped == 598u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_next_record_id(&state, &record_id) &&
+                                record_id == 1u &&
+                                state.session_id == 73u &&
+                                routed_benchmark_schedule_due(&state,
+                                                             UINT32_MAX - 100u, &slot) !=
+                                    ROUTED_BENCHMARK_SCHEDULE_INVALID);
 }
 
-static void test_skipped_deadlines_and_wrap(void)
+static void test_newest_due_slot_selection(void)
 {
     routed_benchmark_state_t state;
     routed_benchmark_slot_t slot;
+    uint32_t wrapped_start = UINT32_MAX - 59999u;
 
-    CHECK("BENCH-SKIP", routed_benchmark_init(&state, 0u, 100u, 100u, 6u) &&
-                            routed_benchmark_schedule_due(&state, 450u, &slot) ==
-                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
-                            slot.slot == 3u && slot.deadline_ms == 400u &&
-                            state.offered == 4u && state.skipped == 3u &&
-                            state.attempted == 0u);
-    routed_benchmark_record_not_ready(&state);
-    CHECK("BENCH-SKIP", state.rejected == 1u && state.not_ready == 1u &&
-                            state.payload_counter == 0u &&
-                            routed_benchmark_schedule_due(&state, 650u, &slot) ==
-                                ROUTED_BENCHMARK_SCHEDULE_DUE &&
-                            slot.slot == 5u && slot.deadline_ms == 600u &&
-                            state.offered == 6u && state.skipped == 4u);
+    /* Equal deadlines retain the losing workload for the following cycle. */
+    CHECK("BENCH-SCHEDULE-TIE", routed_benchmark_init(&state, 0u, 71u) &&
+                                      routed_benchmark_schedule_due(&state, 60000u,
+                                                                   &slot) ==
+                                          ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                      slot.workload ==
+                                          ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                      slot.deadline_ms == 60000u &&
+                                      slot.sequence == 0u &&
+                                      routed_benchmark_schedule_due(&state, 60000u,
+                                                                   &slot) ==
+                                          ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                      slot.workload ==
+                                          ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT &&
+                                      slot.deadline_ms == 60000u &&
+                                      slot.sequence == 60u &&
+                                      state.heartbeat_skipped == 60u &&
+                                      state.throughput_skipped == 0u);
 
-    CHECK("BENCH-SKIP", routed_benchmark_init(&state, UINT32_MAX - 49u, 100u,
-                                                100u, 1u) &&
-                            state.start_at_ms == 50u &&
-                            routed_benchmark_schedule_due(&state, 49u, &slot) ==
-                                ROUTED_BENCHMARK_SCHEDULE_NONE &&
-                            routed_benchmark_schedule_due(&state, 50u, &slot) ==
-                                ROUTED_BENCHMARK_SCHEDULE_DUE);
+    /* A strictly older heartbeat is accounted and never replayed. */
+    CHECK("BENCH-SCHEDULE-NEWEST", routed_benchmark_init(&state, 0u, 72u) &&
+                                         routed_benchmark_schedule_due(&state, 60150u,
+                                                                      &slot) ==
+                                             ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                         slot.workload ==
+                                             ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                         slot.deadline_ms == 60100u &&
+                                         slot.sequence == 1u &&
+                                         state.heartbeat_skipped == 61u &&
+                                         state.throughput_skipped == 1u &&
+                                         routed_benchmark_schedule_due(&state, 60150u,
+                                                                      &slot) ==
+                                             ROUTED_BENCHMARK_SCHEDULE_NONE);
+
+    /* The same strict-order rule must survive the uint32_t time wrap. */
+    CHECK("BENCH-SCHEDULE-WRAP", routed_benchmark_init(&state, wrapped_start, 73u) &&
+                                       state.started_at_ms == wrapped_start &&
+                                       routed_benchmark_schedule_due(&state, 150u,
+                                                                    &slot) ==
+                                           ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                       slot.workload ==
+                                           ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
+                                       slot.deadline_ms == 100u && slot.sequence == 1u &&
+                                       state.heartbeat_skipped == 61u &&
+                                       state.throughput_skipped == 1u &&
+                                       routed_benchmark_schedule_due(&state, 150u,
+                                                                    &slot) ==
+                                           ROUTED_BENCHMARK_SCHEDULE_NONE);
 }
 
-static void test_attempt_queue_and_counter_decode(void)
+static void test_queue_and_identity_decode(void)
 {
     routed_benchmark_attempt_queue_t queue;
     routed_benchmark_attempt_queue_snapshot_t snapshot;
     routed_benchmark_attempt_t attempt;
     routed_benchmark_attempt_t observed;
-    uint8_t bytes[4] = { 0x78u, 0x56u, 0x34u, 0x12u };
-    uint32_t counter = UINT32_MAX;
+    uint8_t bytes[ROUTED_BENCHMARK_APP_PAYLOAD_BYTES] = {
+        0x44u, 0x33u, 0x22u, 0x11u, 0x78u, 0x56u, 0x34u, 0x92u,
+    };
+    uint32_t origin_session = UINT32_MAX;
+    uint32_t identity = UINT32_MAX;
     uint8_t index;
 
     routed_benchmark_attempt_queue_init(&queue);
     memset(&attempt, 0, sizeof(attempt));
-    /* A healthy 10 Hz producer and logger drain never retain more than one
-     * record and therefore cannot change the offered-load denominator. */
-    for (index = 0u; index < 100u; index++) {
-        attempt.slot = index;
-        CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
-                                 ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
-                                 routed_benchmark_attempt_queue_take(&queue, &observed) ==
-                                     ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
-                                 observed.slot == index);
-    }
-    CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_snapshot(&queue, &snapshot) ==
-                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK && snapshot.count == 0u &&
-                             snapshot.high_water == 1u && snapshot.dropped_count == 0u);
     for (index = 0u; index < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY; index++) {
-        attempt.slot = index;
+        attempt.sequence = index;
+        attempt.attempted = (uint8_t)(index & 1u);
         CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK);
     }
@@ -138,16 +184,36 @@ static void test_attempt_queue_and_counter_decode(void)
                              snapshot.count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
                              snapshot.high_water == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
                              snapshot.dropped_count == 1u);
+    CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
+                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK && observed.sequence == 0u &&
+                              observed.attempted == 0u);
     queue.count = ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY + 1u;
     CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID);
 
-    CHECK("BENCH-DECODE", routed_benchmark_decode_counter(0x7fu, 4u, bytes, &counter) &&
-                              counter == 0x12345678u);
-    counter = UINT32_MAX;
-    CHECK("BENCH-DECODE", !routed_benchmark_decode_counter(0x7fu, 3u, bytes, &counter) &&
-                              counter == 0u &&
-                              !routed_benchmark_decode_counter(0x01u, 4u, bytes, &counter));
+    CHECK("BENCH-DECODE", routed_benchmark_decode_payload(
+                               ROUTED_BENCHMARK_APP_KIND,
+                               ROUTED_BENCHMARK_APP_PAYLOAD_BYTES, bytes,
+                               &origin_session, &identity) &&
+                               origin_session == 0x11223344u &&
+                               identity == 0x92345678u);
+    identity = UINT32_MAX;
+    origin_session = UINT32_MAX;
+    CHECK("BENCH-DECODE", !routed_benchmark_decode_payload(
+                               ROUTED_BENCHMARK_APP_KIND, 7u, bytes,
+                               &origin_session, &identity) && identity == 0u &&
+                               origin_session == 0u &&
+                               !routed_benchmark_decode_payload(
+                                   0x01u, ROUTED_BENCHMARK_APP_PAYLOAD_BYTES,
+                                   bytes, &origin_session, &identity));
+    memset(bytes, 0, 4u);
+    identity = UINT32_MAX;
+    origin_session = UINT32_MAX;
+    CHECK("BENCH-DECODE", !routed_benchmark_decode_payload(
+                               ROUTED_BENCHMARK_APP_KIND,
+                               ROUTED_BENCHMARK_APP_PAYLOAD_BYTES, bytes,
+                               &origin_session, &identity) &&
+                               origin_session == 0u && identity == 0u);
 }
 
 static void test_full_destination_readiness_is_fail_closed(void)
@@ -157,8 +223,6 @@ static void test_full_destination_readiness_is_fail_closed(void)
     tavrn_full_t full;
     tavrn_gtt_config_t config;
     tavrn_logical_id_t resolved;
-    routed_benchmark_state_t state;
-    routed_benchmark_slot_t slot;
     tavrn_adva_t local = adva(0x11u, 1u);
     tavrn_adva_t destination = adva(0x42u, 2u);
     tavrn_adva_t collision = adva(0x42u, 9u);
@@ -170,44 +234,61 @@ static void test_full_destination_readiness_is_fail_closed(void)
     config.hard_expiry_ms = 20u;
     config.departed_retention_ms = 40u;
     CHECK("BENCH-FULL", tavrn_gtt_init(&gtt, &storage, &config, 0u) ==
-                            TAVRN_GTT_INIT_OK && tavrn_full_init(&full, &gtt) ==
-                            TAVRN_FULL_INIT_OK &&
-                            routed_benchmark_destination_ready(&full, &destination, 0u,
-                                                               &resolved) ==
-                                ROUTED_BENCHMARK_DESTINATION_UNKNOWN);
-
-    CHECK("BENCH-FULL", routed_benchmark_init(&state, 0u, 1u, 10u, 1u) &&
-                            routed_benchmark_schedule_due(&state, 1u, &slot) ==
-                                ROUTED_BENCHMARK_SCHEDULE_DUE);
-    routed_benchmark_record_not_ready(&state);
-    CHECK("BENCH-FULL", state.offered == 1u && state.attempted == 0u &&
-                            state.rejected == 1u && state.not_ready == 1u);
-
+                             TAVRN_GTT_INIT_OK && tavrn_full_init(&full, &gtt) ==
+                             TAVRN_FULL_INIT_OK &&
+                             routed_benchmark_destination_ready(&full, &destination, 0u,
+                                                                &resolved) ==
+                                 ROUTED_BENCHMARK_DESTINATION_UNKNOWN);
     CHECK("BENCH-FULL", observe(&gtt, destination, 1u) &&
-                            routed_benchmark_destination_ready(&full, &destination, 2u,
-                                                               &resolved) ==
-                                ROUTED_BENCHMARK_DESTINATION_READY &&
-                            resolved.width == TAVRN_IDENTITY_SID8 &&
-                            resolved.value == 0x42u && observe(&gtt, collision, 2u) &&
-                            routed_benchmark_destination_ready(&full, &destination, 2u,
-                                                               &resolved) ==
-                                ROUTED_BENCHMARK_DESTINATION_COLLIDING);
+                             routed_benchmark_destination_ready(&full, &destination, 2u,
+                                                                &resolved) ==
+                                 ROUTED_BENCHMARK_DESTINATION_READY &&
+                             resolved.width == TAVRN_IDENTITY_SID8 &&
+                             resolved.value == 0x42u && observe(&gtt, collision, 2u) &&
+                             routed_benchmark_destination_ready(&full, &destination, 2u,
+                                                                &resolved) ==
+                                 ROUTED_BENCHMARK_DESTINATION_COLLIDING);
+}
+
+static void test_gtt_snapshot_is_read_only(void)
+{
+    tavrn_gtt_storage_t storage;
+    tavrn_gtt_storage_t before;
+    tavrn_gtt_t gtt;
+    tavrn_gtt_config_t config;
+    routed_cycle_gtt_snapshot_t snapshot;
+    tavrn_adva_t local = adva(0x11u, 1u);
+    tavrn_adva_t destination = adva(0x42u, 2u);
 
     memset(&storage, 0, sizeof(storage));
-    CHECK("BENCH-FULL", tavrn_gtt_init(&gtt, &storage, &config, 0u) ==
-                            TAVRN_GTT_INIT_OK && tavrn_full_init(&full, &gtt) ==
-                            TAVRN_FULL_INIT_OK && observe(&gtt, destination, 1u) &&
-                            routed_benchmark_destination_ready(&full, &destination, 22u,
-                                                               &resolved) ==
-                                ROUTED_BENCHMARK_DESTINATION_NOT_ACTIVE);
+    memset(&config, 0, sizeof(config));
+    config.local_identity = local;
+    config.soft_expiry_ms = 10u;
+    config.hard_expiry_ms = 20u;
+    config.departed_retention_ms = 40u;
+    CHECK("BENCH-GTT", tavrn_gtt_init(&gtt, &storage, &config, 0u) ==
+                            TAVRN_GTT_INIT_OK && observe(&gtt, destination, 1u));
+    before = storage;
+    memset(&snapshot, 0, sizeof(snapshot));
+    CHECK("BENCH-GTT", routed_full_telemetry_snapshot_gtt(&gtt, 2u, &snapshot) ==
+                           ROUTED_FULL_TELEMETRY_OK && snapshot.query_at_ms == 2u &&
+                           snapshot.entry_count == 2u &&
+                           snapshot.nondeparted_count == 2u &&
+                           memcmp(&storage, &before, sizeof(storage)) == 0);
+    memset(&snapshot, 0xff, sizeof(snapshot));
+    gtt.storage = NULL;
+    CHECK("BENCH-GTT", routed_full_telemetry_snapshot_gtt(&gtt, 2u, &snapshot) ==
+                           ROUTED_FULL_TELEMETRY_INVALID &&
+                           snapshot.entries[0].canonical_adva.bytes[0] == 0xffu);
 }
 
 int main(void)
 {
-    test_absolute_deadlines_and_exact_target();
-    test_skipped_deadlines_and_wrap();
-    test_attempt_queue_and_counter_decode();
+    test_continuous_absolute_deadlines();
+    test_newest_due_slot_selection();
+    test_queue_and_identity_decode();
     test_full_destination_readiness_is_fail_closed();
+    test_gtt_snapshot_is_read_only();
     if (failures != 0u) {
         printf("routed benchmark tests failed: %u assertion(s)\n", failures);
         return 1;

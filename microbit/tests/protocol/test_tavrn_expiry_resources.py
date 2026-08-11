@@ -75,7 +75,8 @@ def main() -> int:
         config = temporary / "tron_build_config.h"
         config.write_text(
             "#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u\n"
-            "#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u\n",
+            "#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u\n"
+            "#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u\n",
             encoding="utf-8")
         manifest = {
             "build.kind": "ROUTED",
@@ -83,7 +84,10 @@ def main() -> int:
             "build.initial_task_stack_bytes": "4096",
             "capacity.routed_initial_task_stack_bytes": "4096",
             "capacity.routed_initial_task_stack_bytes.state": "IMPLEMENTED",
-            "resource.runtime_ram_reserve_bytes": "12288",
+            "build.routed_logger_task_stack_bytes": "1840",
+            "capacity.routed_logger_task_stack_bytes": "1840",
+            "capacity.routed_logger_task_stack_bytes.state": "IMPLEMENTED",
+            "resource.runtime_ram_reserve_bytes": "12592",
         }
 
         def expect_failure(candidate, code):
@@ -95,12 +99,14 @@ def main() -> int:
 
         declaration = checker.validate_routed_runtime_declarations(manifest, config)
         if declaration.initial_task_stack_bytes != 4096 or \
-                declaration.runtime_ram_reserve_bytes != 12288:
+                declaration.runtime_ram_reserve_bytes != 12592 or \
+                declaration.logger_task_stack_bytes != 1840:
             return 1
         mismatched_config = temporary / "mismatched_tron_build_config.h"
         mismatched_config.write_text(
             "#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u\n"
-            "#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u\n",
+            "#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u\n"
+            "#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u\n",
             encoding="utf-8")
         try:
             checker.validate_routed_runtime_declarations(manifest, mismatched_config)
@@ -114,7 +120,9 @@ def main() -> int:
                 ("resource.runtime_ram_reserve_bytes", "12KiB"),
                 ("resource.runtime_ram_reserve_bytes", "0"),
                 ("build.initial_task_stack_bytes", None),
-                ("capacity.routed_initial_task_stack_bytes", "2048")):
+                ("capacity.routed_initial_task_stack_bytes", "2048"),
+                ("build.routed_logger_task_stack_bytes", "1024"),
+                ("capacity.routed_logger_task_stack_bytes", "1024")):
             candidate = dict(manifest)
             if value is None:
                 candidate.pop(key)
@@ -122,9 +130,9 @@ def main() -> int:
                 candidate[key] = value
             if not expect_failure(candidate, "provenance"):
                 return 1
-        if checker.post_reserve_ram_bytes(20480, 12288) != 8192:
+        if checker.post_reserve_ram_bytes(20784, 12592) != 8192:
             return 1
-        for unallocated, reserve in ((20479, 12288), (12287, 12288)):
+        for unallocated, reserve in ((20783, 12592), (12591, 12592)):
             try:
                 checker.post_reserve_ram_bytes(unallocated, reserve)
             except checker.CheckFailure as error:
@@ -150,6 +158,40 @@ def main() -> int:
             checker.initial_task_stack_report(declaration, wrong, main_source)
         except checker.CheckFailure as error:
             if error.code != "stack":
+                return 1
+        else:
+            return 1
+        logger_mismatch = temporary / "mismatched_logger_tron_build_config.h"
+        logger_mismatch.write_text(
+            "#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u\n"
+            "#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u\n"
+            "#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1024u\n",
+            encoding="utf-8")
+        try:
+            checker.validate_routed_runtime_declarations(manifest, logger_mismatch)
+        except checker.CheckFailure as error:
+            if error.code != "provenance":
+                return 1
+        else:
+            return 1
+        try:
+            checker.require_benchmark_logger_evidence(
+                {"bench.mode": "ON"},
+                SimpleNamespace(logger_stack_root=None,
+                                logger_required_edge_manifest=None))
+        except checker.CheckFailure as error:
+            if error.code != "stack":
+                return 1
+        else:
+            return 1
+        logger_frame = checker.StackFrame("fixture:routed_logger_task",
+                                          "routed_logger_task", 1)
+        logger_report = checker.StackReport("routed_logger_task", 1840,
+                                            (logger_frame,), 513, 1023)
+        try:
+            checker.validate_logger_stack_threshold(logger_report)
+        except checker.CheckFailure as error:
+            if error.code != "stack_total":
                 return 1
         else:
             return 1
