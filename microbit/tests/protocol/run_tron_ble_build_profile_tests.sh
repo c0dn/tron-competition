@@ -1636,6 +1636,14 @@ for expected in \
     'identity.inventory.sid8.nonreserved=yes'; do
     require_line "$expected" "$routed_candidate_full_manifest"
 done
+configure_ok routed-candidate-uid-boolean-token \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_HARDWARE_CANDIDATE=ON \
+    -DTRON_ADVA_OVERRIDE=be:65:0b:2c:96:d0 \
+    -DTRON_TARGET_PROBE_UID=99063602000528200b9c563b9bdebe86000000006e052820 \
+    -DTRON_TARGET_INVENTORY_FILE="$SIX_BOARD_INVENTORY"
+routed_candidate_uid_boolean_manifest="$(routed_manifest_path routed-candidate-uid-boolean-token)"
+require_line 'identity.adva=be:65:0b:2c:96:d0' "$routed_candidate_uid_boolean_manifest"
 configure_ok routed-candidate-full-benchmark "${six_board_routed_candidate_args[@]}" \
     -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTRON_TIMER_PROFILE=BALANCED \
     -DTRON_ENABLE_TEST_HOOKS=ON -DTRON_BENCHMARK_MODE=ON \
