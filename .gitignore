@@ -1,6 +1,7 @@
 # Build artifacts
 microbit/build/
 microbit/*.zip
+**/__pycache__/
 
 # ESP32 sidecar build output + generated config
 esp-sidecar/build/

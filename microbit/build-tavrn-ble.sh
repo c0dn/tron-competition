@@ -14,6 +14,10 @@ target="ble_mesh_node"
 out_dir="${repo_root}/artifacts"
 timer_profile="BALANCED"
 role="generic"
+role_number="0"
+identify_display="OFF"
+benchmark="OFF"
+warmup_ms="60000"
 node_id="0"
 network_id="1"
 adva_override=""
@@ -50,6 +54,10 @@ Common options:
   --out DIR                 Published artifact directory
   --timer FAST_TEST|BALANCED|SOAK
   --role LABEL              Label only; does not alter link behavior
+  --role-number N           Routed identification role (0..6)
+  --identify-display ON|OFF Routed hooks-only 5x5 identification display
+  --benchmark ON|OFF       Routed absolute-deadline offered-load benchmark
+  --warmup-ms MS           Benchmark warmup before offered slots (default 60000)
   --network-id VALUE        Wire-v2 network ID (routed targets)
   --candidate               Require a clean, inventory-bound link candidate
   --adva xx:xx:xx:xx:xx:xx  Canonical configured AdvA (routed targets)
@@ -84,6 +92,10 @@ while [[ $# -gt 0 ]]; do
         --out) out_dir="${2:?Missing value for --out}"; shift 2 ;;
         --timer) timer_profile="${2:?Missing value for --timer}"; shift 2 ;;
         --role) role="${2:?Missing value for --role}"; shift 2 ;;
+        --role-number) role_number="${2:?Missing value for --role-number}"; shift 2 ;;
+        --identify-display) identify_display="${2:?Missing value for --identify-display}"; shift 2 ;;
+        --benchmark) benchmark="${2:?Missing value for --benchmark}"; shift 2 ;;
+        --warmup-ms) warmup_ms="${2:?Missing value for --warmup-ms}"; shift 2 ;;
         --node-id) node_id="${2:?Missing value for --node-id}"; shift 2 ;;
         --network-id) network_id="${2:?Missing value for --network-id}"; shift 2 ;;
         --adva) adva_override="${2:?Missing value for --adva}"; shift 2 ;;
@@ -123,6 +135,74 @@ if [[ "$target" == "tavrn_routed_node" && "$feature" != "AODV_ONLY" &&
       "$feature" != "FULL_TAVRN" ]]; then
     printf '%s\n' '--feature must be AODV_ONLY or FULL_TAVRN for tavrn_routed_node' >&2
     exit 2
+fi
+if [[ "$identify_display" != "ON" && "$identify_display" != "OFF" ]]; then
+    printf '%s\n' '--identify-display must be ON or OFF' >&2
+    exit 2
+fi
+if [[ "$benchmark" != "ON" && "$benchmark" != "OFF" ]]; then
+    printf '%s\n' '--benchmark must be ON or OFF' >&2
+    exit 2
+fi
+if [[ ! "$warmup_ms" =~ ^(0|[1-9][0-9]*|0[xX][0-9A-Fa-f]+)$ ]]; then
+    printf '%s\n' '--warmup-ms must be an unsigned decimal or hexadecimal integer below 2147483648' >&2
+    exit 2
+fi
+if (( warmup_ms >= 2147483648 )); then
+    printf '%s\n' '--warmup-ms must be below 2147483648' >&2
+    exit 2
+fi
+if [[ ! "$role_number" =~ ^(0|[1-9][0-9]*)$ ]] ||
+   [[ ${#role_number} -gt 1 || "$role_number" > "6" ]]; then
+    printf '%s\n' '--role-number must be a decimal integer in 0..6' >&2
+    exit 2
+fi
+if [[ "$identify_display" == "ON" && "$target" != "tavrn_routed_node" ]]; then
+    printf '%s\n' '--identify-display ON requires --target tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ "$target" != "tavrn_routed_node" && "$role_number" != "0" ]]; then
+    printf '%s\n' '--role-number is valid only with --target tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ "$identify_display" == "ON" && "$hooks" != "ON" ]]; then
+    printf '%s\n' '--identify-display ON requires --enable-hooks ON' >&2
+    exit 2
+fi
+if [[ "$identify_display" == "ON" && "$role_number" == "0" ]]; then
+    printf '%s\n' '--identify-display ON requires --role-number 1..6' >&2
+    exit 2
+fi
+if [[ "$benchmark" == "ON" ]]; then
+    if [[ "$target" != "tavrn_routed_node" ]]; then
+        printf '%s\n' '--benchmark ON requires --target tavrn_routed_node' >&2
+        exit 2
+    fi
+    if [[ "$timer_profile" != "BALANCED" ]]; then
+        printf '%s\n' '--benchmark ON requires --timer BALANCED' >&2
+        exit 2
+    fi
+    if [[ "$hooks" != "ON" ]]; then
+        printf '%s\n' '--benchmark ON requires --enable-hooks ON' >&2
+        exit 2
+    fi
+    if [[ "$identify_display" != "OFF" ]]; then
+        printf '%s\n' '--benchmark ON requires --identify-display OFF' >&2
+        exit 2
+    fi
+    if [[ "$role_number" == "0" ]]; then
+        printf '%s\n' '--benchmark ON requires --role-number 1..6' >&2
+        exit 2
+    fi
+    if [[ -z "$peer_adva" ]]; then
+        printf '%s\n' '--benchmark ON requires --peer-adva' >&2
+        exit 2
+    fi
+    if [[ "$transaction_target" == "0" || "$transaction_target" == "0x0" ||
+          "$transaction_target" == "0X0" ]]; then
+        printf '%s\n' '--benchmark ON requires a nonzero --transaction-target' >&2
+        exit 2
+    fi
 fi
 if [[ "$repair" != "ON" && "$repair" != "OFF" ]]; then
     printf '%s\n' '--repair must be ON or OFF' >&2
@@ -225,6 +305,10 @@ cmake_args=(
     -DTRON_STACK_USAGE="$stack_usage"
     -DTRON_TIMER_PROFILE="$timer_profile"
     -DTRON_BENCH_ROLE="$role"
+    -DTRON_BENCH_ROLE_NUMBER="$role_number"
+    -DTRON_BENCH_IDENTIFY_DISPLAY="$identify_display"
+    -DTRON_BENCHMARK_MODE="$benchmark"
+    -DTRON_BENCH_WARMUP_MS="$warmup_ms"
     -DTRON_NODE_ID="$node_id"
     -DTRON_NETWORK_ID="$network_id"
     -DTRON_ADVA_OVERRIDE="$adva_override"

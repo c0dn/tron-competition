@@ -23,12 +23,61 @@ static const UINT col_pin[5] = {
 /* framebuffer: fb[y] bit x  ->  pixel at column x, row y */
 static volatile UB fb[5];
 
+/* Immutable 5x5 glyphs for the six physical routed-board positions. */
+static const UB role_digit_glyphs[6][5] = {
+    { 0x04u, 0x06u, 0x04u, 0x04u, 0x0eu },
+    { 0x0eu, 0x11u, 0x08u, 0x04u, 0x1fu },
+    { 0x0eu, 0x11u, 0x0cu, 0x11u, 0x0eu },
+    { 0x08u, 0x0cu, 0x0au, 0x1fu, 0x08u },
+    { 0x1fu, 0x01u, 0x0fu, 0x10u, 0x0fu },
+    { 0x0eu, 0x01u, 0x0fu, 0x11u, 0x0eu },
+};
+
+/* The static post-scan indication uses six distinct matrix positions. */
+static const UB role_static_x[6] = { 0u, 2u, 4u, 0u, 2u, 4u };
+static const UB role_static_y[6] = { 0u, 0u, 0u, 4u, 4u, 4u };
+
 static void all_off(void)
 {
     INT i;
     for (i = 0; i < 5; i++) {
         gpio_low(row_pin[i]);     /* rows low  = no source  */
         gpio_high(col_pin[i]);    /* cols high = no sink     */
+    }
+}
+
+static void configure_pins(void)
+{
+    INT i;
+
+    for (i = 0; i < 5; i++) {
+        gpio_make_output(row_pin[i]);
+        gpio_make_output(col_pin[i]);
+    }
+    all_off();
+}
+
+static void scan_rows(const UB rows[5], UINT scan_ms)
+{
+    UINT elapsed = 0u;
+
+    while (elapsed < scan_ms) {
+        INT y;
+
+        for (y = 0; y < 5 && elapsed < scan_ms; y++) {
+            INT x;
+            UB mask = rows[y];
+
+            all_off();
+            gpio_high(row_pin[y]);
+            for (x = 0; x < 5; x++) {
+                if ((mask & (1U << x)) != 0u) {
+                    gpio_low(col_pin[x]);
+                }
+            }
+            (void)tk_dly_tsk(1u);
+            elapsed++;
+        }
     }
 }
 
@@ -67,13 +116,7 @@ void display_init(void)
         .stksz   = 512,
     };
     ID tskid;
-    INT i;
-
-    for (i = 0; i < 5; i++) {
-        gpio_make_output(row_pin[i]);
-        gpio_make_output(col_pin[i]);
-    }
-    all_off();
+    configure_pins();
     display_clear();
 
     tskid = tk_cre_tsk(&ctsk);
@@ -108,6 +151,29 @@ void display_set_pixel(INT x, INT y, BOOL on)
     } else {
         fb[y] &= (UB)~(1U << x);
     }
+}
+
+void display_show_digit(UINT digit)
+{
+    if (digit < 1u || digit > 6u) {
+        return;
+    }
+    display_set_rows(role_digit_glyphs[digit - 1u]);
+}
+
+void display_show_benchmark_role(UINT role, UINT scan_ms)
+{
+    UINT index;
+
+    if (role < 1u || role > 6u) {
+        return;
+    }
+    index = role - 1u;
+    configure_pins();
+    scan_rows(role_digit_glyphs[index], scan_ms);
+    all_off();
+    gpio_high(row_pin[role_static_y[index]]);
+    gpio_low(col_pin[role_static_x[index]]);
 }
 
 void display_set_rows(const UB rows[5])

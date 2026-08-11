@@ -13,6 +13,7 @@
 #include "aodv_core.h"
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
+#include "routed_benchmark.h"
 #include "routed_cycle.h"
 #include "tavrn_link_v2.h"
 #include "tavrn_router.h"
@@ -20,7 +21,12 @@
 #include "tron_build_info.h"
 #include "tron_timer_config.h"
 
+#if TRON_BUILD_BENCHMARK_MODE || TRON_BUILD_BENCH_IDENTIFY_DISPLAY
+#include "display.h"
+#endif
+
 #if TRON_BUILD_ROUTED_FULL_TAVRN
+#include "routed_benchmark_full.h"
 #include "routed_full_telemetry.h"
 #include "tavrn_mentorship.h"
 #include "tavrn_maintenance.h"
@@ -149,7 +155,15 @@ typedef struct routed_snapshot {
 #endif
 } routed_snapshot_t;
 
-#if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_BENCHMARK_MODE
+typedef struct routed_benchmark_snapshot {
+    routed_benchmark_state_t state;
+    routed_benchmark_attempt_queue_snapshot_t attempts;
+    uint8_t final_queue_count;
+} routed_benchmark_snapshot_t;
+#endif
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
 /* The logger never needs its summary and copied GTT snapshot at once. */
 typedef union routed_full_logger_storage {
     routed_snapshot_t summary;
@@ -183,13 +197,24 @@ static routed_cycle_retry_log_mailbox_t routed_retry_log;
 static routed_logger_record_t routed_logger_record;
 static aodv_rreq_lifecycle_record_t routed_logged_rreq;
 static tavrn_router_phase_trace_t routed_scheduler_fault_trace;
-#if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
 static routed_full_logger_storage_t routed_full_logger_storage;
-#else
+#elif TRON_BUILD_ROUTED_FULL_TAVRN
+static routed_cycle_gtt_snapshot_t routed_full_gtt_snapshot_storage;
+#elif !TRON_BUILD_BENCHMARK_MODE
 static routed_snapshot_t routed_aodv_logger_summary;
 #endif
 static uint32_t routed_phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
+#if !TRON_BUILD_BENCHMARK_MODE
 static uint32_t routed_next_submit_at;
+#endif
+#if TRON_BUILD_BENCHMARK_MODE
+static routed_benchmark_state_t routed_benchmark_state;
+static routed_benchmark_attempt_queue_t routed_benchmark_attempt_queue;
+static routed_benchmark_attempt_t routed_benchmark_logged_attempt;
+static routed_benchmark_attempt_t routed_benchmark_pending_attempt;
+static uint8_t routed_benchmark_pending_attempt_valid;
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN
 static tavrn_gtt_storage_t routed_gtt_storage;
 static tavrn_gtt_t routed_gtt;
@@ -209,14 +234,18 @@ static tavrn_repair_t routed_repair;
 static tavrn_full_repair_binding_t routed_repair_binding;
 static tavrn_full_repair_binding_tick_result_t routed_repair_tick_result;
 #endif
+#if !TRON_BUILD_BENCHMARK_MODE
 static uint32_t routed_gtt_snapshot_request_dropped;
+#endif
 static uint32_t routed_gtt_snapshot_failed;
 static uint32_t routed_local_broadcast_generation_seen;
 static uint8_t routed_gtt_snapshot_request_pending;
 static uint8_t routed_gtt_snapshot_ready;
 static uint8_t routed_full_logger_summary_active;
 static routed_expiry_sweep_queue_t routed_expiry_sweep_queue;
+#if !TRON_BUILD_BENCHMARK_MODE
 static routed_expiry_sweep_record_t routed_logged_expiry_sweep;
+#endif
 static uint32_t routed_expiry_sweep_passes;
 static uint32_t routed_expiry_complete_passes;
 static uint8_t routed_router_tick_scheduler_return_requested;
@@ -483,6 +512,48 @@ static int delivery_pop(routed_delivery_t *delivery)
     return result;
 }
 
+#if TRON_BUILD_BENCHMARK_MODE
+/* The mesh task only copies a completed source-attempt record.  The logger
+ * owns dequeueing and every print, so serial backpressure cannot alter route or
+ * application admission. */
+static void routed_benchmark_offer_attempt(
+    const routed_benchmark_attempt_t *attempt)
+{
+    if (attempt == NULL || !queue_guard_begin()) {
+        return;
+    }
+    (void)routed_benchmark_attempt_queue_offer(&routed_benchmark_attempt_queue,
+                                               attempt);
+    queue_guard_end();
+}
+
+static int routed_benchmark_attempt_pop(void)
+{
+    routed_benchmark_attempt_queue_status_t status;
+
+    if (!queue_guard_begin()) {
+        return 0;
+    }
+    status = routed_benchmark_attempt_queue_take(&routed_benchmark_attempt_queue,
+                                                 &routed_benchmark_logged_attempt);
+    queue_guard_end();
+    return status == ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
+}
+
+static void routed_benchmark_snapshot(routed_benchmark_snapshot_t *out)
+{
+    if (out == NULL || !queue_guard_begin()) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->state = routed_benchmark_state;
+    (void)routed_benchmark_attempt_queue_snapshot(&routed_benchmark_attempt_queue,
+                                                   &out->attempts);
+    out->final_queue_count = delivery_state.published.count;
+    queue_guard_end();
+}
+#endif
+
 static int local_event_push(const tavrn_router_dispatch_event_t *event)
 {
     uint8_t index;
@@ -516,6 +587,7 @@ static int local_event_pop(routed_local_event_t *event)
     return result;
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static void snapshot(routed_snapshot_t *out)
 {
     const tavrn_link_counters_t *link_counters;
@@ -590,8 +662,9 @@ static void snapshot(routed_snapshot_t *out)
 #endif
     queue_guard_end();
 }
+#endif
 
-#if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
 static const UB *mentorship_state_name(tavrn_mentorship_state_t state)
 {
     switch (state) {
@@ -628,17 +701,22 @@ static void log_startup(void)
         (UB *)"FULL_TAVRN_ESC_K1_MENTORSHIP" : (UB *)"AODV_ONLY";
 
     if (TRON_BUILD_LINK_PEER_ADVA_ENABLED != 0) {
-        tm_printf((UB *)"routed startup feature=%s sid16=0x%04x destination=0x%04x rx_block=%s\n",
-                  feature, (UINT)local_peer.logical_id.value,
-                  (UINT)configured_destination.logical_id.value,
-                  (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
+        tm_printf((UB *)"routed startup feature=%s role_number=%u identify_display=%u sid16=0x%04x destination=0x%04x rx_block=%s\n",
+                   feature, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UINT)TRON_BUILD_BENCH_IDENTIFY_DISPLAY,
+                   (UINT)local_peer.logical_id.value,
+                   (UINT)configured_destination.logical_id.value,
+                   (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
     } else {
-        tm_printf((UB *)"routed startup feature=%s sid16=0x%04x destination=not_configured rx_block=%s\n",
-                  feature, (UINT)local_peer.logical_id.value,
-                  (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
+        tm_printf((UB *)"routed startup feature=%s role_number=%u identify_display=%u sid16=0x%04x destination=not_configured rx_block=%s\n",
+                   feature, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                   (UINT)TRON_BUILD_BENCH_IDENTIFY_DISPLAY,
+                   (UINT)local_peer.logical_id.value,
+                   (UB *)(TRON_BUILD_RX_BLOCK_ADVA_ENABLED != 0 ? "enabled" : "off"));
     }
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static void log_summary(uint32_t now)
 {
 #if TRON_BUILD_ROUTED_FULL_TAVRN
@@ -812,6 +890,41 @@ static void log_summary(uint32_t now)
     }
 #endif
 }
+#endif
+
+#if TRON_BUILD_BENCHMARK_MODE
+static void log_benchmark_clock(uint32_t now)
+{
+    tm_printf((UB *)"routed bench_clock now=%lu role=%u\n", (UW)now,
+              (UINT)TRON_BUILD_BENCH_ROLE_NUMBER);
+}
+
+static void log_benchmark_attempt(const routed_benchmark_attempt_t *attempt)
+{
+    if (attempt == NULL) {
+        return;
+    }
+    tm_printf((UB *)"routed bench_attempt now=%lu role=%u slot=%lu counter=%lu accepted=%u status=%lu destination=0x%04x width=%u\n",
+              (UW)attempt->now_ms, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+              (UW)attempt->slot, (UW)attempt->counter, (UINT)attempt->accepted,
+              (UW)attempt->status, (UINT)attempt->destination,
+              (UINT)attempt->width);
+}
+
+static void log_benchmark_summary(uint32_t now)
+{
+    routed_benchmark_snapshot_t state;
+
+    routed_benchmark_snapshot(&state);
+    tm_printf((UB *)"routed bench_summary now=%lu role=%u offered=%lu attempted=%lu accepted=%lu rejected=%lu skipped=%lu not_ready=%lu attempt_q=%u attempt_q_dropped=%lu attempt_q_high_water=%u final_q=%u\n",
+              (UW)now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+              (UW)state.state.offered, (UW)state.state.attempted,
+              (UW)state.state.accepted, (UW)state.state.rejected,
+              (UW)state.state.skipped, (UW)state.state.not_ready,
+              (UINT)state.attempts.count, (UW)state.attempts.dropped_count,
+              (UINT)state.attempts.high_water, (UINT)state.final_queue_count);
+}
+#endif
 
 static void record_router_fault(tavrn_router_fault_reason_t reason)
 {
@@ -1142,6 +1255,7 @@ static int routed_expiry_sweep_enqueue(
     return 1;
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
 {
     if (record_out == NULL || !queue_guard_begin()) {
@@ -1158,6 +1272,7 @@ static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
     queue_guard_end();
     return 1;
 }
+#endif
 
 #if TRON_BUILD_TEST_EXPIRY_FULL_TABLE
 static int routed_expiry_table_has_identity(const tavrn_adva_t *identity)
@@ -1260,6 +1375,7 @@ static tavrn_maintenance_status_t routed_observe_local_broadcast(void)
     return status == TAVRN_MAINTENANCE_GATED ? TAVRN_MAINTENANCE_OK : status;
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static void routed_full_snapshot_request(void)
 {
     if (!queue_guard_begin()) {
@@ -1273,6 +1389,7 @@ static void routed_full_snapshot_request(void)
     }
     queue_guard_end();
 }
+#endif
 
 static void routed_full_snapshot_service(void)
 {
@@ -1293,7 +1410,11 @@ static void routed_full_snapshot_service(void)
             return;
         }
         status = routed_full_telemetry_snapshot_gtt(
+#if TRON_BUILD_BENCHMARK_MODE
+            &routed_gtt, now_ms(), &routed_full_gtt_snapshot_storage);
+#else
             &routed_gtt, now_ms(), &routed_full_logger_storage.gtt_snapshot);
+#endif
         routed_gtt_snapshot_request_pending = 0u;
         if (status == ROUTED_FULL_TELEMETRY_OK) {
             routed_gtt_snapshot_ready = 1u;
@@ -1304,6 +1425,7 @@ static void routed_full_snapshot_service(void)
     }
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
 static int routed_full_snapshot_is_ready(void)
 {
     int ready = 0;
@@ -1322,6 +1444,7 @@ static void routed_full_snapshot_clear_ready(void)
         queue_guard_end();
     }
 }
+#endif
 #endif
 
 static uint32_t routed_cycle_now_ms(void *context)
@@ -1636,6 +1759,80 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     routed_full_snapshot_service();
 #endif
+#if TRON_BUILD_BENCHMARK_MODE
+    {
+        routed_benchmark_slot_t slot;
+        routed_benchmark_schedule_status_t schedule_status;
+
+        routed_benchmark_pending_attempt_valid = 0u;
+        if (mesh_fault_latched != 0u ||
+            tavrn_router_fault_reason(&routed_router) != TAVRN_ROUTER_FAULT_NONE) {
+            request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+            request.prepared_at_ms = now_ms();
+            return request;
+        }
+        schedule_status = routed_benchmark_schedule_due(&routed_benchmark_state,
+                                                        now, &slot);
+        if (schedule_status == ROUTED_BENCHMARK_SCHEDULE_NONE) {
+            request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+            request.prepared_at_ms = now_ms();
+            return request;
+        }
+        if (schedule_status != ROUTED_BENCHMARK_SCHEDULE_DUE) {
+            request.status = ROUTED_CYCLE_APPLICATION_INVALID;
+            request.prepared_at_ms = now_ms();
+            return request;
+        }
+        memset(&routed_benchmark_pending_attempt, 0,
+               sizeof(routed_benchmark_pending_attempt));
+        routed_benchmark_pending_attempt.now_ms = now;
+        routed_benchmark_pending_attempt.slot = slot.slot;
+        routed_benchmark_pending_attempt.counter = slot.counter;
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+        {
+            tavrn_mentorship_state_snapshot_t mentorship_state;
+            tavrn_logical_id_t resolved_destination;
+
+            if (tavrn_mentorship_state_snapshot(&routed_mentorship,
+                                                &mentorship_state) !=
+                    TAVRN_MENTORSHIP_OK ||
+                mentorship_state.state != TAVRN_MENTORSHIP_SID8_ACTIVE ||
+                mentorship_state.active_width != TAVRN_IDENTITY_SID8 ||
+                routed_benchmark_destination_ready(
+                    &routed_full, &configured_destination.adva, now,
+                    &resolved_destination) != ROUTED_BENCHMARK_DESTINATION_READY) {
+                routed_benchmark_pending_attempt.destination = 0u;
+                routed_benchmark_pending_attempt.width = TAVRN_IDENTITY_SID8;
+                routed_benchmark_pending_attempt.status =
+                    ROUTED_BENCHMARK_STATUS_NOT_READY;
+                routed_benchmark_record_not_ready(&routed_benchmark_state);
+                routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
+                request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+                request.prepared_at_ms = now_ms();
+                return request;
+            }
+            request.data.final_destination = resolved_destination;
+        }
+#else
+        request.data.final_destination = configured_destination.logical_id;
+#endif
+        request.data.app_kind = 0x7fu;
+        request.data.app_source = 0u;
+        request.data.app_len = 4u;
+        request.data.app_bytes[0] = (uint8_t)(slot.counter & 0xffu);
+        request.data.app_bytes[1] = (uint8_t)((slot.counter >> 8) & 0xffu);
+        request.data.app_bytes[2] = (uint8_t)((slot.counter >> 16) & 0xffu);
+        request.data.app_bytes[3] = (uint8_t)((slot.counter >> 24) & 0xffu);
+        routed_benchmark_pending_attempt.destination =
+            request.data.final_destination.value;
+        routed_benchmark_pending_attempt.width =
+            (uint8_t)request.data.final_destination.width;
+        routed_benchmark_pending_attempt_valid = 1u;
+        request.status = ROUTED_CYCLE_APPLICATION_READY;
+        request.prepared_at_ms = now_ms();
+        return request;
+    }
+#else
     request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
     if (TRON_BUILD_LINK_INITIATOR == 0 ||
         TRON_BUILD_LINK_PEER_ADVA_ENABLED == 0 || mesh_fault_latched != 0u ||
@@ -1676,6 +1873,7 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
     request.status = ROUTED_CYCLE_APPLICATION_READY;
     request.prepared_at_ms = now_ms();
     return request;
+#endif
 }
 
 static tavrn_router_phase_trace_t routed_cycle_router_submit(
@@ -1694,10 +1892,26 @@ static tavrn_router_phase_trace_t routed_cycle_router_submit(
     status = tavrn_router_submit_application_ex(&routed_router, data, now, &trace);
 #endif
     trace.completed_at_ms = now_ms();
+#if TRON_BUILD_BENCHMARK_MODE
+    if (routed_benchmark_pending_attempt_valid != 0u) {
+        uint8_t accepted = status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED;
+
+        routed_benchmark_record_submission(&routed_benchmark_state, accepted);
+        if (accepted != 0u) {
+            routed_counters.submitted++;
+        }
+        routed_benchmark_pending_attempt.now_ms = trace.completed_at_ms;
+        routed_benchmark_pending_attempt.accepted = accepted;
+        routed_benchmark_pending_attempt.status = (uint32_t)status;
+        routed_benchmark_offer_attempt(&routed_benchmark_pending_attempt);
+        routed_benchmark_pending_attempt_valid = 0u;
+    }
+#else
     if (status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED) {
         routed_counters.submitted++;
     }
     routed_next_submit_at = trace.completed_at_ms + TRON_BUILD_LINK_TX_INTERVAL_MS;
+#endif
     record_router_terminal(&trace);
     return trace;
 }
@@ -2031,6 +2245,7 @@ static void log_rreq_lifecycle(const aodv_rreq_lifecycle_record_t *record)
 }
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN
+#if !TRON_BUILD_BENCHMARK_MODE
 static void log_expiry_sweep(const routed_expiry_sweep_record_t *record)
 {
     if (record == NULL) {
@@ -2084,12 +2299,16 @@ static void log_full_snapshot(void)
     }
 }
 #endif
+#endif
 
 LOCAL void routed_logger_task(INT stacd, void *exinf)
 {
     routed_delivery_t delivery;
     routed_local_event_t local_event;
     uint32_t next_summary_at = now_ms() + tron_timer_config.stats_ms;
+#if TRON_BUILD_BENCHMARK_MODE
+    uint32_t next_clock_at = now_ms();
+#endif
 
     (void)stacd;
     (void)exinf;
@@ -2104,7 +2323,13 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                       (UINT)pending_router_fault);
             logged_router_fault = pending_router_fault;
         }
-#if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_BENCHMARK_MODE
+        if ((int32_t)(now - next_clock_at) >= 0) {
+            log_benchmark_clock(now);
+            next_clock_at = now + 1000u;
+        }
+#endif
+#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
         if (routed_full_snapshot_is_ready()) {
             log_full_snapshot();
             routed_full_snapshot_clear_ready();
@@ -2135,6 +2360,26 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                           (UINT)local_event.event.peer.adva.bytes[5]);
             }
         } else if (delivery_pop(&delivery)) {
+#if TRON_BUILD_BENCHMARK_MODE
+            uint32_t counter = 0u;
+            int counter_valid = routed_benchmark_decode_counter(
+                delivery.data.app_kind, delivery.data.app_len,
+                delivery.data.app_bytes, &counter);
+
+            tm_printf((UB *)"routed bench_final now=%lu role=%u origin=0x%04x destination=0x%04x counter_valid=%u counter=%lu app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                      (UW)delivery.delivered_at_ms,
+                      (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
+                      (UINT)delivery.data.origin.value,
+                      (UINT)delivery.data.final_destination.value,
+                      (UINT)(counter_valid != 0), (UW)counter,
+                      (UINT)delivery.data.app_len,
+                      (UINT)delivery.transmitter.adva.bytes[0],
+                      (UINT)delivery.transmitter.adva.bytes[1],
+                      (UINT)delivery.transmitter.adva.bytes[2],
+                      (UINT)delivery.transmitter.adva.bytes[3],
+                      (UINT)delivery.transmitter.adva.bytes[4],
+                      (UINT)delivery.transmitter.adva.bytes[5]);
+#else
             tm_printf((UB *)"routed final_data now=%lu origin=0x%04x destination=0x%04x seq=%u app_kind=0x%02x app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
                       (UW)delivery.delivered_at_ms,
                       (UINT)delivery.data.origin.value,
@@ -2145,12 +2390,21 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                       (UINT)delivery.transmitter.adva.bytes[1],
                       (UINT)delivery.transmitter.adva.bytes[2],
                       (UINT)delivery.transmitter.adva.bytes[3],
-                      (UINT)delivery.transmitter.adva.bytes[4],
-                      (UINT)delivery.transmitter.adva.bytes[5]);
+                       (UINT)delivery.transmitter.adva.bytes[4],
+                       (UINT)delivery.transmitter.adva.bytes[5]);
+#endif
+#if TRON_BUILD_BENCHMARK_MODE
+        } else if (routed_benchmark_attempt_pop()) {
+            log_benchmark_attempt(&routed_benchmark_logged_attempt);
+#endif
         } else if ((int32_t)(now - next_summary_at) >= 0) {
+#if TRON_BUILD_BENCHMARK_MODE
+            log_benchmark_summary(now);
+#else
             log_summary(now);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
             routed_full_snapshot_request();
+#endif
 #endif
             next_summary_at = now + tron_timer_config.stats_ms;
         }
@@ -2185,6 +2439,12 @@ EXPORT INT usermain(void)
 
     ring_init(&delivery_state.published);
     ring_init(&local_event_ring);
+#if TRON_BUILD_BENCHMARK_MODE
+    /* This is intentionally before radio initialization.  It never starts the
+     * continuous display task: after exactly 1500 ms of digit scanning one
+     * role-specific matrix pixel remains driven. */
+    display_show_benchmark_role(TRON_BUILD_BENCH_ROLE_NUMBER, 1500u);
+#endif
     if (!tron_timer_config_is_valid(&tron_timer_config) ||
         ble_radio_try_init(tron_timer_config.radio_state_timeout_ms) != BLE_RADIO_OP_OK ||
         ble_radio_read_default_adva(runtime_ficr_adva) != BLE_RADIO_OP_OK ||
@@ -2193,6 +2453,10 @@ EXPORT INT usermain(void)
         return 1;
     }
     tm_printf((UB *)"routed boot_nonce=%u\n", (UINT)boot_nonce);
+#if TRON_BUILD_BENCH_IDENTIFY_DISPLAY && !TRON_BUILD_BENCHMARK_MODE
+    display_init();
+    display_show_digit(TRON_BUILD_BENCH_ROLE_NUMBER);
+#endif
     if (tron_timer_config.scheduler_poll_max_ms <= 1u) {
         tm_printf((UB *)"routed scheduler poll bound cannot release mesh waits\n");
         return 1;
@@ -2442,7 +2706,18 @@ EXPORT INT usermain(void)
     memset(&rreq_telemetry, 0, sizeof(rreq_telemetry));
     rreq_telemetry.context = NULL;
     rreq_telemetry.on_lifecycle = routed_rreq_lifecycle;
+#if TRON_BUILD_BENCHMARK_MODE
+    routed_benchmark_attempt_queue_init(&routed_benchmark_attempt_queue);
+    if (!routed_benchmark_init(&routed_benchmark_state, now_ms(),
+                               TRON_BUILD_BENCH_WARMUP_MS,
+                               TRON_BUILD_LINK_TX_INTERVAL_MS,
+                               TRON_BUILD_LINK_TRANSACTION_TARGET)) {
+        tm_printf((UB *)"routed benchmark configuration rejected\n");
+        return 1;
+    }
+#else
     routed_next_submit_at = now_ms();
+#endif
     if (routed_cycle_init(&routed_cycle_state,
                           tron_timer_config.scheduler_poll_max_ms) !=
             ROUTED_CYCLE_RESULT_OK ||

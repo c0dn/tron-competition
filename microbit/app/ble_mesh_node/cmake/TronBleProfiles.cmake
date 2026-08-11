@@ -67,6 +67,14 @@ set(TRON_TARGET_PROBE_UID "" CACHE STRING "Target CMSIS-DAP probe UID")
 set(TRON_TARGET_INVENTORY_FILE "" CACHE FILEPATH "Strict probe UID to AdvA TSV inventory")
 set(TRON_NETWORK_ID "1" CACHE STRING "Routed wire-v2 network ID (1..254)")
 set(TRON_BENCH_ROLE "generic" CACHE STRING "Sanitized label only; never routing policy")
+set(TRON_BENCH_ROLE_NUMBER "0" CACHE STRING
+    "Routed identification role number (0..6; 1..6 when display is enabled)")
+set(TRON_BENCH_IDENTIFY_DISPLAY "OFF" CACHE BOOL
+    "Enable the routed hooks-only 5x5 identification display")
+set(TRON_BENCHMARK_MODE "OFF" CACHE BOOL
+    "Enable the routed absolute-deadline offered-load benchmark")
+set(TRON_BENCH_WARMUP_MS "60000" CACHE STRING
+    "Benchmark warmup before offered slots (0..2147483647 ms)")
 
 set(TRON_TEST_RX_BLOCK_PEER_ID "0" CACHE STRING "Legacy-only direct peer label hook")
 set(TRON_TEST_RX_BLOCK_ADVA "" CACHE STRING "Full AdvA RX block hook")
@@ -180,9 +188,10 @@ function(tron_ble_timer key fast balanced soak)
 endfunction()
 
 foreach(_bool IN ITEMS TAVRN_ENABLE_LOCAL_REPAIR TRON_ENABLE_PATIENT_BRIDGE
-                          TRON_ENABLE_TEST_HOOKS TRON_TEST_EXPIRY_FULL_TABLE
-                          TRON_HARDWARE_CANDIDATE
-                          TRON_LINK_TEST_INITIATOR TRON_STACK_USAGE)
+                           TRON_ENABLE_TEST_HOOKS TRON_TEST_EXPIRY_FULL_TABLE
+                           TRON_HARDWARE_CANDIDATE
+                           TRON_LINK_TEST_INITIATOR TRON_STACK_USAGE
+                           TRON_BENCH_IDENTIFY_DISPLAY TRON_BENCHMARK_MODE)
   tron_ble_require_bool(${_bool})
 endforeach()
 
@@ -204,6 +213,7 @@ if(NOT TRON_BENCH_ROLE MATCHES "^[A-Za-z0-9][A-Za-z0-9_-]*$")
 endif()
 string(TOLOWER "${TRON_BENCH_ROLE}" TRON_BENCH_ROLE_EFFECTIVE)
 tron_ble_parse_unsigned(TRON_NODE_ID 65534 TRON_NODE_ID_EFFECTIVE)
+tron_ble_parse_unsigned(TRON_BENCH_ROLE_NUMBER 6 TRON_BENCH_ROLE_NUMBER_EFFECTIVE)
 tron_ble_parse_unsigned(TRON_NODE_BLOCK_DIRECT_PEER_ID 65535 TRON_NODE_BLOCK_DIRECT_PEER_ID_EFFECTIVE)
 tron_ble_parse_unsigned(TRON_TEST_RX_BLOCK_PEER_ID 65535 TRON_TEST_RX_BLOCK_PEER_ID_EFFECTIVE)
 if(NOT TRON_NODE_BLOCK_DIRECT_PEER_ID_EFFECTIVE EQUAL 0)
@@ -217,6 +227,7 @@ tron_ble_parse_unsigned(TRON_TEST_HACK_DROP_COUNT 65535 TRON_TEST_HACK_DROP_COUN
 tron_ble_parse_unsigned(TRON_TEST_BUSY_ADMISSION_COUNT 65535 TRON_TEST_BUSY_ADMISSION_COUNT_EFFECTIVE)
 tron_ble_parse_unsigned(TRON_LINK_TEST_TX_INTERVAL_MS 2147483647 TRON_LINK_TEST_TX_INTERVAL_MS_EFFECTIVE)
 tron_ble_parse_unsigned(TRON_LINK_TEST_TRANSACTION_TARGET 65535 TRON_LINK_TEST_TRANSACTION_TARGET_EFFECTIVE)
+tron_ble_parse_unsigned(TRON_BENCH_WARMUP_MS 2147483647 TRON_BENCH_WARMUP_MS_EFFECTIVE)
 if(TRON_LINK_TEST_TX_INTERVAL_MS_EFFECTIVE EQUAL 0)
   message(FATAL_ERROR "TRON_LINK_TEST_TX_INTERVAL_MS must be nonzero")
 endif()
@@ -337,6 +348,43 @@ if(TRON_TEST_EXPIRY_FULL_TABLE STREQUAL "ON")
         "TRON_TEST_EXPIRY_FULL_TABLE=ON requires TRON_ENABLE_TEST_HOOKS=ON")
   endif()
 endif()
+if(TRON_BENCH_IDENTIFY_DISPLAY STREQUAL "ON")
+  if(NOT TRON_PHASE1_TARGET STREQUAL "ROUTED")
+    message(FATAL_ERROR
+        "TRON_BENCH_IDENTIFY_DISPLAY=ON requires ROUTED target")
+  endif()
+  if(NOT TRON_ENABLE_TEST_HOOKS STREQUAL "ON")
+    message(FATAL_ERROR
+        "TRON_BENCH_IDENTIFY_DISPLAY=ON requires TRON_ENABLE_TEST_HOOKS=ON")
+  endif()
+  if(TRON_BENCH_ROLE_NUMBER_EFFECTIVE EQUAL 0)
+    message(FATAL_ERROR
+        "TRON_BENCH_IDENTIFY_DISPLAY=ON requires TRON_BENCH_ROLE_NUMBER in 1..6")
+  endif()
+endif()
+if(TRON_BENCHMARK_MODE STREQUAL "ON")
+  if(NOT TRON_PHASE1_TARGET STREQUAL "ROUTED")
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires ROUTED target")
+  endif()
+  if(TRON_BENCH_ROLE_NUMBER_EFFECTIVE EQUAL 0)
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_BENCH_ROLE_NUMBER in 1..6")
+  endif()
+  if(TRON_LINK_TEST_PEER_ADVA_PRESENT EQUAL 0)
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_LINK_TEST_PEER_ADVA")
+  endif()
+  if(TRON_LINK_TEST_TRANSACTION_TARGET_EFFECTIVE EQUAL 0)
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires a nonzero TRON_LINK_TEST_TRANSACTION_TARGET")
+  endif()
+  if(NOT TRON_ENABLE_TEST_HOOKS STREQUAL "ON")
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_ENABLE_TEST_HOOKS=ON")
+  endif()
+  if(NOT TRON_BENCH_IDENTIFY_DISPLAY STREQUAL "OFF")
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_BENCH_IDENTIFY_DISPLAY=OFF")
+  endif()
+  if(NOT TRON_TIMER_PROFILE STREQUAL "BALANCED")
+    message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_TIMER_PROFILE=BALANCED")
+  endif()
+endif()
 
 # The selected Phase 1 target is the authority for which inputs can have an
 # effect.  CMake configures only that target, and contamination is fatal rather
@@ -355,12 +403,13 @@ if(TRON_PHASE1_TARGET STREQUAL "LEGACY")
      NOT TRON_LINK_TEST_PEER_ADVA STREQUAL "" OR
      TRON_LINK_TEST_INITIATOR STREQUAL "ON" OR
      NOT TRON_LINK_TEST_TX_INTERVAL_MS_EFFECTIVE EQUAL 1000 OR
-     NOT TRON_LINK_TEST_TRANSACTION_TARGET_EFFECTIVE EQUAL 0 OR
-     TRON_TEST_RX_BLOCK_ADVA_PRESENT OR TRON_TEST_HACK_DROP_PEER_ADVA_PRESENT OR
-     NOT TRON_TEST_HACK_DROP_COUNT_EFFECTIVE EQUAL 0 OR
-     NOT TRON_TEST_BUSY_ADMISSION_COUNT_EFFECTIVE EQUAL 0 OR
-     NOT TRON_NETWORK_ID_EFFECTIVE EQUAL 1)
-    message(FATAL_ERROR "LEGACY target rejects routed identity, harness, candidate, future-mode, and routed-hook inputs")
+      NOT TRON_LINK_TEST_TRANSACTION_TARGET_EFFECTIVE EQUAL 0 OR
+      TRON_TEST_RX_BLOCK_ADVA_PRESENT OR TRON_TEST_HACK_DROP_PEER_ADVA_PRESENT OR
+      NOT TRON_TEST_HACK_DROP_COUNT_EFFECTIVE EQUAL 0 OR
+      NOT TRON_TEST_BUSY_ADMISSION_COUNT_EFFECTIVE EQUAL 0 OR
+      NOT TRON_BENCH_ROLE_NUMBER_EFFECTIVE EQUAL 0 OR
+      NOT TRON_NETWORK_ID_EFFECTIVE EQUAL 1)
+    message(FATAL_ERROR "LEGACY target rejects routed identity, harness, candidate, future-mode, routed-hook, and identification inputs")
   endif()
 elseif(TRON_PHASE1_TARGET STREQUAL "LINK")
   if(NOT TRON_NODE_MODE STREQUAL "NOT_APPLICABLE" OR
@@ -369,10 +418,11 @@ elseif(TRON_PHASE1_TARGET STREQUAL "LINK")
   endif()
   if(TAVRN_ENABLE_LOCAL_REPAIR STREQUAL "ON" OR
       TRON_ENABLE_PATIENT_BRIDGE STREQUAL "ON" OR
-     NOT TRON_NODE_ID_EFFECTIVE EQUAL 0 OR
-     NOT TRON_NODE_BLOCK_DIRECT_PEER_ID_EFFECTIVE EQUAL 0 OR
-     NOT TRON_TEST_RX_BLOCK_PEER_ID_EFFECTIVE EQUAL 0)
-     message(FATAL_ERROR "LINK target rejects legacy node/peer-ID hooks and future modes")
+      NOT TRON_NODE_ID_EFFECTIVE EQUAL 0 OR
+      NOT TRON_NODE_BLOCK_DIRECT_PEER_ID_EFFECTIVE EQUAL 0 OR
+      NOT TRON_TEST_RX_BLOCK_PEER_ID_EFFECTIVE EQUAL 0 OR
+      NOT TRON_BENCH_ROLE_NUMBER_EFFECTIVE EQUAL 0)
+      message(FATAL_ERROR "LINK target rejects legacy node/peer-ID hooks, future modes, and routed identification inputs")
    endif()
 else()
   if(NOT TRON_NODE_MODE STREQUAL "TAVRN_ROUTED" OR
@@ -550,15 +600,19 @@ set(TRON_BLE_LINK_SOURCE_LABELS
     "app/protocol/tavrn_link_v2.c"
     "app/protocol/tavrn_wire_v2.c")
 set(TRON_BLE_ROUTED_SOURCE_LABELS
+    "app/drivers/display.c"
+    "app/tavrn_routed_node/src/routed_benchmark.c"
     "app/tavrn_routed_node/src/routed_cycle.c"
     "app/protocol/aodv_core.c"
     "app/protocol/tavrn_link_v2.c"
     "app/protocol/tavrn_router.c"
     "app/protocol/tavrn_wire_v2.c")
 set(FULL_TAVRN_SOURCES
-    "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_full_maintenance_binding.c")
+    "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_full_maintenance_binding.c"
+    "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark_full.c")
 set(TRON_BLE_ROUTED_FULL_SOURCE_LABELS
     "app/tavrn_routed_node/src/routed_full_telemetry.c"
+    "app/tavrn_routed_node/src/routed_benchmark_full.c"
     "app/protocol/tavrn_esc.c"
     "app/protocol/tavrn_full.c"
     "app/protocol/tavrn_full_maintenance_binding.c"
@@ -586,6 +640,8 @@ set(TRON_BLE_LINK_SOURCES
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_link_v2.c"
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_wire_v2.c")
 set(TRON_BLE_ROUTED_SOURCES
+    "${TRON_BLE_APP_SOURCE_DIR}/drivers/display.c"
+    "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark.c"
     "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_cycle.c"
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/aodv_core.c"
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_link_v2.c"
@@ -873,6 +929,10 @@ function(tron_ble_configure_phase1_target)
     set(TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0)
   endif()
   set(TRON_BUILD_ROLE "${TRON_BENCH_ROLE_EFFECTIVE}")
+  set(TRON_BUILD_BENCH_ROLE_NUMBER "${TRON_BENCH_ROLE_NUMBER_EFFECTIVE}")
+  set(TRON_BUILD_BENCH_IDENTIFY_DISPLAY_STATE "${TRON_BENCH_IDENTIFY_DISPLAY}")
+  set(TRON_BUILD_BENCHMARK_MODE_STATE "${TRON_BENCHMARK_MODE}")
+  set(TRON_BUILD_BENCH_WARMUP_MS "${TRON_BENCH_WARMUP_MS_EFFECTIVE}")
   set(TRON_BUILD_LOOP_DELAY_MS "${TRON_TIMER_LOOP_DELAY_MS}")
   set(TRON_BUILD_ADVA_OVERRIDE_ENABLED "${TRON_ADVA_OVERRIDE_PRESENT}")
   set(TRON_BUILD_ADVA_OVERRIDE_INITIALIZER "${TRON_ADVA_OVERRIDE_INITIALIZER}")
@@ -1020,6 +1080,7 @@ function(tron_ble_configure_phase1_target)
     set(TRON_CAPACITY_TC_RELAY_STATE "NOT_IMPLEMENTED")
    set(TRON_CAPACITY_REPAIR_CONTEXTS_STATE "NOT_IMPLEMENTED")
    set(TRON_CAPACITY_REPAIR_DATA_STATE "NOT_IMPLEMENTED")
+   set(TRON_CAPACITY_BENCHMARK_ATTEMPT_QUEUE_STATE "NOT_APPLICABLE")
    set(TRON_CAPACITY_ROUTED_INITIAL_TASK_STACK_STATE "NOT_APPLICABLE")
   set(TRON_CAPACITY_SCHEDULER_TX_QUEUE_STATE "IMPLEMENTED")
   if(TRON_TARGET_KIND STREQUAL "LEGACY")
@@ -1034,7 +1095,8 @@ function(tron_ble_configure_phase1_target)
     set(TRON_CAPACITY_LINK_FLOOD_DEDUPE_STATE "IMPLEMENTED")
      set(TRON_CAPACITY_DIAGNOSTIC_QUEUE_STATE "IMPLEMENTED")
      set(TRON_CAPACITY_NODE_EVENTS_STATE "IMPLEMENTED")
-       if(TRON_TARGET_KIND STREQUAL "ROUTED")
+        if(TRON_TARGET_KIND STREQUAL "ROUTED")
+          set(TRON_CAPACITY_BENCHMARK_ATTEMPT_QUEUE_STATE "IMPLEMENTED")
          set(TRON_CAPACITY_ROUTED_INITIAL_TASK_STACK_STATE "IMPLEMENTED")
          set(TRON_CAPACITY_RETRY_LOG_MAILBOX_STATE "IMPLEMENTED")
         set(TRON_CAPACITY_AODV_ACTION_QUEUE_STATE "IMPLEMENTED")
@@ -1083,6 +1145,16 @@ function(tron_ble_configure_phase1_target)
    else()
      set(TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0)
    endif()
+  if(TRON_BENCH_IDENTIFY_DISPLAY STREQUAL "ON")
+    set(TRON_BUILD_BENCH_IDENTIFY_DISPLAY 1)
+  else()
+    set(TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0)
+  endif()
+  if(TRON_BENCHMARK_MODE STREQUAL "ON")
+    set(TRON_BUILD_BENCHMARK_MODE 1)
+  else()
+    set(TRON_BUILD_BENCHMARK_MODE 0)
+  endif()
   if(TRON_HARDWARE_CANDIDATE STREQUAL "ON")
     set(TRON_BUILD_HARDWARE_CANDIDATE 1)
   else()
@@ -1129,7 +1201,7 @@ function(tron_ble_configure_phase1_target)
             " timer.${_bare_key}=${TRON_TIMER_${_macro}}")
    endforeach()
    set(TRON_BUILD_RUNTIME_CONFIG_EVIDENCE
-        "poc=${TRON_BUILD_RUNTIME_POC} behavior=${TRON_BUILD_BEHAVIOR} repair=${TRON_BUILD_REPAIR_EFFECTIVE} candidate=${TRON_BUILD_CANDIDATE_CONFIGURED} timer_profile=${TRON_BUILD_TIMER_PROFILE} network=${TRON_BUILD_NETWORK_ID} role=${TRON_BUILD_ROLE} initial_task_stack_bytes=${TRON_BUILD_INITIAL_TASK_STACK_BYTES} runtime_ram_reserve_bytes=${TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES} identity_source=${TRON_BUILD_IDENTITY_SOURCE} configured_override=${TRON_BUILD_ADVA_OVERRIDE_MANIFEST} target_uid=${TRON_BUILD_TARGET_PROBE_UID} inventory_records=${TRON_BUILD_INVENTORY_RECORD_COUNT} inventory_full_adva_unique=${TRON_BUILD_INVENTORY_FULL_ADVA_UNIQUE} inventory_sid16_unique=${TRON_BUILD_INVENTORY_SID16_UNIQUE} inventory_sid16_nonreserved=${TRON_BUILD_INVENTORY_SID16_NONRESERVED} inventory_sid8_unique=${TRON_BUILD_INVENTORY_SID8_UNIQUE} inventory_sid8_nonreserved=${TRON_BUILD_INVENTORY_SID8_NONRESERVED} peer=${TRON_BUILD_PEER_ADVA_MANIFEST} initiator=${TRON_BUILD_LINK_INITIATOR_MANIFEST} interval_ms=${TRON_BUILD_LINK_TX_INTERVAL_MANIFEST} transaction_target=${TRON_BUILD_LINK_TRANSACTION_TARGET_MANIFEST}")
+        "poc=${TRON_BUILD_RUNTIME_POC} behavior=${TRON_BUILD_BEHAVIOR} repair=${TRON_BUILD_REPAIR_EFFECTIVE} candidate=${TRON_BUILD_CANDIDATE_CONFIGURED} timer_profile=${TRON_BUILD_TIMER_PROFILE} network=${TRON_BUILD_NETWORK_ID} role=${TRON_BUILD_ROLE} role_number=${TRON_BUILD_BENCH_ROLE_NUMBER} identify_display=${TRON_BUILD_BENCH_IDENTIFY_DISPLAY_STATE} benchmark=${TRON_BUILD_BENCHMARK_MODE_STATE} warmup_ms=${TRON_BUILD_BENCH_WARMUP_MS} initial_task_stack_bytes=${TRON_BUILD_INITIAL_TASK_STACK_BYTES} runtime_ram_reserve_bytes=${TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES} identity_source=${TRON_BUILD_IDENTITY_SOURCE} configured_override=${TRON_BUILD_ADVA_OVERRIDE_MANIFEST} target_uid=${TRON_BUILD_TARGET_PROBE_UID} inventory_records=${TRON_BUILD_INVENTORY_RECORD_COUNT} inventory_full_adva_unique=${TRON_BUILD_INVENTORY_FULL_ADVA_UNIQUE} inventory_sid16_unique=${TRON_BUILD_INVENTORY_SID16_UNIQUE} inventory_sid16_nonreserved=${TRON_BUILD_INVENTORY_SID16_NONRESERVED} inventory_sid8_unique=${TRON_BUILD_INVENTORY_SID8_UNIQUE} inventory_sid8_nonreserved=${TRON_BUILD_INVENTORY_SID8_NONRESERVED} peer=${TRON_BUILD_PEER_ADVA_MANIFEST} initiator=${TRON_BUILD_LINK_INITIATOR_MANIFEST} interval_ms=${TRON_BUILD_LINK_TX_INTERVAL_MANIFEST} transaction_target=${TRON_BUILD_LINK_TRANSACTION_TARGET_MANIFEST}")
    set(TRON_BUILD_RUNTIME_HOOK_EVIDENCE
         "hook.enabled=${TRON_BUILD_TEST_HOOKS} hook.expiry_full_table=${TRON_TEST_EXPIRY_FULL_TABLE} hook.rx_block_adva=${TRON_BUILD_RX_BLOCK_ADVA_MANIFEST} hook.hack_drop_adva=${TRON_BUILD_HACK_DROP_ADVA_MANIFEST} hook.hack_drop_count=${TRON_BUILD_HACK_DROP_COUNT} hook.busy_admission_count=${TRON_BUILD_ROUTED_HOOK_BUSY} hook.collision_peer_adva=${TRON_BUILD_ROUTED_HOOK_COLLISION}")
    configure_file("${TRON_BLE_PROFILES_MODULE_DIR}/../config/tron_build_config.h.in"

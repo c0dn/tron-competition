@@ -53,7 +53,7 @@ configure_fail_with() {
     local expected="$2"
     shift 2
     configure_fail "$name" "$@"
-    if ! grep -Fq "$expected" "$WORK_DIR/$name.log"; then
+    if ! grep -Fq -- "$expected" "$WORK_DIR/$name.log"; then
         printf 'configure failure %s lacks expected diagnostic: %s\n' \
             "$name" "$expected" >&2
         return 1
@@ -62,6 +62,29 @@ configure_fail_with() {
 
 build_target() {
     cmake --build "$WORK_DIR/$1" --target "$2" --parallel >"$WORK_DIR/$1.build.log" 2>&1
+}
+
+publisher_fail_with() {
+    local name="$1"
+    local expected="$2"
+    local status
+    shift 2
+
+    set +e
+    bash "$MICROBIT_ROOT/build-tavrn-ble.sh" "$@" --out "$WORK_DIR/$name" \
+        >"$WORK_DIR/$name.log" 2>&1
+    status=$?
+    set -e
+    if [[ $status -ne 2 ]]; then
+        printf 'expected publisher argument failure status 2: %s (got %s)\n' \
+            "$name" "$status" >&2
+        return 1
+    fi
+    if ! grep -Fq -- "$expected" "$WORK_DIR/$name.log"; then
+        printf 'publisher argument failure %s lacks expected diagnostic: %s\n' \
+            "$name" "$expected" >&2
+        return 1
+    fi
 }
 
 require_line() {
@@ -81,6 +104,29 @@ require_unique_keys() {
         printf 'duplicate manifest keys in %s:\n%s\n' "$file" "$duplicate_keys" >&2
         return 1
     fi
+}
+
+require_selected_source_count() {
+    local manifest="$1"
+    local source="$2"
+    local expected="$3"
+
+    python3 - "$manifest" "$source" "$expected" <<'PY'
+import pathlib
+import sys
+
+manifest, source, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
+count = 0
+for line in pathlib.Path(manifest).read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if (separator and key.startswith("source.selected.") and
+            key.removeprefix("source.selected.").isdigit() and value == source):
+        count += 1
+if count != expected:
+    raise SystemExit(
+        "selected source %s has count %d, expected %d in %s" %
+        (source, count, expected, manifest))
+PY
 }
 
 require_compile_definition_once() {
@@ -754,6 +800,9 @@ require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$l
 require_line 'resource.runtime_ram_reserve_bytes=0' "$legacy_manifest"
 require_line 'identity.adva=NOT_APPLICABLE' "$legacy_manifest"
 require_line 'link_test.peer_adva=NOT_APPLICABLE' "$legacy_manifest"
+require_line 'bench.identify_display=OFF' "$legacy_manifest"
+require_line 'bench.role_number=0' "$legacy_manifest"
+require_selected_source_count "$legacy_manifest" 'app/drivers/display.c' 0
 if grep '^source\.selected\.[0-9].*=' "$legacy_manifest" | grep -q 'tavrn_\|ble_link_v2_testbed'; then
     printf '%s\n' 'legacy source manifest unexpectedly imports routed/link sources' >&2
     exit 1
@@ -795,6 +844,9 @@ require_line 'build.initial_task_stack_bytes=1024' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
 require_line 'resource.runtime_ram_reserve_bytes=0' "$runtime_manifest"
+require_line 'bench.identify_display=OFF' "$runtime_manifest"
+require_line 'bench.role_number=0' "$runtime_manifest"
+require_selected_source_count "$runtime_manifest" 'app/drivers/display.c' 0
 build_target runtime-link ble_link_v2_testbed
 require_no_initial_task_override "$WORK_DIR/runtime-link/compile_commands.json"
 runtime_timer_source="$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_timer_config.c"
@@ -867,7 +919,10 @@ require_line 'capacity.maintenance_dedupe.state=NOT_IMPLEMENTED' "$routed_manife
 require_line 'capacity.maintenance_epoch.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.maintenance_pending.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'link_test.peer_adva=dc:4b:0a:06:03:f8' "$routed_manifest"
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 46 ]]; then
+require_line 'bench.identify_display=OFF' "$routed_manifest"
+require_line 'bench.role_number=0' "$routed_manifest"
+require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 1
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 47 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
 fi
@@ -888,6 +943,8 @@ build_target routed-aodv tavrn_routed_node
 routed_aodv_config="$WORK_DIR/routed-aodv/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_aodv_config"; then
     printf '%s\n' 'AODV_ONLY generated config does not expose the selected feature macro' >&2
@@ -951,7 +1008,10 @@ require_line 'capacity.tc_relay.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'bound.mentor_failure_protocol_ms=3850' "$routed_full_manifest"
 require_line 'bound.mentor_failure_protocol_ms.scope=PROTOCOL_DEADLINES_ONLY_EXCLUDES_SCHEDULER_APPLICATION_CADENCE' "$routed_full_manifest"
 require_line 'formula.mentor_failure_protocol_ms=timer.mentor_rssi_weak_delay_ms+timer.mentor_jitter_max_ms+timer.mentor_offer_window_ms+timer.mentor_page_attempts*timer.mentor_page_timeout_ms+timer.mentor_self_bootstrap_ms' "$routed_full_manifest"
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 46 ]]; then
+require_line 'bench.identify_display=OFF' "$routed_full_manifest"
+require_line 'bench.role_number=0' "$routed_full_manifest"
+require_selected_source_count "$routed_full_manifest" 'app/drivers/display.c' 1
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 47 ]]; then
     printf '%s\n' 'routed FULL_TAVRN capacity schema width is not exact' >&2
     exit 1
 fi
@@ -986,6 +1046,8 @@ routed_full_config="$WORK_DIR/routed-full/app/tavrn_routed_node/generated/tavrn_
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 1' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_LOCAL_REPAIR 0' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_full_config"; then
     printf '%s\n' 'FULL_TAVRN generated config does not expose the selected feature macro' >&2
@@ -996,6 +1058,229 @@ require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
 require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
     "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
     'mtkernel3_microbit_kernel_tavrn_routed_node'
+
+# BENCH-IDENT-01: identification is an explicitly hooked routed artifact. Both
+# feature levels record their role/display state and contain the display source.
+identify_aodv_args=(
+    -DTRON_PHASE1_TARGET=ROUTED
+    -DTRON_NODE_MODE=TAVRN_ROUTED
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+    -DTRON_ENABLE_TEST_HOOKS=ON
+    -DTRON_BENCH_ROLE_NUMBER=3
+    -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+)
+configure_ok routed-identify-aodv "${identify_aodv_args[@]}"
+identify_aodv_manifest="$(routed_manifest_path routed-identify-aodv)"
+identify_aodv_config="$WORK_DIR/routed-identify-aodv/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+require_line 'feature.level.effective=AODV_ONLY' "$identify_aodv_manifest"
+require_line 'hook.enabled=ON' "$identify_aodv_manifest"
+require_line 'bench.identify_display=ON' "$identify_aodv_manifest"
+require_line 'bench.role_number=3' "$identify_aodv_manifest"
+require_selected_source_count "$identify_aodv_manifest" 'app/drivers/display.c' 1
+if ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 3u' "$identify_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 1' "$identify_aodv_config" ||
+   ! grep -Fq 'role_number=3 identify_display=ON' "$identify_aodv_config"; then
+    printf '%s\n' 'AODV_ONLY identification generated config lacks exact role/display evidence' >&2
+    exit 1
+fi
+build_target routed-identify-aodv tavrn_routed_node
+
+identify_full_args=(
+    -DTRON_PHASE1_TARGET=ROUTED
+    -DTRON_NODE_MODE=TAVRN_ROUTED
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN
+    -DTRON_ENABLE_TEST_HOOKS=ON
+    -DTRON_BENCH_ROLE_NUMBER=6
+    -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+)
+configure_ok routed-identify-full "${identify_full_args[@]}"
+identify_full_manifest="$(routed_manifest_path routed-identify-full)"
+identify_full_config="$WORK_DIR/routed-identify-full/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+require_line 'feature.level.effective=FULL_TAVRN' "$identify_full_manifest"
+require_line 'hook.enabled=ON' "$identify_full_manifest"
+require_line 'bench.identify_display=ON' "$identify_full_manifest"
+require_line 'bench.role_number=6' "$identify_full_manifest"
+require_selected_source_count "$identify_full_manifest" 'app/drivers/display.c' 1
+if ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 6u' "$identify_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 1' "$identify_full_config" ||
+   ! grep -Fq 'role_number=6 identify_display=ON' "$identify_full_config"; then
+    printf '%s\n' 'FULL_TAVRN identification generated config lacks exact role/display evidence' >&2
+    exit 1
+fi
+build_target routed-identify-full tavrn_routed_node
+
+configure_fail_with identify-display-hooks-off \
+    'TRON_BENCH_IDENTIFY_DISPLAY=ON requires TRON_ENABLE_TEST_HOOKS=ON' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_ROLE_NUMBER=1 \
+    -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+configure_fail_with identify-display-role-zero \
+    'TRON_BENCH_IDENTIFY_DISPLAY=ON requires TRON_BENCH_ROLE_NUMBER in 1..6' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+configure_fail_with identify-display-invalid-state \
+    'TRON_BENCH_IDENTIFY_DISPLAY must be exactly ON or OFF' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_IDENTIFY_DISPLAY=MAYBE
+configure_fail_with identify-role-malformed \
+    'TRON_BENCH_ROLE_NUMBER must be an unsigned decimal or hexadecimal integer' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_ROLE_NUMBER=three
+configure_fail_with identify-role-out-of-range \
+    'TRON_BENCH_ROLE_NUMBER is outside 0..6' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_ROLE_NUMBER=7
+configure_fail_with identify-display-legacy \
+    'TRON_BENCH_IDENTIFY_DISPLAY=ON requires ROUTED target' \
+    -DTRON_PHASE1_TARGET=LEGACY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+configure_fail_with identify-display-link \
+    'TRON_BENCH_IDENTIFY_DISPLAY=ON requires ROUTED target' \
+    -DTRON_PHASE1_TARGET=LINK -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_BENCH_IDENTIFY_DISPLAY=ON
+configure_fail_with identify-role-link \
+    'LINK target rejects legacy node/peer-ID hooks' \
+    -DTRON_PHASE1_TARGET=LINK -DTRON_BENCH_ROLE_NUMBER=1
+
+# The glyph bytes and guarded calls are intentionally source-locked because the
+# display driver is hardware-bound and has no host-only framebuffer fixture.
+display_driver="$MICROBIT_ROOT/app/drivers/display.c"
+routed_main="$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c"
+for glyph in \
+    '    { 0x04u, 0x06u, 0x04u, 0x04u, 0x0eu },' \
+    '    { 0x0eu, 0x11u, 0x08u, 0x04u, 0x1fu },' \
+    '    { 0x0eu, 0x11u, 0x0cu, 0x11u, 0x0eu },' \
+    '    { 0x08u, 0x0cu, 0x0au, 0x1fu, 0x08u },' \
+    '    { 0x1fu, 0x01u, 0x0fu, 0x10u, 0x0fu },' \
+    '    { 0x0eu, 0x01u, 0x0fu, 0x11u, 0x0eu },'; do
+    if ! grep -Fqx "$glyph" "$display_driver"; then
+        printf 'identification display glyph is missing: %s\n' "$glyph" >&2
+        exit 1
+    fi
+done
+if ! grep -Fqx 'static const UB role_digit_glyphs[6][5] = {' "$display_driver" ||
+   ! grep -Fqx '    display_set_rows(role_digit_glyphs[digit - 1u]);' "$display_driver" ||
+   ! grep -Fq 'routed startup feature=%s role_number=%u identify_display=%u' "$routed_main" ||
+   [[ "$(grep -Fxc '    display_init();' "$routed_main")" -ne 1 ]] ||
+   [[ "$(grep -Fxc '    display_show_digit(TRON_BUILD_BENCH_ROLE_NUMBER);' "$routed_main")" -ne 1 ]] ||
+    ! awk '
+         /^#if TRON_BUILD_BENCH_IDENTIFY_DISPLAY && !TRON_BUILD_BENCHMARK_MODE$/ { guarded = 1; next }
+        guarded && /^#endif$/ { guarded = 0; next }
+        guarded && /^    display_init\(\);$/ { init = 1 }
+        guarded && /^    display_show_digit\(TRON_BUILD_BENCH_ROLE_NUMBER\);$/ { digit = 1 }
+        END { exit !(init && digit) }
+    ' "$routed_main"; then
+    printf '%s\n' 'identification display calls must remain one guarded routed startup action' >&2
+    exit 1
+fi
+
+# BENCH-OBS-01: benchmark builds are restricted routed artifacts.  Their
+# offered target, interval, warmup and fixed logger queue are manifest-visible
+# in both AODV_ONLY and FULL_TAVRN, while FULL keeps the resolver isolated.
+benchmark_aodv_args=(
+    -DTRON_PHASE1_TARGET=ROUTED
+    -DTRON_NODE_MODE=TAVRN_ROUTED
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+    -DTRON_TIMER_PROFILE=BALANCED
+    -DTRON_ENABLE_TEST_HOOKS=ON
+    -DTRON_BENCHMARK_MODE=ON
+    -DTRON_BENCH_ROLE_NUMBER=1
+    -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8
+    -DTRON_LINK_TEST_TX_INTERVAL_MS=100
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=3
+)
+configure_ok routed-benchmark-aodv "${benchmark_aodv_args[@]}"
+benchmark_aodv_manifest="$(routed_manifest_path routed-benchmark-aodv)"
+benchmark_aodv_config="$WORK_DIR/routed-benchmark-aodv/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+for expected in \
+    'bench.mode=ON' \
+    'bench.warmup_ms=60000' \
+    'bench.role_number=1' \
+    'bench.identify_display=OFF' \
+    'capacity.benchmark_attempt_queue=16' \
+    'capacity.benchmark_attempt_queue.policy=RETAIN_OLDEST_DROP_NEWEST' \
+    'capacity.benchmark_attempt_queue.dropped_telemetry=SATURATING_COUNTER' \
+    'capacity.benchmark_attempt_queue.state=IMPLEMENTED' \
+    'link_test.tx_interval_ms=100' \
+    'link_test.transaction_target=3'; do
+    require_line "$expected" "$benchmark_aodv_manifest"
+done
+require_selected_source_count "$benchmark_aodv_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark.c' 1
+require_selected_source_count "$benchmark_aodv_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
+if ! grep -Fqx '#define TRON_BUILD_BENCHMARK_MODE 1' "$benchmark_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_BENCH_WARMUP_MS 60000u' "$benchmark_aodv_config"; then
+    printf '%s\n' 'AODV benchmark generated config lacks benchmark fields' >&2
+    exit 1
+fi
+build_target routed-benchmark-aodv tavrn_routed_node
+
+benchmark_full_args=("${benchmark_aodv_args[@]}")
+benchmark_full_args[2]=-DTAVRN_FEATURE_LEVEL=FULL_TAVRN
+benchmark_full_args[6]=-DTRON_BENCH_ROLE_NUMBER=6
+benchmark_full_args+=( -DTRON_BENCH_WARMUP_MS=1234 )
+configure_ok routed-benchmark-full "${benchmark_full_args[@]}"
+benchmark_full_manifest="$(routed_manifest_path routed-benchmark-full)"
+require_line 'feature.level.effective=FULL_TAVRN' "$benchmark_full_manifest"
+require_line 'bench.mode=ON' "$benchmark_full_manifest"
+require_line 'bench.warmup_ms=1234' "$benchmark_full_manifest"
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark.c' 1
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_full.c' 1
+build_target routed-benchmark-full tavrn_routed_node
+
+configure_fail_with benchmark-invalid-state \
+    'TRON_BENCHMARK_MODE must be exactly ON or OFF' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCHMARK_MODE=MAYBE
+configure_fail_with benchmark-warmup-half-range \
+    'TRON_BENCH_WARMUP_MS is outside 0..2147483647' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCH_WARMUP_MS=2147483648
+configure_fail_with benchmark-target \
+    'TRON_BENCHMARK_MODE=ON requires ROUTED target' \
+    -DTRON_PHASE1_TARGET=LINK -DTRON_BENCHMARK_MODE=ON
+configure_fail_with benchmark-hooks \
+    'TRON_BENCHMARK_MODE=ON requires TRON_ENABLE_TEST_HOOKS=ON' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_BENCHMARK_MODE=ON \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+configure_fail_with benchmark-identify \
+    'TRON_BENCHMARK_MODE=ON requires TRON_BENCH_IDENTIFY_DISPLAY=OFF' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_IDENTIFY_DISPLAY=ON \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+configure_fail_with benchmark-fast \
+    'TRON_BENCHMARK_MODE=ON requires TRON_TIMER_PROFILE=BALANCED' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_TIMER_PROFILE=FAST_TEST \
+    -DTRON_BENCH_ROLE_NUMBER=1 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+configure_fail_with benchmark-role \
+    'TRON_BENCHMARK_MODE=ON requires TRON_BENCH_ROLE_NUMBER in 1..6' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+configure_fail_with benchmark-peer \
+    'TRON_BENCHMARK_MODE=ON requires TRON_LINK_TEST_PEER_ADVA' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1 \
+    -DTRON_LINK_TEST_TRANSACTION_TARGET=1
+configure_fail_with benchmark-target-zero \
+    'TRON_BENCHMARK_MODE=ON requires a nonzero TRON_LINK_TEST_TRANSACTION_TARGET' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_TEST_HOOKS=ON \
+    -DTRON_BENCHMARK_MODE=ON -DTRON_BENCH_ROLE_NUMBER=1 \
+    -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8
 
 # BUILD-P6-01: local repair is an opt-in FULL_TAVRN composition.  Its sources,
 # generated macro, manifest state and fixed capacities are absent from repair-off.
@@ -1374,7 +1659,7 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     exit 1
 fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 73 ]] ||
-    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 46 ]]; then
+    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 47 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1546,5 +1831,104 @@ if [[ $non_routed_feature_status -ne 2 ]]; then
         "$non_routed_feature_status" >&2
     exit 1
 fi
+
+# BENCH-IDENT-02: the publisher accepts and records the explicit display mode,
+# while rejecting every invalid argument combination before a build starts.
+identify_publisher_out="$WORK_DIR/identify-published"
+bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
+    --feature AODV_ONLY --enable-hooks ON --role-number 2 --identify-display ON \
+    --out "$identify_publisher_out" >/dev/null
+identify_published_manifest=()
+for manifest_path in "$identify_publisher_out"/*.manifest; do
+    [[ "$manifest_path" == *.build-config.manifest ]] && continue
+    identify_published_manifest+=("$manifest_path")
+done
+if [[ ${#identify_published_manifest[@]} -ne 1 ]]; then
+    printf '%s\n' 'identification publisher did not create exactly one artifact manifest' >&2
+    exit 1
+fi
+require_line 'bench.identify_display=ON' "${identify_published_manifest[0]}"
+require_line 'bench.role_number=2' "${identify_published_manifest[0]}"
+require_line 'hook.enabled=ON' "${identify_published_manifest[0]}"
+publisher_fail_with identify-wrapper-invalid-state \
+    '--identify-display must be ON or OFF' \
+    --target tavrn_routed_node --identify-display MAYBE
+publisher_fail_with identify-wrapper-role-malformed \
+    '--role-number must be a decimal integer in 0..6' \
+    --target tavrn_routed_node --role-number three
+publisher_fail_with identify-wrapper-role-out-of-range \
+    '--role-number must be a decimal integer in 0..6' \
+    --target tavrn_routed_node --role-number 7
+publisher_fail_with identify-wrapper-legacy \
+    '--identify-display ON requires --target tavrn_routed_node' \
+    --target ble_mesh_node --enable-hooks ON --role-number 1 --identify-display ON
+publisher_fail_with identify-wrapper-link \
+    '--identify-display ON requires --target tavrn_routed_node' \
+    --target ble_link_v2_testbed --enable-hooks ON --role-number 1 --identify-display ON
+publisher_fail_with identify-wrapper-hooks-off \
+    '--identify-display ON requires --enable-hooks ON' \
+    --target tavrn_routed_node --feature AODV_ONLY --role-number 1 --identify-display ON
+publisher_fail_with identify-wrapper-role-zero \
+    '--identify-display ON requires --role-number 1..6' \
+    --target tavrn_routed_node --feature AODV_ONLY --enable-hooks ON \
+    --identify-display ON
+
+# BENCH-OBS-02: wrapper validation is explicit before a build; its accepted
+# artifact exposes the same benchmark contract as direct CMake configuration.
+benchmark_publisher_out="$WORK_DIR/benchmark-published"
+bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
+    --feature AODV_ONLY --timer BALANCED --enable-hooks ON --benchmark ON \
+    --warmup-ms 60000 --role-number 1 --peer-adva dc:4b:0a:06:03:f8 \
+    --tx-interval-ms 100 --transaction-target 3 \
+    --out "$benchmark_publisher_out" >/dev/null
+benchmark_published_manifest=()
+for manifest_path in "$benchmark_publisher_out"/*.manifest; do
+    [[ "$manifest_path" == *.build-config.manifest ]] && continue
+    benchmark_published_manifest+=("$manifest_path")
+done
+if [[ ${#benchmark_published_manifest[@]} -ne 1 ]]; then
+    printf '%s\n' 'benchmark publisher did not create exactly one artifact manifest' >&2
+    exit 1
+fi
+for expected in 'bench.mode=ON' 'bench.warmup_ms=60000' 'bench.role_number=1' \
+                'bench.identify_display=OFF' 'link_test.tx_interval_ms=100' \
+                'link_test.transaction_target=3'; do
+    require_line "$expected" "${benchmark_published_manifest[0]}"
+done
+publisher_fail_with benchmark-wrapper-invalid-state \
+    '--benchmark must be ON or OFF' --target tavrn_routed_node --benchmark MAYBE
+publisher_fail_with benchmark-wrapper-warmup-malformed \
+    '--warmup-ms must be an unsigned decimal or hexadecimal integer below 2147483648' \
+    --target tavrn_routed_node --warmup-ms not-a-number
+publisher_fail_with benchmark-wrapper-warmup-half-range \
+    '--warmup-ms must be below 2147483648' \
+    --target tavrn_routed_node --warmup-ms 2147483648
+publisher_fail_with benchmark-wrapper-target \
+    '--benchmark ON requires --target tavrn_routed_node' \
+    --target ble_mesh_node --benchmark ON
+publisher_fail_with benchmark-wrapper-hooks \
+    '--benchmark ON requires --enable-hooks ON' \
+    --target tavrn_routed_node --benchmark ON --role-number 1 \
+    --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+publisher_fail_with benchmark-wrapper-identify \
+    '--benchmark ON requires --identify-display OFF' \
+    --target tavrn_routed_node --enable-hooks ON --benchmark ON --identify-display ON \
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+publisher_fail_with benchmark-wrapper-fast \
+    '--benchmark ON requires --timer BALANCED' \
+    --target tavrn_routed_node --timer FAST_TEST --enable-hooks ON --benchmark ON \
+    --role-number 1 --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+publisher_fail_with benchmark-wrapper-role \
+    '--benchmark ON requires --role-number 1..6' \
+    --target tavrn_routed_node --enable-hooks ON --benchmark ON \
+    --peer-adva dc:4b:0a:06:03:f8 --transaction-target 1
+publisher_fail_with benchmark-wrapper-peer \
+    '--benchmark ON requires --peer-adva' \
+    --target tavrn_routed_node --enable-hooks ON --benchmark ON --role-number 1 \
+    --transaction-target 1
+publisher_fail_with benchmark-wrapper-target-zero \
+    '--benchmark ON requires a nonzero --transaction-target' \
+    --target tavrn_routed_node --enable-hooks ON --benchmark ON --role-number 1 \
+    --peer-adva dc:4b:0a:06:03:f8
 
 printf '%s\n' 'tron BLE build/profile tests passed'

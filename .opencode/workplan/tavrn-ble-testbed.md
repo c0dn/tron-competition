@@ -501,20 +501,20 @@ Build and hardware-qualify a near-full proof-of-concept TAVRN-BLE testbed on mic
 #### 7.2 Implement bounded local repair around the existing AODV core <!-- workplan-step-id: step-6b-repair-implementation -->
 - Status: completed
 - Id: step-6b-repair-implementation
-- Target: optional FULL_TAVRN tavrn_repair module, typed router ownership/candidate seams, bounded link-custody reservations, all-owner FULL token/RREP dispatch, exact bench hooks/telemetry, and existing AODV deferred-RERR/single-RREQ APIs
-- Action: Implement the frozen RED contract in architecture-named tavrn_repair.{h,c} with one fixed repair context, four actual-or-reserved copied transit DATA slots, and no heap. Reuse aodv_core_report_link_failure(DEFER_REPAIR_DESTINATION_RERR), aodv_core_create_single_rreq, normal metadata augmentation/RREQ limiter/RREP route installation, and aodv_core_finish_deferred_rerr. Add bounded read-only same-D link-custody enumeration and terminal observation so repair reserves potential adoption without stealing live link ownership. Add pre-AODV candidate admission for active same-D repair. Compose the one FULL high-token allocator/completion dispatcher across targeted initiator/response/relay work, RREQ verification, and repair, plus one RREP interceptor so no owner is replaced and no token domain is added. On matching alternate route, cancel held RERR/LEAVE and flush each retained DATA once through the normal router/link path; on timeout, invalid state, full-adoption failure, or unrecoverable enqueue failure, release repair-off obligations and terminate every retained ownership once. Implement repair state-transition/buffer/RREQ/RREP/RERR/LEAVE/per-DATA copied telemetry and both exact stateful hook modes defined in Step 6a. Add no message type, wire field, route table, discovery engine, periodic traffic, radio change, or scheduler change.
-- Validation: Phase 6 GREEN and production-composed binding pass; all available Phase 3/4/5/lower GREEN suites pass; expected Phase 6 RED reaches every scenario and exits nonzero; FULL_TAVRN repair OFF/ON FAST_TEST and BALANCED resource gates plus AODV_ONLY FAST_TEST build pass; frozen BLE radio/scheduler diff remains unchanged; final adversarial audit reports no blocker/major. Final5 fixed state is 31504 bytes off and 32184 bytes on (680-byte delta), post-reserve RAM 87280/86600, initial static frame 440/480 of 4096, and rooted mesh stack 2944 of 4096.
+- Target: optional FULL_TAVRN tavrn_repair core and production ownership binding around the existing AODV/link/router/maintenance seams
+- Action: Implement the frozen bounded local-repair ownership contract and production composition. Exact hardware fault hooks, compact repair episode logging, fleet-bound candidates, and physical proof remain Step 6c/6d work rather than completed core behavior.
+- Validation: Repair core and production-composed GREEN pass; all lower GREEN suites and FULL repair OFF/ON resource gates pass; exact ownership review reports no blocker/major. Hardware hooks/episode telemetry and candidate publication are not claimed by this completed step.
 #### 7.3 Review and publish repair-off/on candidates and exact fault bench <!-- workplan-step-id: step-6c-repair-checker-candidate -->
-- Status: draft
+- Status: in_progress
 - Id: step-6c-repair-checker-candidate
-- Target: reviewed complete repair slice, repair-off/on profile matrix, resource delta, routed publisher support, clean UID-bound unhooked candidates and preimplemented exact-hook bench artifacts
-- Action: Run one adversarial implementation/claims review after the complete GREEN slice, including the already RED-tested/implemented stateful fault hook; Step 6c adds no new protocol or hook code. Compare repair-off and repair-on host/build/resource behavior and exercise routed publisher positive/negative cases, then—only with explicit commit authorization—publish clean UID/AdvA/fleet-bound repair-off, repair-on, and hooked bench artifacts.
+- Target: six-board inventory, routed candidate publisher, compact benchmark/repair telemetry, explicit identification/static LED modes, exact stateful repair hook, repair-off/on profile matrix, and clean board-bound artifacts
+- Action: Implement the missing proving infrastructure without changing frozen radio/scheduler or repair policy: clean UID/AdvA/fleet-bound routed candidates; FULL SID8 fleet gates; copied benchmark clock/source/final/repair records; fair absolute-deadline offered load; unique live FULL destination resolution; zero-runtime-cost benchmark role LEDs; exact restricted repair success/timeout hook; strict six-board flash/capture/summarizer tooling. Review and resource-gate before publication.
 - Validation: No blocker/critical/major review finding remains. Repair-off/on matrices and frozen-file checks pass; manifests record repair effective state, capacities, timeout/cooldown, shared token/interceptor ownership, hook trigger DATA tuple, direct B-origin RREQ suppression, direction/eligibility, source/tool/config/artifact hashes and fleet identity; dirty, runtime-FICR, mismatched, or hooked-as-unhooked publication fails closed. Resource evidence reports exact repair fixed-state and stack delta against the Step 5h baseline.
 #### 7.4 Prove source-transparent transit repair and bounded failure on four boards <!-- workplan-step-id: step-6d-four-board-repair -->
 - Status: blocked
 - Id: step-6d-four-board-repair
-- Target: four simultaneously available, collision-free boards: A source, B repairer, C destination/failed immediate hop, and D alternate relay; forced-chain profiles plus deterministic stateful C hook force initial A-B-C and repair B-D-C
-- Action: Keep blocked until a fourth board is UID/AdvA-inventoried. Success sequence is fixed: reset-halt D; start B, A, then C with the existing manifested forced-chain A/C direct-traffic blocker; require A-B-C identity and C delivery from peer B; run D and require B-D-C membership/context while preserving the established B-C route; then send the configured trigger DATA. C's manifested success hook suppresses only its HACK to B and ignores direct B-origin RREQs for that episode, so D relays B's RREQ to C and C's RREP back through D. Prove B owns repair and installs B-D-C. Timeout sequence is separate: restore/reset all, keep D reset-halted through the trigger and repair window, use the manifested timeout hook mode, and require exact failure release. Repair-off sequence uses repair-off artifacts with D reset-halted and requires immediate baseline behavior. Harness events record every reset-halt/run transition and readiness gate; artifact manifests record forced-chain role and hook mode/tuple. Restore all boards to unhooked candidates afterward.
+- Target: connected collision-free A/B/C/D boards with E/F explicitly halted: A=1, B=2, C=3, D=4; initial A-B-C and alternate B-D-C
+- Action: The fourth board is now inventoried. After Step 6c proving infrastructure is green, run the frozen repair success and timeout sequences. Preserve exact UID-targeted halt/run transitions and restore all six to unhooked artifacts afterward.
 - Validation: Before each trigger, evidence proves D's required halted/running state, forced-chain role, A-B-C baseline, C peer-B delivery, and—on success only—D context readiness without source route replacement. Success evidence contains parseable episode ID, H, D, every state transition, actual/reserved buffer keys/count, RREQ purpose/ID/scope/token/TX result, matched RREP outer transmitter, installed next hop, RERR/LEAVE disposition, and each DATA flush/drop result. It records one stage-1 and at most one stage-2 fresh-ID RREQ, next hop D not failed H=C, held RERR/LEAVE cancellation, exactly-once buffered delivery at C, unchanged A discovery/RREQ counters, and C dedupe keys. Timeout keeps D halted and records no alternate RREP, then exact RERR/LEAVE release and bounded terminations; repair-off records immediate baseline behavior. All runs have exact UID/AdvA/artifact/hook/harness-state provenance, zero duplicate final delivery/ownership leak/overflow, and no hard/local/router/scheduler/mesh fault.
 #### 7.5 Deferred with patient bridge <!-- workplan-step-id: step-6e-adv-classifier-namespace -->
 - Status: cancelled
@@ -595,36 +595,42 @@ Build and hardware-qualify a near-full proof-of-concept TAVRN-BLE testbed on mic
 - Status: draft
 - Id: phase-9-final-qualification
 #### 10.1 Run complete routed and legacy regression matrix <!-- workplan-step-id: step-9a-build-matrix -->
-- Status: draft
+- Status: in_progress
 - Id: step-9a-build-matrix
 - Target: LEGACY_FLOOD, AODV_ONLY, FULL repair-off and FULL repair-on across required timer profiles
 - Action: Run the complete host/static/build/resource matrix with exact source and manifest isolation. Avoid duplicate runs already covered by immutable Phase 5/6 evidence unless source changed.
 - Validation: Every applicable matrix cell passes or has an explicit profile-owned N/A; artifacts and resource reports are attributable.
-#### 10.2 Run available-board controlled test and finite overnight soak <!-- workplan-step-id: step-9b-available-board-soak -->
+#### 10.2 Run attributable six-board AODV_ONLY versus TAVRN-BLE-V2.3 comparison <!-- workplan-step-id: step-9a2-six-board-comparison -->
+- Status: in_progress
+- Id: step-9a2-six-board-comparison
+- Target: six connected micro:bit v2 boards: 1=A, 2=B, 3=C, 4=D, 5=E, 6=F; physical layout A above B, B-E-F-C clustered left-to-right, D distant right
+- Action: Run continuous, user-stopped, six-board captures with optional compile-time CONTROL observability. Only A originates: one application-level-unacknowledged heartbeat per second continuously (normal hop-by-hop custody remains), plus a 10 Hz throughput stream for 60 seconds starting at t=60 s and recurring at 60+450k s. A→C uses reciprocal logical direct-RX blocking; B/D/E/F are relay candidates. Emit 1 s clock/application records and 10 s GTT/control-plane/counter/telemetry-health samples. One KISS Python controller owns six absolute-time captures, live watch, on-demand PNG snapshots, Ctrl-C finalization, hashes, and offline replay. Compare paired BALANCED AODV_ONLY and FULL_TAVRN repair-on captures with identical layout/workload; run repair-off control separately.
+- Validation: Live and final outputs report heartbeat offered/accepted/delivered PDR and p50/p95/p99 latency, per-burst throughput/goodput/PDR/latency, first delivery and route discovery, GTT precision/recall/Jaccard/staleness/churn against the known six-node truth set, per-type control messages/bytes and discovery/maintenance/verification/repair activity, scheduler TX/RX/channel-event proxies, retries/backpressure/faults, and telemetry health. Exact energy, PHY airtime/bytes, and radio wake-duration claims are excluded. Every accepted window has valid clock fits, no required-record drop/gap, exact artifact/UID/AdvA/profile/topology provenance, measured UART use below 50% per board, and raw logs retained even on protocol failure.
+#### 10.3 Run available-board controlled test and finite overnight soak <!-- workplan-step-id: step-9b-available-board-soak -->
 - Status: draft
 - Id: step-9b-available-board-soak
 - Target: every qualified micro:bit v2 board physically available at execution
 - Action: Run short SpaceX-style fault/rejoin loops before one approximately eight-hour SOAK-profile run. Record exact N, UIDs, AdvAs, topology, artifact hashes, duration, traffic denominators, route/verification/TC/repair outcomes, failures/rejoins and faults. Make no scale claim beyond observed N and require the four-board repair gate separately.
 - Validation: Finite soak completes with active-set convergence, bounded recovery, explicit delivery denominator and zero unexplained reset/stall/corruption; all claims state exact N. Patient events are not required.
-#### 10.3 Publish TAVRN-BLE conformance and deviation report <!-- workplan-step-id: step-9c-conformance-report -->
+#### 10.4 Publish TAVRN-BLE conformance and deviation report <!-- workplan-step-id: step-9c-conformance-report -->
 - Status: draft
 - Id: step-9c-conformance-report
 - Target: microbit/docs/tavrn_ble_conformance.md and evidence references
 - Action: Map every normative requirement to implemented behavior and host/hardware evidence; label accepted deviations, deferred upstream features, optional repair extension, patient N/A, exact fleet scale and PoC limitations. Do not claim upstream TAVRN, Bluetooth Mesh, production, security, clinical or scale compliance.
 - Validation: Requirement IDs match the profile/matrix exactly; every claim cites attributable evidence or an explicit N/A/deviation.
-#### 10.4 Finalize reproducible build, flash and test runbook <!-- workplan-step-id: step-9d-final-runbook -->
+#### 10.5 Finalize reproducible build, flash and test runbook <!-- workplan-step-id: step-9d-final-runbook -->
 - Status: draft
 - Id: step-9d-final-runbook
 - Target: architecture/build/flash/hardware test documentation
 - Action: Document minimal commands for all four behavior cells, candidate publication, UID/AdvA preflight, exact hook use, three-stage verification, TC/metadata, repair, finite soak and evidence capture. Resolve the current pyOCD uv-tool path without installing system packages.
 - Validation: A clean reader can reproduce builds and preflight from pinned project inputs; dangerous or bench-only hooks are clearly separated.
-#### 10.5 Run final adversarial implementation and claims audit <!-- workplan-step-id: step-9e-final-review -->
+#### 10.6 Run final adversarial implementation and claims audit <!-- workplan-step-id: step-9e-final-review -->
 - Status: draft
 - Id: step-9e-final-review
 - Target: entire branch diff, workplan, specs, manifests, evidence and conformance claims
 - Action: Review correctness, isolation, fixed resources, hardware provenance and claim truth after all documents/evidence exist. Fix blocker/major findings and rerun only affected gates plus final matrix summaries.
 - Validation: No open blocker/critical/major finding; workplan and requirement matrix validate; final artifacts/evidence agree.
-#### 10.6 Leave a clean reproducible handoff <!-- workplan-step-id: step-9f-clean-handoff -->
+#### 10.7 Leave a clean reproducible handoff <!-- workplan-step-id: step-9f-clean-handoff -->
 - Status: draft
 - Id: step-9f-clean-handoff
 - Target: exp/tavrn-ble worktree, workplan and final evidence index
@@ -936,6 +942,9 @@ Build and hardware-qualify a near-full proof-of-concept TAVRN-BLE testbed on mic
 - 2026-08-10 final Phase 6 audit reopened Step 6b for four lifecycle corrections: exact next-hop reservation identity, peer-reset reconciliation/clear-on-release, fault-safe external token cancellation, and retained retry-LEAVE overflow. User approved implementation and full revalidation.
 - 2026-08-10 lifecycle reaudit: three prior major findings resolved; peer-reset repair fix needs one explicit external-pin ownership discriminator so discarded router/AODV work cannot leave a marked pin without a releaser.
 - 2026-08-11 Phase 6 Step 6b software implementation closed after final ownership audit. Repair terminal ownership, failure ordering, production composition, permanent failure cleanup, exact next-hop reservation identity, peer-reset reconciliation, external-vs-internal pin ownership, faulted high-token cancellation, retained LEAVE overflow, and transmitter/next-hop-only reset pin disposal are covered by production-composed/lower-level regressions. All available GREEN host suites pass; expected Phase 6 RED reaches every scenario and exits nonzero. Final5 FULL repair OFF/ON FAST/BALANCED resource gates and AODV_ONLY FAST build pass. Fixed state 31504/32184 bytes (680-byte repair delta), runtime reserve 12288, post-reserve RAM 87280/86600, initial static frame 440/480, rooted mesh stack 2944. No blocker/major remains in software review. Step 6c publication remains separate and requires explicit commit authorization; Step 6d remains blocked on a fourth inventoried board. Evidence: /tmp/opencode/phase6-final5-{off,on}-{fast,balanced}, /tmp/opencode/phase6-final5-aodv-fast; reviewer ses_012f51a87ffejyZBTW2LrfNp6X.
+- 2026-08-11 six-board inventory: 1/A UID 9906360200052820cf57b9f988a30e16000000006e052820 AdvA 18:42:de:52:4a:dd; 2/B UID 99063602000528205539bee7957c8dea000000006e052820 AdvA dc:4b:0a:06:03:f8; 3/C UID 9906360200052820f9a4d9d29f9d7c0b000000006e052820 AdvA 1e:33:a7:2f:8e:d8; 4/D UID 9906360200052820f4767fb3d81870df000000006e052820 AdvA 51:56:ae:12:21:ca; 5/E UID 99063602000528200b9c563b9bdebe86000000006e052820 AdvA be:65:0b:2c:96:d0; 6/F UID 990636020005282033b7c2ad5952ee2e000000006e052820 AdvA 56:a2:44:0e:9e:d6. All full AdvA, SID16, and SID8 identities are unique/nonreserved.
+- 2026-08-11 physical topology, user-observed without moving boards: node 1 above node 2 at short distance; nodes 2-5-6-3 form the keyboard cluster left-to-right; node 4 is separated at larger distance to the right. Identification firmware displayed corrected digits 1..6 by exact UID.
+- 2026-08-11 benchmark contract superseded the finite 1/4/10 Hz matrix: capture is continuous until user stop; heartbeat is 1 Hz; throughput bursts are 10 Hz for 60 s at t=60+450k s; GTT/control-plane samples are 10 s; clock/application events are 1 s/per-event. CONTROL observability is compile-time optional and absent from normal candidates. A live watch and on-demand matplotlib 3.11.1 PNG snapshot use the same incremental parser as final offline analysis.
 
 ## Status
 - Overall status: in_progress
