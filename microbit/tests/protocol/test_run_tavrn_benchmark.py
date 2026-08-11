@@ -173,6 +173,15 @@ class RunnerTests(unittest.TestCase):
                                   "--duration-seconds", "0", "--dry-run"])
         self.assertEqual(result, 1)
 
+    def test_flash_settle_cannot_be_negative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            folder = pathlib.Path(temp); inventory, plan, _ = self.fixture(folder)
+            result = MODULE.main(["--inventory", str(inventory), "--run-plan", str(plan),
+                                  "--run-dir", str(folder / "run"), "--pyocd", "/x",
+                                  "--grabserial", "/y", "--uv", "/z",
+                                  "--flash-settle-seconds", "-1", "--dry-run"])
+        self.assertEqual(result, 1)
+
     def test_ficr_derivation_and_mismatch(self) -> None:
         self.assertEqual(MODULE.derive_canonical_adva(0x52DE4218, 0x1D4A), "18:42:de:52:4a:dd")
         self.assertEqual(MODULE.parse_ficr_words("0x100000a4: 52de4218\n0x100000a8: 00001d4a\n"), (0x52DE4218, 0x1D4A))

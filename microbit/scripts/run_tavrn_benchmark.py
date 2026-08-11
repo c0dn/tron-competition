@@ -699,7 +699,8 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
                      run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
                      popen: Callable[..., Any] = subprocess.Popen,
                      killpg: Callable[[int, int], None] = os.killpg,
-                     duration_seconds: float | None = None) -> tuple[str, Any, CaptureEnd]:
+                     duration_seconds: float | None = None,
+                     flash_settle_seconds: float = 0.0) -> tuple[str, Any, CaptureEnd]:
     children: list[CaptureChild] = []
     logs = run_dir / "logs"
     state = analysis.ObservationState(
@@ -711,6 +712,10 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
         for board in checked:
             _checked_run(flash_command(pyocd, board), f"flash_{board['role']}", events, run)
             _checked_run(halt_command(pyocd, board["uid"]), f"halt_{board['role']}", events, run)
+            if flash_settle_seconds > 0:
+                events.append({"at": utc_now(), "event": f"flash_settle_{board['role']}",
+                               "status": "waiting", "seconds": flash_settle_seconds})
+                time.sleep(flash_settle_seconds)
         logs.mkdir()
         for board in checked:
             log = logs / f"board-{board['role']}.log"
@@ -889,6 +894,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--snapshot-seconds", type=float, default=0.0); parser.add_argument("--charts", action="store_true")
     parser.add_argument("--duration-seconds", type=float)
+    parser.add_argument("--flash-settle-seconds", type=float, default=0.0)
     args = parser.parse_args(argv)
     run_dir, inventory_path, plan_path = Path(args.run_dir), Path(args.inventory), Path(args.run_plan)
     plan: dict[str, Any] | None = None; checked: list[dict[str, Any]] = []; events: list[dict[str, Any]] = []; pinned: dict[str, Any] = {}
@@ -902,6 +908,8 @@ def main(argv: list[str]) -> int:
             raise RunError("--dry-run and --preflight-only are mutually exclusive")
         if args.duration_seconds is not None and args.duration_seconds <= 0:
             raise RunError("--duration-seconds must be positive")
+        if args.flash_settle_seconds < 0:
+            raise RunError("--flash-settle-seconds cannot be negative")
         # These must be taken before JSON/TSV parsing, then checked again after
         # copy2 so a mutable publisher cannot swap the accepted input bytes.
         input_hashes = {"inventory": sha256_file(inventory_path), "plan": sha256_file(plan_path)}
@@ -945,7 +953,8 @@ def main(argv: list[str]) -> int:
         status, capture_state, capture_end = _execute_with_termination_handlers(
             lambda: execute_capture(plan, checked, pinned_pyocd, pinned_grabserial, pinned_uv,
                                      pinned_analyzer, run_dir, events, args.charts, args.snapshot_seconds,
-                                     duration_seconds=args.duration_seconds))
+                                     duration_seconds=args.duration_seconds,
+                                     flash_settle_seconds=args.flash_settle_seconds))
         chart_renderer = lambda bundle, name: render_pinned_charts(pinned_uv, pinned_analyzer, bundle, name,
                                                                       events, subprocess.run)
         final = _write_snapshot(capture_state, run_dir / "outputs", "final", args.charts, chart_renderer)
