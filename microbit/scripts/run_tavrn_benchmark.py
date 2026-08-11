@@ -718,7 +718,7 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
             command = grabserial_command(grabserial, board)
             try:
                 process = popen(command, stdout=handle, stderr=subprocess.STDOUT, text=True,
-                                start_new_session=True)
+                                start_new_session=True, env={**os.environ, "TZ": "UTC"})
             except OSError as error:
                 handle.close()
                 events.append({"at": utc_now(), "event": f"capture_{board['role']}", "command": command,

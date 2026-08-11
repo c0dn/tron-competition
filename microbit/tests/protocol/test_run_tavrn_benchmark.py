@@ -430,6 +430,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(status, "test_stopped")
             self.assertEqual(len(launches), len(MODULE.ROLES))
             self.assertTrue(all(call.get("start_new_session") is True for call in launches))
+            self.assertTrue(all(call.get("env", {}).get("TZ") == "UTC" for call in launches))
             state.close()
 
     def test_live_and_offline_share_the_exact_capture_end_boundary(self) -> None:
