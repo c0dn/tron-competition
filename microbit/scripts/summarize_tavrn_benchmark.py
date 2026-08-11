@@ -774,7 +774,6 @@ class ObservationState:
         slots: set[int] = set()
         subjects: set[str] = set()
         nondeparted = 0
-        local_adva = str(_boards_by_role(self.metadata)[end.role]["adva"]).lower()
         for entry in current.entries:
             if _uint(entry.fields["query_at_ms"], "query_at_ms", entry.source, entry.line_number) != query_at:
                 raise _error(entry.source, entry.line_number, "has GTT entry query_at_ms mismatch")
@@ -786,8 +785,12 @@ class ObservationState:
             if subject in subjects:
                 raise _error(entry.source, entry.line_number, "has duplicate GTT subject")
             subjects.add(subject)
-            if (_uint(entry.fields["departed"], "departed", entry.source, entry.line_number) == 0 or
-                    subject == local_adva):
+            departed = _uint(entry.fields["departed"], "departed",
+                             entry.source, entry.line_number)
+            if departed not in (1, 2):
+                raise _error(entry.source, entry.line_number,
+                             "has invalid GTT departed enum")
+            if departed == 1:
                 nondeparted += 1
         if expected_nondeparted != nondeparted:
             raise _error(end.source, end.line_number, "has partial GTT snapshot nondeparted_count")

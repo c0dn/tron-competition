@@ -137,7 +137,7 @@ def stream(
                 continue
             board = next(board for board in metadata(profile)["boards"] if board["role"] == other)
             add(query_at + slot + 1, "gtt_entry",
-                "query_at_ms=%d slot=%d adva=%s freshness=1 departed=0 last_evidence_ms=%d" %
+                "query_at_ms=%d slot=%d adva=%s freshness=1 departed=1 last_evidence_ms=%d" %
                 (query_at, slot, board["adva"], max(0, query_at - 10)))
         add(query_at + 6, "gtt_end", "query_at_ms=%d status=OK entry_count=5 nondeparted_count=5" % query_at)
 
@@ -210,18 +210,12 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(data["throughput_bursts"][0]["delivered"], 600)
         self.assertTrue(all(row["status"] == "OK" for row in data["gtt_fleet"]))
 
-    def test_full_gtt_counts_local_departed_marker_as_nondeparted(self) -> None:
-        def local_departed(role: str, payload: str) -> str:
-            adva = f"{MODULE.ROLES.index(role) + 1:02x}:42:de:52:4a:dd"
-            lines = []
-            for item in payload.splitlines():
-                if " obs_gtt_entry " in item and f"adva={adva}" in item:
-                    item = item.replace("departed=0", "departed=1")
-                lines.append(item)
-            return "\n".join(lines) + "\n"
+    def test_full_gtt_rejects_invalid_departed_enum(self) -> None:
+        def invalid_departed(role: str, payload: str) -> str:
+            return payload.replace("departed=1", "departed=0", 1) if role == "A" else payload
 
-        data = MODULE.snapshot(self.state(transform=local_departed))
-        self.assertEqual(data["proving_status"], "VALID")
+        with self.assertRaisesRegex(MODULE.CaptureError, "departed enum"):
+            self.state(transform=invalid_departed)
 
     def test_observer_contract_fields_and_low_record_id_half_are_required(self) -> None:
         offer = line(0, wire_record(
