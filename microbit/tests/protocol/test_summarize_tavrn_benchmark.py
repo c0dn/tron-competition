@@ -210,6 +210,19 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(data["throughput_bursts"][0]["delivered"], 600)
         self.assertTrue(all(row["status"] == "OK" for row in data["gtt_fleet"]))
 
+    def test_full_gtt_counts_local_departed_marker_as_nondeparted(self) -> None:
+        def local_departed(role: str, payload: str) -> str:
+            adva = f"{MODULE.ROLES.index(role) + 1:02x}:42:de:52:4a:dd"
+            lines = []
+            for item in payload.splitlines():
+                if " obs_gtt_entry " in item and f"adva={adva}" in item:
+                    item = item.replace("departed=0", "departed=1")
+                lines.append(item)
+            return "\n".join(lines) + "\n"
+
+        data = MODULE.snapshot(self.state(transform=local_departed))
+        self.assertEqual(data["proving_status"], "VALID")
+
     def test_observer_contract_fields_and_low_record_id_half_are_required(self) -> None:
         offer = line(0, wire_record(
             "offer", 0, "1", 1, 2,
