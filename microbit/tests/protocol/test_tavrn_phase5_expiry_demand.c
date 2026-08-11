@@ -1134,6 +1134,8 @@ static int full_binding_source_is_closed(void)
         "tavrn_maintenance_owner_pre_tick", "tavrn_router_tick_ex",
         "tavrn_mentorship_tick", "tavrn_router_local_broadcast_snapshot",
         "tavrn_maintenance_observe_local_broadcast", "tavrn_maintenance_activate",
+        "tavrn_maintenance_targeted_owner_tick",
+        "tavrn_maintenance_verification_owner_tick",
         "tavrn_maintenance_owner_post_tick",
     };
     static const char *const cycle_order[] = {
@@ -1153,8 +1155,12 @@ static int full_binding_source_is_closed(void)
                                       "tavrn_full_maintenance_binding_tick",
                                       "tavrn_mentorship_tick", &count) || count != 1u ||
         !lexical_function_call_count(TAVRN_PHASE5_FULL_BINDING_SOURCE_PATH,
-                                      "tavrn_full_maintenance_binding_tick",
-                                      "tavrn_maintenance_owner_post_tick", &count) ||
+                                       "tavrn_full_maintenance_binding_tick",
+                                       "tavrn_maintenance_owner_post_tick", &count) ||
+        count != 1u ||
+        !lexical_function_call_count(TAVRN_PHASE5_FULL_BINDING_SOURCE_PATH,
+                                       "tavrn_full_maintenance_binding_tick",
+                                       "tavrn_maintenance_verification_owner_tick", &count) ||
         count != 1u ||
         !lexical_function_identifier_count(TAVRN_PHASE5_FULL_BINDING_SOURCE_PATH,
                                       "tavrn_full_maintenance_binding_tick",
@@ -4490,7 +4496,7 @@ static int test_maint_04_split_owner_order_contract(void)
         ok &= binding_status == TAVRN_FULL_MAINTENANCE_BINDING_INVALID &&
             invalid_result.status == TAVRN_FULL_MAINTENANCE_BINDING_INVALID &&
             invalid_result.application_present == 0u &&
-            memcmp(&before, &after, sizeof(before)) == 0;
+            side_effect_states_equal(&before, &after);
 
         /* An absent command ignores even malformed copied bytes. */
         binding_input.application_command.kind =

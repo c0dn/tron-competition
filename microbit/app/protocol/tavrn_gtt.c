@@ -987,3 +987,51 @@ tavrn_gtt_sync_merge_status_t tavrn_gtt_sync_merge(
     *gtt->storage = candidate;
     return TAVRN_GTT_SYNC_MERGE_COMMITTED;
 }
+
+tavrn_gtt_metadata_merge_status_t tavrn_gtt_metadata_merge(
+    tavrn_gtt_t *gtt, const tavrn_adva_t *identity, uint8_t ttl_bucket,
+    uint32_t now_ms)
+{
+    tavrn_gtt_entry_t *entry;
+    uint32_t hard_lifetime_ms;
+    uint32_t soft_lifetime_ms;
+
+    if (gtt == NULL || gtt->storage == NULL) {
+        return TAVRN_GTT_METADATA_MERGE_UNAVAILABLE;
+    }
+    if (!gtt_is_usable(gtt) || !adva_is_valid(identity) || ttl_bucket > 15u) {
+        return TAVRN_GTT_METADATA_MERGE_INVALID;
+    }
+    if (identities_equal(identity, &gtt->config.local_identity)) {
+        return TAVRN_GTT_METADATA_MERGE_UNCHANGED;
+    }
+    entry = find_entry(gtt, identity, now_ms);
+    if (entry != NULL && entry->departed != 0u) {
+        return TAVRN_GTT_METADATA_MERGE_TOMBSTONE;
+    }
+    if (entry == NULL) {
+        entry = find_slot_for_new_entry(gtt, now_ms);
+        if (entry == NULL) {
+            return TAVRN_GTT_METADATA_MERGE_UNAVAILABLE;
+        }
+        memset(entry, 0, sizeof(*entry));
+        entry->identity = *identity;
+        entry->occupied = 1u;
+    }
+
+    hard_lifetime_ms = (uint32_t)(ttl_bucket + 1u) * 20000u;
+    if (hard_lifetime_ms > gtt->config.hard_expiry_ms) {
+        hard_lifetime_ms = gtt->config.hard_expiry_ms;
+    }
+    soft_lifetime_ms = hard_lifetime_ms < gtt->config.soft_expiry_ms ?
+        hard_lifetime_ms : gtt->config.soft_expiry_ms;
+    entry->last_evidence_ms = now_ms;
+    entry->soft_deadline_ms = now_ms + soft_lifetime_ms;
+    entry->hard_deadline_ms = now_ms + hard_lifetime_ms;
+    entry->departed_deadline_ms = 0u;
+    entry->departed = 0u;
+    /* Metadata is imported social evidence.  It must neither manufacture a
+     * subject serial nor overwrite a separately established direct binding. */
+    revise_entry(gtt, entry);
+    return TAVRN_GTT_METADATA_MERGE_COMMITTED;
+}

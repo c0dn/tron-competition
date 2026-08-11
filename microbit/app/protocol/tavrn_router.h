@@ -14,8 +14,10 @@
 #define TAVRN_ROUTER_INCARNATION_PENDING_RESET_CAPACITY 1u
 
 typedef uint16_t tavrn_router_delivery_token_t;
+typedef uint16_t tavrn_router_candidate_reservation_token_t;
 
 #define TAVRN_ROUTER_DELIVERY_TOKEN_NONE 0u
+#define TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE 0u
 
 typedef char tavrn_router_evidence_capacity_guard[
     (TAVRN_ROUTER_EVIDENCE_CAPACITY == 2u) ? 1 : -1];
@@ -127,6 +129,42 @@ typedef struct tavrn_router_application_hooks {
     tavrn_router_delivery_cancel_fn cancel;
 } tavrn_router_application_hooks_t;
 
+/* Candidate reservation is an optional, synchronous policy port.  It is
+ * invoked after ordinary router admission gates but before the read-only AODV
+ * probe.  Callbacks must not re-enter router, link, or AODV APIs. */
+typedef enum tavrn_router_candidate_reservation_status {
+    TAVRN_ROUTER_CANDIDATE_NOT_APPLICABLE = 0,
+    TAVRN_ROUTER_CANDIDATE_RESERVED,
+    TAVRN_ROUTER_CANDIDATE_BUSY,
+    TAVRN_ROUTER_CANDIDATE_INVALID,
+} tavrn_router_candidate_reservation_status_t;
+
+typedef enum tavrn_router_candidate_completion_status {
+    TAVRN_ROUTER_CANDIDATE_COMPLETION_OK = 0,
+    TAVRN_ROUTER_CANDIDATE_COMPLETION_INVALID,
+} tavrn_router_candidate_completion_status_t;
+
+typedef tavrn_router_candidate_reservation_status_t
+    (*tavrn_router_candidate_reserve_fn)(
+        void *context, const tavrn_rx_data_candidate_t *candidate,
+        tavrn_router_candidate_reservation_token_t *token_out,
+        uint32_t now_ms);
+typedef tavrn_router_candidate_completion_status_t
+    (*tavrn_router_candidate_commit_fn)(
+        void *context, tavrn_router_candidate_reservation_token_t token,
+        const tavrn_rx_data_candidate_t *candidate, uint32_t now_ms);
+typedef tavrn_router_candidate_completion_status_t
+    (*tavrn_router_candidate_rollback_fn)(
+        void *context, tavrn_router_candidate_reservation_token_t token,
+        const tavrn_rx_data_candidate_t *candidate, uint32_t now_ms);
+
+typedef struct tavrn_router_candidate_reservation_port {
+    void *context;
+    tavrn_router_candidate_reserve_fn reserve;
+    tavrn_router_candidate_commit_fn commit;
+    tavrn_router_candidate_rollback_fn rollback;
+} tavrn_router_candidate_reservation_port_t;
+
 typedef enum tavrn_router_delivery_state {
     TAVRN_ROUTER_DELIVERY_NONE = 0,
     TAVRN_ROUTER_DELIVERY_RESERVED_PRE_ACK,
@@ -145,8 +183,14 @@ typedef enum tavrn_router_fault_reason {
     TAVRN_ROUTER_FAULT_DELIVERY_ACTION_MISMATCH,
     TAVRN_ROUTER_FAULT_POST_ACK_INGEST_INVALID,
     TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_RELEASE_INVALID,
+    TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_DISCARD_INVALID,
     TAVRN_ROUTER_FAULT_FAILURE_OBLIGATION_OVERFLOW,
     TAVRN_ROUTER_FAULT_FAILURE_REPORT_INVALID,
+    TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID,
+    TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID,
+    TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_TOKEN_ZERO,
+    TAVRN_ROUTER_FAULT_CANDIDATE_COMMIT_INVALID,
+    TAVRN_ROUTER_FAULT_CANDIDATE_ROLLBACK_INVALID,
 } tavrn_router_fault_reason_t;
 
 typedef struct tavrn_router_delivery_reservation {
@@ -305,6 +349,78 @@ typedef struct tavrn_router_dispatch_event {
     tavrn_direct_peer_t peer;
 } tavrn_router_dispatch_event_t;
 
+/* A caller may consume an already link-admitted control before ordinary AODV
+ * dispatch. It is a single optional port, not an alternate wire/link path. */
+typedef enum tavrn_router_control_intercept_status {
+    TAVRN_ROUTER_CONTROL_INTERCEPT_IGNORED = 0,
+    TAVRN_ROUTER_CONTROL_INTERCEPT_CONSUMED,
+    TAVRN_ROUTER_CONTROL_INTERCEPT_BUSY,
+    TAVRN_ROUTER_CONTROL_INTERCEPT_INVALID,
+} tavrn_router_control_intercept_status_t;
+
+typedef tavrn_router_control_intercept_status_t (*tavrn_router_control_intercept_fn)(
+    void *context, const tavrn_rx_control_event_t *control_event, uint32_t now_ms);
+
+typedef struct tavrn_router_control_interceptor {
+    void *context;
+    tavrn_router_control_intercept_fn receive;
+} tavrn_router_control_interceptor_t;
+
+/* These optional ports carry only copied common-router facts.  FULL policy may
+ * decorate an otherwise admitted routed control or observe one after link
+ * admission, but AODV never depends on either callback. */
+typedef enum tavrn_router_control_augmentation_status {
+    TAVRN_ROUTER_CONTROL_AUGMENTATION_OK = 0,
+    TAVRN_ROUTER_CONTROL_AUGMENTATION_BUSY,
+    TAVRN_ROUTER_CONTROL_AUGMENTATION_INVALID,
+} tavrn_router_control_augmentation_status_t;
+
+typedef tavrn_router_control_augmentation_status_t
+    (*tavrn_router_control_prepare_fn)(
+        void *context, const tavrn_validated_control_t *base,
+        tavrn_validated_control_t *augmented_out, uint32_t now_ms);
+/* Enqueue is not physical metadata completion.  A decorated control owner
+ * receives its scheduler token here and consumes a matching completion below. */
+typedef tavrn_router_control_augmentation_status_t
+    (*tavrn_router_control_admission_fn)(
+    void *context, const tavrn_validated_control_t *base,
+    const tavrn_validated_control_t *sent,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    tavrn_link_send_status_t status, ble_mesh_tx_token_t scheduler_token,
+    uint32_t now_ms);
+typedef tavrn_router_control_augmentation_status_t
+    (*tavrn_router_control_completion_fn)(
+        void *context, const ble_mesh_sched_event_t *event, uint32_t now_ms);
+typedef void (*tavrn_router_control_rx_fn)(
+    void *context, const tavrn_rx_control_event_t *control_event, uint32_t now_ms);
+
+/* The router invokes this for every DATA custody terminal, including a
+ * successful transfer.  OWNED is deliberately narrow: it is valid only for a
+ * transit RETRY_EXHAUSTED event. */
+typedef enum tavrn_router_data_terminal_disposition {
+    TAVRN_ROUTER_DATA_TERMINAL_DECLINED = 0,
+    TAVRN_ROUTER_DATA_TERMINAL_OBSERVED,
+    TAVRN_ROUTER_DATA_TERMINAL_OWNED,
+    TAVRN_ROUTER_DATA_TERMINAL_INVALID,
+} tavrn_router_data_terminal_disposition_t;
+
+typedef tavrn_router_data_terminal_disposition_t
+    (*tavrn_router_data_terminal_hook_fn)(
+        void *context, const tavrn_link_event_t *event, uint32_t now_ms);
+
+typedef struct tavrn_router_control_augmentation {
+    void *context;
+    tavrn_router_control_prepare_fn prepare;
+    tavrn_router_control_admission_fn admitted;
+    tavrn_router_control_completion_fn completed;
+    tavrn_router_control_rx_fn received;
+} tavrn_router_control_augmentation_t;
+
+typedef struct tavrn_router_data_terminal_hook {
+    void *context;
+    tavrn_router_data_terminal_hook_fn handle;
+} tavrn_router_data_terminal_hook_t;
+
 typedef struct tavrn_router {
     tavrn_link_v2_t *link;
     aodv_core_t *aodv;
@@ -322,6 +438,10 @@ typedef struct tavrn_router {
     uint8_t retained_action_valid;
     tavrn_router_incarnation_t incarnation;
     tavrn_router_local_broadcast_snapshot_t local_broadcast;
+    tavrn_router_control_interceptor_t control_interceptor;
+    tavrn_router_control_augmentation_t control_augmentation;
+    tavrn_router_data_terminal_hook_t data_terminal_hook;
+    tavrn_router_candidate_reservation_port_t candidate_reservation;
 } tavrn_router_t;
 
 typedef enum tavrn_router_init_status {
@@ -363,6 +483,32 @@ typedef enum tavrn_router_hello_status {
     TAVRN_ROUTER_HELLO_INVALID,
 } tavrn_router_hello_status_t;
 
+/* FULL maintenance supplies a generic AODV action plus its caller-owned high
+ * token.  The router validates and admits it through the same link-v2 control
+ * path; purpose remains solely in the maintenance owner. */
+typedef enum tavrn_router_tracked_rreq_status {
+    TAVRN_ROUTER_TRACKED_RREQ_OK = 0,
+    TAVRN_ROUTER_TRACKED_RREQ_BUSY,
+    TAVRN_ROUTER_TRACKED_RREQ_LOCAL_NOT_ATTEMPTED,
+    TAVRN_ROUTER_TRACKED_RREQ_INVALID,
+} tavrn_router_tracked_rreq_status_t;
+
+/* A small read-only route truth seam for FULL maintenance.  It intentionally
+ * exposes an AODV copy rather than a second table or a maintenance-owned next
+ * hop. */
+typedef enum tavrn_router_route_status {
+    TAVRN_ROUTER_ROUTE_OK = 0,
+    TAVRN_ROUTER_ROUTE_NOT_FOUND,
+    TAVRN_ROUTER_ROUTE_INVALID,
+} tavrn_router_route_status_t;
+
+typedef enum tavrn_router_reforward_status {
+    TAVRN_ROUTER_REFORWARD_OK = 0,
+    TAVRN_ROUTER_REFORWARD_BUSY,
+    TAVRN_ROUTER_REFORWARD_NOT_FOUND,
+    TAVRN_ROUTER_REFORWARD_INVALID,
+} tavrn_router_reforward_status_t;
+
 /* By-value phase traces are the only observability output from the router's
  * production-facing _ex calls.  The discriminant prevents a scheduler/tick
  * operation from fabricating dispatch or link-service details. */
@@ -403,6 +549,10 @@ typedef struct tavrn_router_scheduler_trace {
 
 typedef struct tavrn_router_tick_trace {
     aodv_status_t status;
+    tavrn_link_step_status_t link_step_status;
+    tavrn_link_event_t link_event;
+    tavrn_router_trace_presence_t link_step_present;
+    tavrn_router_trace_presence_t link_event_present;
 } tavrn_router_tick_trace_t;
 
 typedef struct tavrn_router_submit_trace {
@@ -461,6 +611,25 @@ tavrn_router_incarnation_status_t tavrn_router_init_with_incarnation(
 tavrn_router_application_hook_status_t tavrn_router_set_application_hooks(
     tavrn_router_t *router,
     const tavrn_router_application_hooks_t *application_or_null);
+/* Passing NULL removes the port.  A non-NULL port must provide all three
+ * callbacks so that every successful reservation has a terminal owner. */
+tavrn_router_event_status_t tavrn_router_set_candidate_reservation_port(
+    tavrn_router_t *router,
+    const tavrn_router_candidate_reservation_port_t *port_or_null);
+/* The callback runs after link-v2 admits an RX control and before ordinary
+ * router/AODV dispatch. Returning IGNORED preserves ordinary handling. */
+tavrn_router_event_status_t tavrn_router_set_control_interceptor(
+    tavrn_router_t *router,
+    const tavrn_router_control_interceptor_t *interceptor_or_null);
+/* Installs copied control hooks without introducing FULL types into router or
+ * AODV. `prepare` is optional; `admitted` and `received` may be installed
+ * independently. */
+tavrn_router_event_status_t tavrn_router_set_control_augmentation(
+    tavrn_router_t *router,
+    const tavrn_router_control_augmentation_t *augmentation_or_null);
+tavrn_router_event_status_t tavrn_router_set_data_terminal_hook(
+    tavrn_router_t *router,
+    const tavrn_router_data_terminal_hook_t *hook_or_null);
 tavrn_router_event_status_t tavrn_router_handle_scheduler_event(
     tavrn_router_t *router, const ble_mesh_sched_event_t *event,
     uint32_t now_ms);
@@ -542,6 +711,36 @@ tavrn_router_hello_status_t tavrn_router_enqueue_ordinary_hello(
     uint32_t now_ms);
 tavrn_router_hello_status_t tavrn_router_cancel_ordinary_hello(
     tavrn_router_t *router, const tavrn_validated_control_t *control);
+tavrn_router_tracked_rreq_status_t tavrn_router_enqueue_tracked_rreq(
+    tavrn_router_t *router, const aodv_action_t *action, uint16_t token,
+    uint32_t now_ms, uint16_t *evicted_token_out);
+/* Retry an already prepared exact decorated control.  This does not allocate a
+ * route action or request ID; a retained existing action is marked sent only
+ * after the retry is accepted into the scheduler. */
+tavrn_router_event_status_t tavrn_router_retry_retained_control(
+    tavrn_router_t *router, const tavrn_validated_control_t *base,
+    const tavrn_validated_control_t *sent,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms);
+/* Admit one locally addressed RREP for a caller-retained local RREQ attempt.
+ * The normal router observation path runs only for core-accepted or duplicate
+ * controls; this adds no router discovery or pending-DATA state. */
+aodv_status_t tavrn_router_ingest_rrep_for_attempt(
+    tavrn_router_t *router, const tavrn_rx_control_event_t *control_event,
+    const aodv_rreq_attempt_t *attempt, uint32_t now_ms);
+tavrn_router_route_status_t tavrn_router_route_to_subject(
+    const tavrn_router_t *router, const tavrn_logical_id_t *subject,
+    uint32_t now_ms, aodv_route_snapshot_t *route_out);
+/* Re-enqueues an already-owned transit DATA copy through one currently valid
+ * route.  It performs no AODV DATA ingress, discovery, pending-DATA, or TTL /
+ * hop mutation. */
+tavrn_router_reforward_status_t tavrn_router_reforward_transit_data(
+    tavrn_router_t *router, const tavrn_link_data_t *data, uint32_t now_ms,
+    tavrn_direct_peer_t *next_hop_out);
+/* Releases the original inbound transit dedupe pin after a policy owner has
+ * terminally dropped its copied DATA. */
+tavrn_router_event_status_t tavrn_router_release_transit_pin(
+    tavrn_router_t *router, const tavrn_link_data_t *data, uint32_t now_ms);
 /* Mentorship and router-common call this only after a non-maintenance local
  * broadcast control has been admitted by link-v2. */
 void tavrn_router_note_local_broadcast(tavrn_router_t *router,

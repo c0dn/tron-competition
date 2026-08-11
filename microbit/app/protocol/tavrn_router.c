@@ -137,6 +137,17 @@ static int direct_peer_equal(const tavrn_direct_peer_t *left,
            memcmp(left->adva.bytes, right->adva.bytes, TAVRN_ADVA_LEN) == 0;
 }
 
+static int link_data_is_valid(const tavrn_link_data_t *data)
+{
+    return data != NULL && logical_id_is_valid(&data->origin) &&
+        logical_id_is_valid(&data->final_destination) &&
+        data->origin.width == data->final_destination.width &&
+        data->ttl <= 15u && data->hops <= 15u && data->urgent <= 1u &&
+        data->app_len <= TAVRN_LINK_APP_BYTES &&
+        (data->ownership == TAVRN_DATA_ORIGINATED ||
+         data->ownership == TAVRN_DATA_TRANSIT);
+}
+
 static int link_data_equal(const tavrn_link_data_t *left,
                            const tavrn_link_data_t *right)
 {
@@ -506,8 +517,8 @@ static int decoded_frame_uses_barred_conflict(
 }
 
 static void build_hello(tavrn_validated_control_t *control,
-                        const tavrn_direct_peer_t *local, uint8_t bootstrap,
-                        uint16_t serial, uint8_t network_id)
+                         const tavrn_direct_peer_t *local, uint8_t bootstrap,
+                         uint16_t serial, uint8_t network_id)
 {
     if (control == NULL || local == NULL) {
         return;
@@ -531,6 +542,14 @@ static void build_hello(tavrn_validated_control_t *control,
     control->pdu[18] = (uint8_t)(serial >> 8);
 }
 
+static int controls_equal(const tavrn_validated_control_t *left,
+                          const tavrn_validated_control_t *right)
+{
+    return left != NULL && right != NULL && left->type == right->type &&
+        left->pdu_len == right->pdu_len &&
+        memcmp(left->pdu, right->pdu, left->pdu_len) == 0;
+}
+
 static tavrn_router_incarnation_status_t enqueue_local_hello(
     tavrn_router_t *router, uint8_t bootstrap, uint32_t now_ms)
 {
@@ -550,7 +569,9 @@ static tavrn_router_incarnation_status_t enqueue_local_hello(
     send_status = tavrn_link_v2_send_control_tracked(
         router->link, &hello, NULL, 0u, now_ms, &local_outcome, &token);
     if (send_status != TAVRN_LINK_SEND_OK || token == BLE_MESH_TX_TOKEN_NONE ||
-        local_outcome.type != TAVRN_LINK_EVENT_NONE) {
+        (local_outcome.type != TAVRN_LINK_EVENT_NONE &&
+         tavrn_router_handle_link_event(router, &local_outcome, now_ms) ==
+             TAVRN_ROUTER_EVENT_INVALID)) {
         return send_status == TAVRN_LINK_SEND_BUSY ||
                 send_status == TAVRN_LINK_SEND_NO_SLOT ?
             TAVRN_ROUTER_INCARNATION_BUSY : TAVRN_ROUTER_INCARNATION_INVALID;
@@ -605,6 +626,48 @@ static int invalid_bootstrap_wire(const ble_mesh_sched_event_t *event)
 static void latch_router_fault(tavrn_router_t *router,
                                 tavrn_router_fault_reason_t reason);
 
+static tavrn_router_event_status_t discard_internal_transit_custody(
+    tavrn_router_t *router, const tavrn_link_data_t *data)
+{
+    if (router == NULL || data == NULL || !link_data_is_valid(data)) {
+        if (router != NULL) {
+            latch_router_fault(router,
+                               TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_DISCARD_INVALID);
+        }
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (data->ownership != TAVRN_DATA_TRANSIT) {
+        return TAVRN_ROUTER_EVENT_OK;
+    }
+    if (tavrn_link_v2_discard_internal_rx_custody(router->link, data) !=
+        TAVRN_LINK_RESOLVE_OK) {
+        latch_router_fault(router,
+                           TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_DISCARD_INVALID);
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
+}
+
+static void discard_queued_transit_custody(void *context,
+                                           const aodv_data_action_t *action)
+{
+    tavrn_router_t *router = context;
+
+    if (router != NULL && action != NULL) {
+        (void)discard_internal_transit_custody(router, &action->data);
+    } else if (router != NULL) {
+        latch_router_fault(router,
+                           TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_DISCARD_INVALID);
+    }
+}
+
+static aodv_failure_status_t reset_aodv_peer_incarnation(
+    tavrn_router_t *router, const tavrn_direct_peer_t *peer, uint32_t now_ms)
+{
+    return aodv_core_reset_peer_incarnation_with_data_discard(
+        router->aodv, peer, now_ms, discard_queued_transit_custody, router);
+}
+
 static tavrn_router_event_status_t clear_router_peer_work(
     tavrn_router_t *router, const tavrn_direct_peer_t *peer, uint32_t now_ms)
 {
@@ -637,6 +700,13 @@ static tavrn_router_event_status_t clear_router_peer_work(
         action_uses_direct_peer(&router->retained_action, peer)) {
         uint16_t token = 0u;
 
+        if ((router->retained_action.type == AODV_ACTION_FORWARD_DATA ||
+             router->retained_action.type == AODV_ACTION_DELIVER_DATA) &&
+            discard_internal_transit_custody(
+                router, &router->retained_action.detail.data.data) !=
+                TAVRN_ROUTER_EVENT_OK) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
         switch (router->retained_action.type) {
         case AODV_ACTION_SEND_RREQ:
         case AODV_ACTION_SEND_RREP:
@@ -668,6 +738,11 @@ static tavrn_router_event_status_t clear_router_peer_work(
                           &peer->logical_id) ||
          logical_id_equal(&router->pending_ingest.input.data.final_destination,
                           &peer->logical_id))) {
+        if (discard_internal_transit_custody(
+                router, &router->pending_ingest.input.data) !=
+            TAVRN_ROUTER_EVENT_OK) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
         memset(&router->pending_ingest, 0, sizeof(router->pending_ingest));
     }
     for (index = 0u; index < TAVRN_ROUTER_FAILURE_CAPACITY; index++) {
@@ -691,10 +766,14 @@ static tavrn_router_event_status_t quarantine_peer_incarnation(
     tavrn_router_event_status_t clear_status;
 
     if (tavrn_link_v2_quarantine_peer_incarnation(router->link, peer) !=
-            TAVRN_LINK_RESOLVE_OK ||
-        aodv_core_quarantine_peer_incarnation(router->aodv, peer) !=
+        TAVRN_LINK_RESOLVE_OK ||
+        aodv_core_quarantine_peer_incarnation_with_data_discard(
+            router->aodv, peer, discard_queued_transit_custody, router) !=
             AODV_FAILURE_OK) {
         latch_router_fault(router, TAVRN_ROUTER_FAULT_CONTROL_CANCEL_INVALID);
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (!router_is_usable(router)) {
         return TAVRN_ROUTER_EVENT_INVALID;
     }
     record->route_barred = 1u;
@@ -788,8 +867,12 @@ static tavrn_router_event_status_t handle_direct_bootstrap(
                                    TAVRN_ROUTER_FAULT_CONTROL_CANCEL_INVALID);
                 return TAVRN_ROUTER_EVENT_INVALID;
             }
-            reset_status = aodv_core_reset_peer_incarnation(
-                router->aodv, &active_peer, now_ms);
+            reset_status = reset_aodv_peer_incarnation(router, &active_peer,
+                                                        now_ms);
+            if (!router_is_usable(router)) {
+                router->incarnation.counters.invalid_bootstrap_rejected++;
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
             if (reset_status == AODV_FAILURE_BUSY) {
                 (void)quarantine_peer_incarnation(
                     router, record, &active_peer, record->boot_nonce, 1u,
@@ -851,8 +934,10 @@ static tavrn_router_event_status_t handle_direct_bootstrap(
 
     /* The core reserves every RERR action before it invalidates a route.  The
      * link and direct binding are cleared only after that reservation succeeds. */
-    reset_status = aodv_core_reset_peer_incarnation(router->aodv, &active_peer,
-                                                     now_ms);
+    reset_status = reset_aodv_peer_incarnation(router, &active_peer, now_ms);
+    if (!router_is_usable(router)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
     if (reset_status == AODV_FAILURE_BUSY) {
         return quarantine_peer_incarnation(router, record, &active_peer, nonce, 0u,
                                            now_ms);
@@ -898,8 +983,12 @@ static tavrn_router_event_status_t retry_pending_incarnation_reset(
         return TAVRN_ROUTER_EVENT_INVALID;
     }
     if (pending->aodv_reset_committed == 0u) {
-        reset_status = aodv_core_reset_peer_incarnation(
-            router->aodv, &pending->direct_peer, now_ms);
+        reset_status = reset_aodv_peer_incarnation(router,
+                                                    &pending->direct_peer,
+                                                    now_ms);
+        if (!router_is_usable(router)) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
         if (reset_status == AODV_FAILURE_BUSY) {
             return TAVRN_ROUTER_EVENT_BUSY;
         }
@@ -1359,14 +1448,71 @@ static tavrn_router_event_status_t record_retry_exhausted(
     return process_failure_slot(router, (uint8_t)slot, now_ms);
 }
 
-static tavrn_router_event_status_t consume_owned_terminal(
-    tavrn_router_t *router, const tavrn_owned_data_event_t *owned,
-    tavrn_link_event_type_t event_type, uint32_t now_ms)
+static tavrn_router_data_terminal_disposition_t tavrn_router_data_terminal_hook(
+    tavrn_router_t *router, const tavrn_link_event_t *event, uint32_t now_ms)
 {
+    if (router->data_terminal_hook.handle == NULL) {
+        return TAVRN_ROUTER_DATA_TERMINAL_DECLINED;
+    }
+    return router->data_terminal_hook.handle(router->data_terminal_hook.context,
+                                             event, now_ms);
+}
+
+/* Keep the retry-specific internal name as the TC evidence boundary: legacy
+ * maintenance checks continue to identify the failed next hop here, while the
+ * installed policy receives the complete copied link event. */
+static tavrn_router_data_terminal_disposition_t
+tavrn_router_retry_exhausted_hook(tavrn_router_t *router,
+                                  const tavrn_link_event_t *event,
+                                  uint32_t now_ms)
+{
+    return tavrn_router_data_terminal_hook(router, event, now_ms);
+}
+
+static tavrn_router_event_status_t consume_owned_terminal(
+    tavrn_router_t *router, const tavrn_link_event_t *event, uint32_t now_ms)
+{
+    const tavrn_owned_data_event_t *owned;
     tavrn_router_event_status_t result = TAVRN_ROUTER_EVENT_OK;
     tavrn_router_event_status_t release_status;
+    tavrn_router_data_terminal_disposition_t disposition;
+    const tavrn_adva_t *failed_next_hop;
 
-    if (event_type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
+    if (event == NULL) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    owned = &event->detail.owned_data;
+    if (!link_data_is_valid(&owned->data) || !direct_peer_is_valid(&owned->next_hop)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    failed_next_hop = &owned->next_hop.adva;
+    disposition = event->type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED ?
+        tavrn_router_retry_exhausted_hook(router, event, now_ms) :
+        tavrn_router_data_terminal_hook(router, event, now_ms);
+    if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
+        disposition != TAVRN_ROUTER_DATA_TERMINAL_OBSERVED &&
+        disposition != TAVRN_ROUTER_DATA_TERMINAL_OWNED) {
+        latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (disposition == TAVRN_ROUTER_DATA_TERMINAL_OWNED) {
+        if (event->type != TAVRN_LINK_EVENT_RETRY_EXHAUSTED ||
+            owned->data.ownership != TAVRN_DATA_TRANSIT) {
+            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+        if (tavrn_link_v2_transfer_rx_custody_to_external(router->link,
+                                                           &owned->data,
+                                                           now_ms) !=
+            TAVRN_LINK_RESOLVE_OK) {
+            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+        return TAVRN_ROUTER_EVENT_OK;
+    }
+    if (event->type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
+
+        (void)failed_next_hop;
         result = record_retry_exhausted(router, owned, now_ms);
         if (result == TAVRN_ROUTER_EVENT_INVALID) {
             return result;
@@ -1476,7 +1622,21 @@ static int final_destination_is_local(const tavrn_router_t *router,
                                       const tavrn_link_data_t *data)
 {
     return logical_id_equal(&data->final_destination,
-                            &router->aodv->config.local_peer.logical_id);
+                             &router->aodv->config.local_peer.logical_id);
+}
+
+static tavrn_router_event_status_t rollback_candidate_reservation(
+    tavrn_router_t *router, tavrn_router_candidate_reservation_token_t token,
+    const tavrn_rx_data_candidate_t *candidate, uint32_t now_ms)
+{
+    if (router->candidate_reservation.rollback == NULL ||
+        router->candidate_reservation.rollback(
+            router->candidate_reservation.context, token, candidate, now_ms) !=
+            TAVRN_ROUTER_CANDIDATE_COMPLETION_OK) {
+        latch_router_fault(router, TAVRN_ROUTER_FAULT_CANDIDATE_ROLLBACK_INVALID);
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
 }
 
 static tavrn_router_event_status_t handle_data_candidate(
@@ -1489,6 +1649,9 @@ static tavrn_router_event_status_t handle_data_candidate(
     tavrn_router_event_status_t ingest_status;
     tavrn_router_delivery_status_t reserve_status;
     tavrn_router_delivery_token_t token = TAVRN_ROUTER_DELIVERY_TOKEN_NONE;
+    tavrn_router_candidate_reservation_status_t candidate_reserve_status;
+    tavrn_router_candidate_reservation_token_t candidate_token =
+        TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE;
     tavrn_link_resolve_status_t primary_resolve_status;
     uint8_t final_delivery;
 
@@ -1524,6 +1687,70 @@ static tavrn_router_event_status_t handle_data_candidate(
                                            NULL);
         return resolve_status == TAVRN_ROUTER_EVENT_INVALID ?
             TAVRN_ROUTER_EVENT_INVALID : TAVRN_ROUTER_EVENT_BUSY;
+    }
+
+    if (router->candidate_reservation.reserve != NULL) {
+        candidate_reserve_status = router->candidate_reservation.reserve(
+            router->candidate_reservation.context, candidate, &candidate_token, now_ms);
+        if (candidate_reserve_status == TAVRN_ROUTER_CANDIDATE_NOT_APPLICABLE) {
+            if (candidate_token != TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE) {
+                latch_router_fault(
+                    router, TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+        } else if (candidate_reserve_status == TAVRN_ROUTER_CANDIDATE_BUSY) {
+            if (candidate_token != TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE) {
+                latch_router_fault(
+                    router, TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            resolve_status = resolve_candidate(router, candidate, TAVRN_RX_BUSY, now_ms,
+                                               NULL);
+            return resolve_status == TAVRN_ROUTER_EVENT_INVALID ?
+                TAVRN_ROUTER_EVENT_INVALID : TAVRN_ROUTER_EVENT_BUSY;
+        } else if (candidate_reserve_status == TAVRN_ROUTER_CANDIDATE_INVALID) {
+            (void)resolve_candidate(router, candidate, TAVRN_RX_REJECTED, now_ms, NULL);
+            latch_router_fault(router,
+                               TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        } else if (candidate_reserve_status == TAVRN_ROUTER_CANDIDATE_RESERVED) {
+            if (candidate_token == TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE ||
+                router->candidate_reservation.commit == NULL ||
+                router->candidate_reservation.rollback == NULL) {
+                latch_router_fault(
+                    router, candidate_token ==
+                            TAVRN_ROUTER_CANDIDATE_RESERVATION_TOKEN_NONE ?
+                        TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_TOKEN_ZERO :
+                        TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            resolve_status = resolve_candidate(router, candidate, TAVRN_RX_ACCEPTED,
+                                               now_ms, &primary_resolve_status);
+            if (primary_resolve_status != TAVRN_LINK_RESOLVE_OK) {
+                (void)rollback_candidate_reservation(router, candidate_token, candidate,
+                                                      now_ms);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            if (router->candidate_reservation.commit(
+                    router->candidate_reservation.context, candidate_token, candidate,
+                    now_ms) != TAVRN_ROUTER_CANDIDATE_COMPLETION_OK) {
+                latch_router_fault(router, TAVRN_ROUTER_FAULT_CANDIDATE_COMMIT_INVALID);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            if (tavrn_link_v2_transfer_rx_custody_to_external(router->link,
+                                                               &candidate->data,
+                                                               now_ms) !=
+                TAVRN_LINK_RESOLVE_OK) {
+                latch_router_fault(router, TAVRN_ROUTER_FAULT_CANDIDATE_COMMIT_INVALID);
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            observe_data(router, &candidate->transmitter, &candidate->data, now_ms);
+            return resolve_status;
+        } else {
+            latch_router_fault(router,
+                               TAVRN_ROUTER_FAULT_CANDIDATE_RESERVATION_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
     }
 
     memset(&input, 0, sizeof(input));
@@ -1692,11 +1919,60 @@ static tavrn_router_event_status_t handle_control(
                                                   TAVRN_ROUTER_EVENT_IGNORED;
 }
 
+aodv_status_t tavrn_router_ingest_rrep_for_attempt(
+    tavrn_router_t *router, const tavrn_rx_control_event_t *control_event,
+    const aodv_rreq_attempt_t *attempt, uint32_t now_ms)
+{
+    aodv_control_input_t input;
+    aodv_status_t ingest_status;
+    tavrn_router_event_status_t failure_status;
+    tavrn_router_frame_observation_t frame_observation;
+
+    if (!router_is_usable(router) || control_event == NULL || attempt == NULL ||
+        control_event->control.type != TAVRN_WIRE_E_RREP) {
+        return AODV_STATUS_INVALID;
+    }
+    if (router_is_rejoining(router)) {
+        return AODV_STATUS_REJOINING;
+    }
+    if (direct_peer_route_barred(router, &control_event->transmitter)) {
+        return AODV_STATUS_BUSY;
+    }
+    failure_status = gate_oldest_failure(router, now_ms);
+    if (failure_status == TAVRN_ROUTER_EVENT_BUSY) {
+        return AODV_STATUS_BUSY;
+    }
+    if (failure_status != TAVRN_ROUTER_EVENT_OK) {
+        return AODV_STATUS_INVALID;
+    }
+    memset(&input, 0, sizeof(input));
+    input.transmitter = control_event->transmitter;
+    input.control = control_event->control;
+    ingest_status = aodv_core_ingest_rrep_for_attempt(router->aodv, &input,
+                                                       attempt, now_ms);
+    if (ingest_status != AODV_STATUS_OK && ingest_status != AODV_STATUS_DUPLICATE) {
+        return ingest_status;
+    }
+    {
+        int peer_index = incarnation_peer_index(router, &control_event->transmitter.adva);
+
+        if (peer_index >= 0 && router->incarnation.peers[(uint8_t)peer_index]
+                .control_dedupe_count != 0xffu) {
+            router->incarnation.peers[(uint8_t)peer_index].control_dedupe_count++;
+        }
+    }
+    if (make_control_observation(control_event, &frame_observation)) {
+        (void)tavrn_router_observe_frame(router, &frame_observation, now_ms);
+    }
+    return ingest_status;
+}
+
 static tavrn_router_event_status_t consume_link_output(
     tavrn_router_t *router, const tavrn_link_event_t *event, uint32_t now_ms)
 {
     tavrn_router_frame_observation_t frame_observation;
     tavrn_router_event_status_t release_status;
+    tavrn_router_data_terminal_disposition_t disposition;
 
     if (!router_is_usable(router) || event == NULL) {
         return TAVRN_ROUTER_EVENT_INVALID;
@@ -1707,6 +1983,16 @@ static tavrn_router_event_status_t consume_link_output(
     case TAVRN_LINK_EVENT_RX_CONTROL:
         return handle_control(router, &event->detail.control, now_ms);
     case TAVRN_LINK_EVENT_CUSTODY_TRANSFERRED:
+        if (!link_data_is_valid(&event->detail.transferred_data.data) ||
+            !direct_peer_is_valid(&event->detail.transferred_data.next_hop)) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+        disposition = tavrn_router_data_terminal_hook(router, event, now_ms);
+        if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
+            disposition != TAVRN_ROUTER_DATA_TERMINAL_OBSERVED) {
+            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
         if (event->detail.transferred_data.status != TAVRN_HACK_ACCEPTED &&
             event->detail.transferred_data.status != TAVRN_HACK_DUPLICATE) {
             release_status = release_transit_custody(
@@ -1728,8 +2014,7 @@ static tavrn_router_event_status_t consume_link_output(
     case TAVRN_LINK_EVENT_RETRY_EXHAUSTED:
     case TAVRN_LINK_EVENT_RADIO_FAULT_TERMINAL:
     case TAVRN_LINK_EVENT_SERVICE_FAULT_TERMINAL:
-        return consume_owned_terminal(router, &event->detail.owned_data,
-                                      event->type, now_ms);
+        return consume_owned_terminal(router, event, now_ms);
     case TAVRN_LINK_EVENT_NONE:
         return TAVRN_ROUTER_EVENT_IGNORED;
     default:
@@ -1805,6 +2090,69 @@ tavrn_router_application_hook_status_t tavrn_router_set_application_hooks(
         router->application = *application_or_null;
     }
     return TAVRN_ROUTER_APPLICATION_HOOK_OK;
+}
+
+tavrn_router_event_status_t tavrn_router_set_candidate_reservation_port(
+    tavrn_router_t *router,
+    const tavrn_router_candidate_reservation_port_t *port_or_null)
+{
+    if (!router_is_usable(router) ||
+        (port_or_null != NULL &&
+         (port_or_null->reserve == NULL || port_or_null->commit == NULL ||
+          port_or_null->rollback == NULL))) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    memset(&router->candidate_reservation, 0,
+           sizeof(router->candidate_reservation));
+    if (port_or_null != NULL) {
+        router->candidate_reservation = *port_or_null;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
+}
+
+tavrn_router_event_status_t tavrn_router_set_control_interceptor(
+    tavrn_router_t *router,
+    const tavrn_router_control_interceptor_t *interceptor_or_null)
+{
+    if (!router_is_usable(router)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (interceptor_or_null != NULL && interceptor_or_null->receive == NULL) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    memset(&router->control_interceptor, 0, sizeof(router->control_interceptor));
+    if (interceptor_or_null != NULL) {
+        router->control_interceptor = *interceptor_or_null;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
+}
+
+tavrn_router_event_status_t tavrn_router_set_control_augmentation(
+    tavrn_router_t *router,
+    const tavrn_router_control_augmentation_t *augmentation_or_null)
+{
+    if (!router_is_usable(router)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    memset(&router->control_augmentation, 0, sizeof(router->control_augmentation));
+    if (augmentation_or_null != NULL) {
+        router->control_augmentation = *augmentation_or_null;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
+}
+
+tavrn_router_event_status_t tavrn_router_set_data_terminal_hook(
+    tavrn_router_t *router, const tavrn_router_data_terminal_hook_t *hook_or_null)
+{
+    if (!router_is_usable(router) ||
+        (hook_or_null != NULL && hook_or_null->handle == NULL)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    memset(&router->data_terminal_hook, 0, sizeof(router->data_terminal_hook));
+    if (hook_or_null != NULL) {
+        router->data_terminal_hook = *hook_or_null;
+    }
+    return TAVRN_ROUTER_EVENT_OK;
 }
 
 tavrn_router_event_status_t tavrn_router_handle_link_event(
@@ -1899,7 +2247,7 @@ tavrn_router_hello_status_t tavrn_router_enqueue_ordinary_hello(
     link_status = tavrn_link_v2_send_control(router->link, control, NULL, 0u,
                                               now_ms, &local_outcome);
     if (local_outcome.type != TAVRN_LINK_EVENT_NONE) {
-        outcome_status = consume_link_output(router, &local_outcome, now_ms);
+        outcome_status = tavrn_router_handle_link_event(router, &local_outcome, now_ms);
     }
     if (outcome_status == TAVRN_ROUTER_EVENT_INVALID) {
         return TAVRN_ROUTER_HELLO_INVALID;
@@ -1923,7 +2271,239 @@ tavrn_router_hello_status_t tavrn_router_cancel_ordinary_hello(
     }
     return tavrn_link_v2_cancel_queued_control(router->link, control) ==
             TAVRN_LINK_RESOLVE_OK ? TAVRN_ROUTER_HELLO_OK :
-                                     TAVRN_ROUTER_HELLO_INVALID;
+                                       TAVRN_ROUTER_HELLO_INVALID;
+}
+
+tavrn_router_tracked_rreq_status_t tavrn_router_enqueue_tracked_rreq(
+    tavrn_router_t *router, const aodv_action_t *action, uint16_t token,
+    uint32_t now_ms, uint16_t *evicted_token_out)
+{
+    const aodv_control_action_t *control_action;
+    const aodv_rreq_attempt_t *attempt;
+    const tavrn_validated_control_t *control;
+    tavrn_link_send_status_t link_status;
+    ble_mesh_tx_token_t evicted = BLE_MESH_TX_TOKEN_NONE;
+
+    if (evicted_token_out != NULL) {
+        *evicted_token_out = BLE_MESH_TX_TOKEN_NONE;
+    }
+    if (!ordinary_hello_router_ready(router) || action == NULL || token < 0x8000u ||
+        action->type != AODV_ACTION_SEND_RREQ) {
+        return TAVRN_ROUTER_TRACKED_RREQ_INVALID;
+    }
+    control_action = &action->detail.control;
+    attempt = &control_action->rreq_attempt;
+    control = &control_action->control;
+    if (control_action->controlled_flood != 1u ||
+        control_action->rreq_attempt_present != AODV_RREQ_ATTEMPT_PRESENT ||
+        attempt->origin.width != TAVRN_IDENTITY_SID8 ||
+        attempt->destination.width != TAVRN_IDENTITY_SID8 ||
+        attempt->origin.value != router->link->config.local_peer.logical_id.value ||
+        attempt->request_id == 0u || attempt->initial_scope == 0u ||
+        attempt->current_scope != attempt->initial_scope ||
+        control->type != TAVRN_WIRE_E_RREQ || control->pdu_len != 15u ||
+        (control->pdu[5] & 0x80u) == 0u || control->pdu[6] !=
+            (uint8_t)(attempt->current_scope << 4) ||
+        control->pdu[7] != (uint8_t)attempt->origin.value ||
+        ((uint16_t)control->pdu[8] | ((uint16_t)control->pdu[9] << 8)) !=
+            attempt->request_id || control->pdu[10] != (uint8_t)attempt->destination.value) {
+        return TAVRN_ROUTER_TRACKED_RREQ_INVALID;
+    }
+    link_status = tavrn_link_v2_send_tracked_control(router->link, control, NULL,
+                                                      token, now_ms, &evicted);
+    if (evicted_token_out != NULL) {
+        *evicted_token_out = evicted;
+    }
+    if (link_status == TAVRN_LINK_SEND_OK) {
+        tavrn_router_note_local_broadcast(router, now_ms);
+        return TAVRN_ROUTER_TRACKED_RREQ_OK;
+    }
+    if (link_status == TAVRN_LINK_SEND_BUSY || link_status == TAVRN_LINK_SEND_NO_SLOT) {
+        return TAVRN_ROUTER_TRACKED_RREQ_BUSY;
+    }
+    if (link_status == TAVRN_LINK_SEND_LOCAL_NOT_ATTEMPTED) {
+        return TAVRN_ROUTER_TRACKED_RREQ_LOCAL_NOT_ATTEMPTED;
+    }
+    return TAVRN_ROUTER_TRACKED_RREQ_INVALID;
+}
+
+static void clear_retained_action(tavrn_router_t *router);
+static int action_is_control(aodv_action_type_t type);
+
+tavrn_router_event_status_t tavrn_router_retry_retained_control(
+    tavrn_router_t *router, const tavrn_validated_control_t *base,
+    const tavrn_validated_control_t *sent,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms)
+{
+    const aodv_control_action_t *retained = NULL;
+    tavrn_link_event_t local_outcome;
+    tavrn_link_send_status_t link_status;
+    tavrn_router_event_status_t outcome_status = TAVRN_ROUTER_EVENT_IGNORED;
+    tavrn_router_control_augmentation_status_t augmentation_status =
+        TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
+    ble_mesh_tx_token_t scheduler_token = BLE_MESH_TX_TOKEN_NONE;
+
+    if (!router_is_usable(router) || base == NULL || sent == NULL ||
+        controlled_flood > 1u ||
+        (controlled_flood == 0u && next_hop_or_null == NULL)) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (router->retained_action_valid != 0u) {
+        if (!action_is_control(router->retained_action.type)) {
+            return TAVRN_ROUTER_EVENT_BUSY;
+        }
+        retained = &router->retained_action.detail.control;
+        if (!controls_equal(base, &retained->control) ||
+            retained->controlled_flood != controlled_flood ||
+            (controlled_flood == 0u &&
+             memcmp(next_hop_or_null, &retained->next_hop,
+                    sizeof(*next_hop_or_null)) != 0)) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+    }
+    memset(&local_outcome, 0, sizeof(local_outcome));
+    link_status = tavrn_link_v2_send_control_tracked(
+        router->link, sent, next_hop_or_null, controlled_flood, now_ms,
+        &local_outcome, &scheduler_token);
+    if (router->control_augmentation.admitted != NULL) {
+        augmentation_status = router->control_augmentation.admitted(
+            router->control_augmentation.context, base, sent, next_hop_or_null,
+            controlled_flood, link_status, scheduler_token, now_ms);
+    }
+    if (local_outcome.type != TAVRN_LINK_EVENT_NONE) {
+        outcome_status = tavrn_router_handle_link_event(router, &local_outcome, now_ms);
+    }
+    if (link_status == TAVRN_LINK_SEND_BUSY || link_status == TAVRN_LINK_SEND_NO_SLOT) {
+        return augmentation_status == TAVRN_ROUTER_CONTROL_AUGMENTATION_INVALID ||
+               outcome_status == TAVRN_ROUTER_EVENT_INVALID ?
+            TAVRN_ROUTER_EVENT_INVALID : TAVRN_ROUTER_EVENT_BUSY;
+    }
+    if (link_status != TAVRN_LINK_SEND_OK ||
+        augmentation_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK ||
+        outcome_status == TAVRN_ROUTER_EVENT_INVALID) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    if (controlled_flood != 0u) {
+        tavrn_router_note_local_broadcast(router, now_ms);
+    }
+    if (retained != NULL && retained->token != 0u) {
+        if (aodv_core_mark_action_sent(router->aodv, retained->token, now_ms) !=
+            AODV_STATUS_OK) {
+            latch_router_fault(router, TAVRN_ROUTER_FAULT_CONTROL_CANCEL_INVALID);
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+    }
+    if (retained != NULL) {
+        clear_retained_action(router);
+    }
+    return outcome_status;
+}
+
+tavrn_router_route_status_t tavrn_router_route_to_subject(
+    const tavrn_router_t *router, const tavrn_logical_id_t *subject,
+    uint32_t now_ms, aodv_route_snapshot_t *route_out)
+{
+    aodv_route_snapshot_t route;
+
+    if (route_out != NULL) {
+        memset(route_out, 0, sizeof(*route_out));
+    }
+    if (!router_is_usable(router) || subject == NULL || route_out == NULL ||
+        subject->width != router->link->config.local_peer.logical_id.width ||
+        !logical_id_is_valid(subject) ||
+        aodv_core_route_snapshot(router->aodv, subject, &route) !=
+            AODV_ROUTE_QUERY_FOUND ||
+        route.state != AODV_ROUTE_VALID || time_due(now_ms, route.expires_at_ms)) {
+        return TAVRN_ROUTER_ROUTE_NOT_FOUND;
+    }
+    *route_out = route;
+    return TAVRN_ROUTER_ROUTE_OK;
+}
+
+tavrn_router_reforward_status_t tavrn_router_reforward_transit_data(
+    tavrn_router_t *router, const tavrn_link_data_t *data, uint32_t now_ms,
+    tavrn_direct_peer_t *next_hop_out)
+{
+    aodv_route_snapshot_t route;
+    tavrn_link_event_t local_outcome;
+    tavrn_link_send_status_t send_status;
+    tavrn_router_event_status_t outcome_status = TAVRN_ROUTER_EVENT_IGNORED;
+    aodv_route_query_status_t route_status;
+
+    if (next_hop_out != NULL) {
+        memset(next_hop_out, 0, sizeof(*next_hop_out));
+    }
+    if (!router_is_usable(router) || !link_data_is_valid(data) ||
+        data->ownership != TAVRN_DATA_TRANSIT ||
+        data->final_destination.width !=
+            router->link->config.local_peer.logical_id.width) {
+        return TAVRN_ROUTER_REFORWARD_INVALID;
+    }
+    if (router_is_rejoining(router) ||
+        logical_id_route_barred(router, &data->final_destination)) {
+        return TAVRN_ROUTER_REFORWARD_BUSY;
+    }
+    {
+        tavrn_router_event_status_t failure_status =
+            gate_oldest_failure(router, now_ms);
+
+        if (failure_status == TAVRN_ROUTER_EVENT_BUSY) {
+            return TAVRN_ROUTER_REFORWARD_BUSY;
+        }
+        if (failure_status != TAVRN_ROUTER_EVENT_OK) {
+            return TAVRN_ROUTER_REFORWARD_INVALID;
+        }
+    }
+    route_status = aodv_core_route_snapshot(router->aodv, &data->final_destination,
+                                             &route);
+    if (route_status == AODV_ROUTE_QUERY_INVALID) {
+        return TAVRN_ROUTER_REFORWARD_INVALID;
+    }
+    if (route_status != AODV_ROUTE_QUERY_FOUND) {
+        return TAVRN_ROUTER_REFORWARD_NOT_FOUND;
+    }
+    if (route.state != AODV_ROUTE_VALID || time_due(now_ms, route.expires_at_ms)) {
+        return TAVRN_ROUTER_REFORWARD_NOT_FOUND;
+    }
+    if (!direct_peer_is_valid(&route.next_hop)) {
+        return TAVRN_ROUTER_REFORWARD_INVALID;
+    }
+    if (direct_peer_route_barred(router, &route.next_hop)) {
+        return TAVRN_ROUTER_REFORWARD_BUSY;
+    }
+    memset(&local_outcome, 0, sizeof(local_outcome));
+    send_status = tavrn_link_v2_send_unicast(router->link, &route.next_hop, data,
+                                              now_ms, &local_outcome);
+    if (local_outcome.type != TAVRN_LINK_EVENT_NONE) {
+        outcome_status = tavrn_router_handle_link_event(router, &local_outcome, now_ms);
+    }
+    if (outcome_status == TAVRN_ROUTER_EVENT_INVALID) {
+        return TAVRN_ROUTER_REFORWARD_INVALID;
+    }
+    if (send_status == TAVRN_LINK_SEND_OK) {
+        if (next_hop_out != NULL) {
+            *next_hop_out = route.next_hop;
+        }
+        return TAVRN_ROUTER_REFORWARD_OK;
+    }
+    if (send_status == TAVRN_LINK_SEND_BUSY ||
+        send_status == TAVRN_LINK_SEND_NO_SLOT) {
+        return TAVRN_ROUTER_REFORWARD_BUSY;
+    }
+    return TAVRN_ROUTER_REFORWARD_INVALID;
+}
+
+tavrn_router_event_status_t tavrn_router_release_transit_pin(
+    tavrn_router_t *router, const tavrn_link_data_t *data, uint32_t now_ms)
+{
+    /* A failed reforward may already have latched a router fault, but its exact
+     * inbound transit pin still has one bounded terminal cleanup path. */
+    if (!router_is_initialized(router) || !link_data_is_valid(data) ||
+        data->ownership != TAVRN_DATA_TRANSIT) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    return release_transit_custody(router, data, now_ms);
 }
 
 void tavrn_router_note_local_broadcast(tavrn_router_t *router,
@@ -2016,6 +2596,8 @@ static tavrn_router_event_status_t router_handle_scheduler_event(
     tavrn_codec_result_t decode_status = TAVRN_CODEC_INVALID_ARGUMENT;
     tavrn_link_counters_t counters_before;
     const tavrn_link_counters_t *counters_after;
+    tavrn_router_control_augmentation_status_t completion_status =
+        TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
     uint8_t data_admitted;
     uint8_t flood_admitted;
     uint8_t data_busy;
@@ -2066,8 +2648,39 @@ static tavrn_router_event_status_t router_handle_scheduler_event(
     link_status = tavrn_link_v2_on_scheduler_event(router->link, event, now_ms,
                                                      &link_event);
     capture_scheduler_link_step(trace, link_status, &link_event);
+    if ((event->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
+         event->type == BLE_MESH_SCHED_EVENT_TX_FAILED) &&
+        router->control_augmentation.completed != NULL) {
+        completion_status = router->control_augmentation.completed(
+            router->control_augmentation.context, event, now_ms);
+    }
     if (link_event.type != TAVRN_LINK_EVENT_NONE) {
-        output_status = consume_link_output(router, &link_event, now_ms);
+        if (link_event.type == TAVRN_LINK_EVENT_RX_CONTROL &&
+            router->control_augmentation.received != NULL) {
+            router->control_augmentation.received(
+                router->control_augmentation.context, &link_event.detail.control, now_ms);
+        }
+        if (link_event.type == TAVRN_LINK_EVENT_RX_CONTROL &&
+            router->control_interceptor.receive != NULL) {
+            tavrn_router_control_intercept_status_t intercept_status =
+                router->control_interceptor.receive(
+                    router->control_interceptor.context, &link_event.detail.control, now_ms);
+
+            if (intercept_status == TAVRN_ROUTER_CONTROL_INTERCEPT_CONSUMED) {
+                output_status = TAVRN_ROUTER_EVENT_OK;
+            } else if (intercept_status == TAVRN_ROUTER_CONTROL_INTERCEPT_BUSY) {
+                output_status = TAVRN_ROUTER_EVENT_BUSY;
+            } else if (intercept_status == TAVRN_ROUTER_CONTROL_INTERCEPT_INVALID) {
+                output_status = TAVRN_ROUTER_EVENT_INVALID;
+            } else {
+                output_status = consume_link_output(router, &link_event, now_ms);
+            }
+        } else {
+            output_status = consume_link_output(router, &link_event, now_ms);
+        }
+    }
+    if (completion_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK) {
+        output_status = TAVRN_ROUTER_EVENT_INVALID;
     }
     counters_after = tavrn_link_v2_counters(router->link);
     if (counters_after == NULL) {
@@ -2165,7 +2778,8 @@ static aodv_status_t router_submit_application(
     return aodv_core_submit_application(router->aodv, data, now_ms);
 }
 
-static aodv_status_t router_tick(tavrn_router_t *router, uint32_t now_ms)
+static aodv_status_t router_tick(tavrn_router_t *router, uint32_t now_ms,
+                                 tavrn_router_tick_trace_t *trace)
 {
     tavrn_link_event_t output;
     tavrn_link_step_status_t link_status;
@@ -2212,6 +2826,14 @@ static aodv_status_t router_tick(tavrn_router_t *router, uint32_t now_ms)
     }
     memset(&output, 0, sizeof(output));
     link_status = tavrn_link_v2_tick(router->link, now_ms, &output);
+    if (trace != NULL) {
+        trace->link_step_status = link_status;
+        trace->link_step_present = TAVRN_ROUTER_TRACE_PRESENT;
+        if (output.type != TAVRN_LINK_EVENT_NONE) {
+            trace->link_event = output;
+            trace->link_event_present = TAVRN_ROUTER_TRACE_PRESENT;
+        }
+    }
     if (link_status == TAVRN_LINK_STEP_INVALID) {
         return AODV_STATUS_INVALID;
     }
@@ -2275,14 +2897,13 @@ static tavrn_router_event_status_t dispose_data_action(
     tavrn_router_t *router, const aodv_data_action_t *data_action,
     uint32_t now_ms)
 {
-    tavrn_owned_data_event_t owned;
+    tavrn_link_event_t event;
 
-    memset(&owned, 0, sizeof(owned));
-    owned.next_hop = data_action->next_hop;
-    owned.data = data_action->data;
-    return consume_owned_terminal(router, &owned,
-                                  TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED,
-                                  now_ms);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED;
+    event.detail.owned_data.next_hop = data_action->next_hop;
+    event.detail.owned_data.data = data_action->data;
+    return consume_owned_terminal(router, &event, now_ms);
 }
 
 static tavrn_router_event_status_t router_dispatch(
@@ -2368,18 +2989,53 @@ static tavrn_router_event_status_t router_dispatch(
         const aodv_control_action_t *control = &action.detail.control;
         const tavrn_direct_peer_t *next_hop = control->controlled_flood != 0u ?
             NULL : &control->next_hop;
+        tavrn_validated_control_t augmented;
+        const tavrn_validated_control_t *control_to_send = &control->control;
+        tavrn_router_control_augmentation_status_t admission_status =
+            TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
+        ble_mesh_tx_token_t scheduler_token = BLE_MESH_TX_TOKEN_NONE;
+        uint8_t decorated = 0u;
+
+        if (router->control_augmentation.prepare != NULL) {
+            tavrn_router_control_augmentation_status_t augmentation_status;
+
+            memset(&augmented, 0, sizeof(augmented));
+            augmentation_status = router->control_augmentation.prepare(
+                router->control_augmentation.context, &control->control, &augmented, now_ms);
+            if (augmentation_status == TAVRN_ROUTER_CONTROL_AUGMENTATION_BUSY) {
+                return TAVRN_ROUTER_EVENT_BUSY;
+            }
+            if (augmentation_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK) {
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            control_to_send = &augmented;
+            decorated = controls_equal(control_to_send, &control->control) ? 0u : 1u;
+        }
 
         memset(&local_outcome, 0, sizeof(local_outcome));
-        link_status = tavrn_link_v2_send_control(router->link, &control->control,
-                                                   next_hop, control->controlled_flood,
-                                                   now_ms, &local_outcome);
+        if (decorated != 0u) {
+            link_status = tavrn_link_v2_send_control_tracked(
+                router->link, control_to_send, next_hop, control->controlled_flood,
+                now_ms, &local_outcome, &scheduler_token);
+        } else {
+            link_status = tavrn_link_v2_send_control(router->link, control_to_send,
+                                                       next_hop, control->controlled_flood,
+                                                       now_ms, &local_outcome);
+        }
+        if (router->control_augmentation.admitted != NULL) {
+            admission_status = router->control_augmentation.admitted(
+                router->control_augmentation.context, &control->control,
+                control_to_send, next_hop, control->controlled_flood, link_status,
+                scheduler_token, now_ms);
+        }
         capture_dispatch_link_result(trace, link_status, &local_outcome);
         report_rreq_link_enqueue(router->aodv, &action, link_status, now_ms, trace);
         if (local_outcome.type != TAVRN_LINK_EVENT_NONE) {
-            outcome_status = consume_link_output(router, &local_outcome, now_ms);
+            outcome_status = tavrn_router_handle_link_event(router, &local_outcome, now_ms);
         }
         if (link_status == TAVRN_LINK_SEND_BUSY || link_status == TAVRN_LINK_SEND_NO_SLOT) {
-            return outcome_status == TAVRN_ROUTER_EVENT_INVALID ?
+            return admission_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK ||
+                   outcome_status == TAVRN_ROUTER_EVENT_INVALID ?
                 TAVRN_ROUTER_EVENT_INVALID : TAVRN_ROUTER_EVENT_BUSY;
         }
         if (link_status == TAVRN_LINK_SEND_OK) {
@@ -2398,8 +3054,20 @@ static tavrn_router_event_status_t router_dispatch(
                 }
             }
             clear_retained_action(router);
-            return failure_blocked != 0u && outcome_status != TAVRN_ROUTER_EVENT_INVALID ?
+            if (admission_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK ||
+                outcome_status == TAVRN_ROUTER_EVENT_INVALID) {
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            return failure_blocked != 0u ?
                 TAVRN_ROUTER_EVENT_BUSY : outcome_status;
+        }
+        /* A decorated control has one bounded FULL owner which retained the
+         * exact bytes.  Keep this already-polled AODV action for that owner's
+         * direct retry rather than allocating a second route action. */
+        if (decorated != 0u) {
+            return admission_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK ||
+                   outcome_status == TAVRN_ROUTER_EVENT_INVALID ?
+                TAVRN_ROUTER_EVENT_INVALID : TAVRN_ROUTER_EVENT_BUSY;
         }
         if (control->token != 0u) {
             mark_status = aodv_core_cancel_unsent_action(router->aodv,
@@ -2692,7 +3360,8 @@ aodv_status_t tavrn_router_tick_ex(tavrn_router_t *router, uint32_t now_ms,
     aodv_status_t status;
 
     begin_phase_trace(trace_out, TAVRN_ROUTER_TRACE_TICK, now_ms);
-    status = router_tick(router, now_ms);
+    status = router_tick(router, now_ms,
+                         trace_out != NULL ? &trace_out->detail.tick : NULL);
     if (trace_out != NULL) {
         trace_out->detail.tick.status = status;
     }

@@ -17,6 +17,7 @@
 
 #define ROUTED_CYCLE_TRACE_CAPACITY       9u
 #define ROUTED_CYCLE_DIAGNOSTIC_CAPACITY  8u
+#define ROUTED_CYCLE_RETRY_LOG_CAPACITY   1u
 #define ROUTED_CYCLE_RREQ_TELEMETRY_CAPACITY 8u
 #define ROUTED_CYCLE_GTT_SNAPSHOT_CAPACITY 16u
 #define ROUTED_CYCLE_HALF_RANGE 0x80000000u
@@ -25,6 +26,8 @@ typedef char routed_cycle_trace_capacity_guard[
     (ROUTED_CYCLE_TRACE_CAPACITY == 9u) ? 1 : -1];
 typedef char routed_cycle_diagnostic_capacity_guard[
     (ROUTED_CYCLE_DIAGNOSTIC_CAPACITY == 8u) ? 1 : -1];
+typedef char routed_cycle_retry_log_capacity_guard[
+    (ROUTED_CYCLE_RETRY_LOG_CAPACITY == 1u) ? 1 : -1];
 typedef char routed_cycle_rreq_telemetry_capacity_guard[
     (ROUTED_CYCLE_RREQ_TELEMETRY_CAPACITY == 8u) ? 1 : -1];
 typedef char routed_cycle_gtt_snapshot_capacity_guard[
@@ -279,6 +282,27 @@ typedef struct routed_cycle_diagnostic_queue {
     uint8_t count;
 } routed_cycle_diagnostic_queue_t;
 
+/* Healthy link-break telemetry is deliberately independent of fault diagnostics:
+ * one complete retry-exhausted event is retained by value, with retain-oldest /
+ * drop-newest overflow.  It owns no wait, timer, RTOS, or protocol callback. */
+typedef enum routed_cycle_retry_log_status {
+    ROUTED_CYCLE_RETRY_LOG_OK = 0,
+    ROUTED_CYCLE_RETRY_LOG_EMPTY,
+    ROUTED_CYCLE_RETRY_LOG_DROPPED,
+    ROUTED_CYCLE_RETRY_LOG_INVALID,
+} routed_cycle_retry_log_status_t;
+
+typedef struct routed_cycle_retry_log_mailbox {
+    tavrn_link_event_t event;
+    uint32_t dropped_count;
+    uint8_t pending;
+} routed_cycle_retry_log_mailbox_t;
+
+typedef struct routed_cycle_retry_log_snapshot {
+    uint32_t dropped_count;
+    uint8_t pending;
+} routed_cycle_retry_log_snapshot_t;
+
 /* FULL-only code supplies all semantically retained GTT entries (including
  * self, hard-expired members, and unexpired departed tombstones) through this
  * common copied representation. */
@@ -375,6 +399,15 @@ routed_cycle_result_t routed_cycle_diagnostic_enqueue(
     routed_cycle_diagnostic_queue_t *queue, const routed_cycle_trace_t *trace);
 routed_cycle_result_t routed_cycle_diagnostic_dequeue(
     routed_cycle_diagnostic_queue_t *queue, routed_cycle_trace_t *trace_out);
+
+void routed_cycle_retry_log_init(routed_cycle_retry_log_mailbox_t *mailbox);
+routed_cycle_retry_log_status_t routed_cycle_retry_log_offer(
+    routed_cycle_retry_log_mailbox_t *mailbox, const tavrn_link_event_t *event);
+routed_cycle_retry_log_status_t routed_cycle_retry_log_take(
+    routed_cycle_retry_log_mailbox_t *mailbox, tavrn_link_event_t *event_out);
+routed_cycle_retry_log_status_t routed_cycle_retry_log_snapshot(
+    const routed_cycle_retry_log_mailbox_t *mailbox,
+    routed_cycle_retry_log_snapshot_t *snapshot_out);
 
 void routed_cycle_rreq_queue_init(routed_cycle_rreq_queue_t *queue);
 routed_cycle_result_t routed_cycle_rreq_enqueue(

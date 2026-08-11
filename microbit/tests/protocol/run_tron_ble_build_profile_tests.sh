@@ -83,6 +83,57 @@ require_unique_keys() {
     fi
 }
 
+require_compile_definition_once() {
+    local commands="$1"
+    local source="$2"
+    local definition="$3"
+    local target="${4:-}"
+
+    python3 - "$commands" "$source" "$definition" "$target" <<'PY'
+import json
+import pathlib
+import shlex
+import sys
+
+commands_path = pathlib.Path(sys.argv[1])
+source = pathlib.Path(sys.argv[2]).resolve()
+definition = "-D" + sys.argv[3]
+target = sys.argv[4]
+entries = json.loads(commands_path.read_text(encoding="utf-8"))
+matches = []
+for entry in entries:
+    if target and (not isinstance(entry.get("output"), str) or
+                   "CMakeFiles/%s.dir/" % target not in entry["output"]):
+        continue
+    candidate = pathlib.Path(entry["file"])
+    if not candidate.is_absolute():
+        candidate = pathlib.Path(entry.get("directory", commands_path.parent)) / candidate
+    if candidate.resolve() == source:
+        matches.append(entry)
+if len(matches) != 1:
+    raise SystemExit("expected one compile command for %s, found %d" % (source, len(matches)))
+entry = matches[0]
+arguments = entry.get("arguments")
+if not isinstance(arguments, list):
+    arguments = shlex.split(entry.get("command", ""))
+definitions = [argument for argument in arguments
+               if argument.startswith("-DINITTASK_STKSZ")]
+if definitions != [definition]:
+    raise SystemExit("compile command for %s has %r, expected [%r]" %
+                     (source, definitions, definition))
+PY
+}
+
+require_no_initial_task_override() {
+    local commands="$1"
+
+    if grep -Fq -- '-DINITTASK_STKSZ' "$commands"; then
+        printf 'non-routed compile commands unexpectedly override INITTASK_STKSZ: %s\n' \
+            "$commands" >&2
+        return 1
+    fi
+}
+
 require_timer_profile_surface() {
     local profile="$1"
     local manifest="$2"
@@ -263,11 +314,17 @@ run_expiry_resource_acceptance() {
     local full_fast_su full_fast_disassembly full_fast_config full_fast_stack_gate full_fast_gate
     local full_fast_stack_log full_fast_baseline_of_record full_fast_before_inventory
     local full_fast_after_inventory full_fast_inventory_drift full_fast_stack_chain
+    local full_fast_map_unallocated_ram full_fast_runtime_ram_reserve full_fast_post_reserve_ram
+    local full_fast_initial_task_stack full_fast_initial_task_static_frame
+    local full_fast_initial_task_logical_headroom
     local full_balanced_elf full_balanced_map full_balanced_resource full_balanced_sources
     local full_balanced_commands full_balanced_su full_balanced_disassembly full_balanced_config
     local full_balanced_stack_gate full_balanced_gate full_balanced_stack_log
     local full_balanced_baseline_of_record full_balanced_before_inventory
     local full_balanced_after_inventory full_balanced_inventory_drift full_balanced_stack_chain
+    local full_balanced_map_unallocated_ram full_balanced_runtime_ram_reserve full_balanced_post_reserve_ram
+    local full_balanced_initial_task_stack full_balanced_initial_task_static_frame
+    local full_balanced_initial_task_logical_headroom
     local aodv_elf aodv_map aodv_sources aodv_commands aodv_disassembly aodv_config
     local full_fast_elf_hash full_fast_map_hash full_fast_manifest_hash full_fast_resource_hash
     local full_fast_sources_hash full_fast_source_inventory_hash full_fast_commands_hash
@@ -303,6 +360,22 @@ run_expiry_resource_acceptance() {
         done < "$file"
         [[ $count -eq 1 ]] || return 1
         printf '%s\n' "${line#*=}"
+    }
+
+    require_runtime_ram_report() {
+        python3 - "$1" "$2" "$3" <<'PY'
+import re
+import sys
+
+map_unallocated, reserve, post_reserve = sys.argv[1:]
+if not all(re.fullmatch(r"[0-9]+", value) for value in
+           (map_unallocated, reserve, post_reserve)):
+    raise SystemExit(1)
+map_unallocated, reserve, post_reserve = map(int, (map_unallocated, reserve, post_reserve))
+if reserve != 12288 or map_unallocated < reserve or \
+        post_reserve != map_unallocated - reserve or post_reserve < 8192:
+    raise SystemExit(1)
+PY
     }
 
     run_stack_baseline_gate() {
@@ -380,6 +453,7 @@ run_expiry_resource_acceptance() {
         set -e
         if [[ "$binding_present" == yes ]]; then
             [[ $status -eq 0 ]] || return 1
+            [[ "$(<"$output")" == *$'\nPASS '* ]] || return 1
             printf '%s\n' PASSED
             return 0
         fi
@@ -483,6 +557,34 @@ run_expiry_resource_acceptance() {
     full_balanced_stack_chain="$(acceptance_log_value STACK_CHAIN "$full_balanced_stack_log")"
     full_fast_gate="$(run_live_resource_gate full_fast "$full_fast_resource" "$full_fast_elf" "$full_fast_map" "$full_fast_manifest" "$full_fast_sources" "$full_fast_commands" "$full_fast_su" "$full_fast_disassembly" "$full_fast_config" "$baseline_dir/fast.baseline.manifest" "$baseline_dir/fast.before.map" "$baseline_dir/fast.baseline.sha256" "$full_fast_hook_manifest")" || return 1
     full_balanced_gate="$(run_live_resource_gate full_balanced "$full_balanced_resource" "$full_balanced_elf" "$full_balanced_map" "$full_balanced_manifest" "$full_balanced_sources" "$full_balanced_commands" "$full_balanced_su" "$full_balanced_disassembly" "$full_balanced_config" "$baseline_dir/balanced.baseline.manifest" "$baseline_dir/balanced.before.map" "$baseline_dir/balanced.baseline.sha256")" || return 1
+    full_fast_map_unallocated_ram="$(acceptance_log_value MAP_UNALLOCATED_RAM_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_fast_runtime_ram_reserve="$(acceptance_log_value RUNTIME_RAM_RESERVE_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_fast_post_reserve_ram="$(acceptance_log_value POST_RESERVE_RAM_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_fast_initial_task_stack="$(acceptance_log_value INITIAL_TASK_STACK_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_fast_initial_task_static_frame="$(acceptance_log_value INITIAL_TASK_STATIC_FRAME_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_fast_initial_task_logical_headroom="$(acceptance_log_value INITIAL_TASK_LOGICAL_HEADROOM_BYTES "${evidence_dir}/full_fast.resource-gate.log")"
+    full_balanced_map_unallocated_ram="$(acceptance_log_value MAP_UNALLOCATED_RAM_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    full_balanced_runtime_ram_reserve="$(acceptance_log_value RUNTIME_RAM_RESERVE_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    full_balanced_post_reserve_ram="$(acceptance_log_value POST_RESERVE_RAM_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    full_balanced_initial_task_stack="$(acceptance_log_value INITIAL_TASK_STACK_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    full_balanced_initial_task_static_frame="$(acceptance_log_value INITIAL_TASK_STATIC_FRAME_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    full_balanced_initial_task_logical_headroom="$(acceptance_log_value INITIAL_TASK_LOGICAL_HEADROOM_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
+    [[ "$full_fast_map_unallocated_ram" =~ ^[0-9]+$ &&
+       "$full_fast_runtime_ram_reserve" == 12288 &&
+       "$full_fast_post_reserve_ram" =~ ^[0-9]+$ &&
+       "$full_fast_initial_task_stack" == 4096 &&
+       "$full_fast_initial_task_static_frame" == 440 &&
+       "$full_fast_initial_task_logical_headroom" == 3656 &&
+       "$full_balanced_map_unallocated_ram" =~ ^[0-9]+$ &&
+       "$full_balanced_runtime_ram_reserve" == 12288 &&
+       "$full_balanced_post_reserve_ram" =~ ^[0-9]+$ &&
+       "$full_balanced_initial_task_stack" == 4096 &&
+       "$full_balanced_initial_task_static_frame" == 440 &&
+       "$full_balanced_initial_task_logical_headroom" == 3656 ]] || return 1
+    require_runtime_ram_report "$full_fast_map_unallocated_ram" \
+        "$full_fast_runtime_ram_reserve" "$full_fast_post_reserve_ram" || return 1
+    require_runtime_ram_report "$full_balanced_map_unallocated_ram" \
+        "$full_balanced_runtime_ram_reserve" "$full_balanced_post_reserve_ram" || return 1
     full_fast_elf_hash="$(sha256sum "$full_fast_elf" | cut -d' ' -f1)"
     full_fast_map_hash="$(sha256sum "$full_fast_map" | cut -d' ' -f1)"
     full_fast_manifest_hash="$(sha256sum "$full_fast_manifest" | cut -d' ' -f1)"
@@ -559,6 +661,12 @@ run_expiry_resource_acceptance() {
         printf 'full_fast.after_source_inventory_sha256=%s\n' "$full_fast_after_inventory"
         printf 'full_fast.source_inventory_drift=%s\n' "$full_fast_inventory_drift"
         printf 'full_fast.stack.chain=%s\n' "$full_fast_stack_chain"
+        printf 'full_fast.map_unallocated_ram_bytes=%s\n' "$full_fast_map_unallocated_ram"
+        printf 'full_fast.runtime_ram_reserve_bytes=%s\n' "$full_fast_runtime_ram_reserve"
+        printf 'full_fast.post_reserve_ram_bytes=%s\n' "$full_fast_post_reserve_ram"
+        printf 'full_fast.initial_task_stack_bytes=%s\n' "$full_fast_initial_task_stack"
+        printf 'full_fast.initial_task_static_frame_bytes=%s\n' "$full_fast_initial_task_static_frame"
+        printf 'full_fast.initial_task_logical_headroom_bytes=%s\n' "$full_fast_initial_task_logical_headroom"
         printf 'full_fast.resource_gate=%s\n' "$full_fast_gate"
         printf 'full_fast.resource_gate_log=%s\n' "${evidence_dir}/full_fast.resource-gate.log"
         printf 'full_balanced.elf=%s\n' "$full_balanced_elf"
@@ -584,6 +692,12 @@ run_expiry_resource_acceptance() {
         printf 'full_balanced.after_source_inventory_sha256=%s\n' "$full_balanced_after_inventory"
         printf 'full_balanced.source_inventory_drift=%s\n' "$full_balanced_inventory_drift"
         printf 'full_balanced.stack.chain=%s\n' "$full_balanced_stack_chain"
+        printf 'full_balanced.map_unallocated_ram_bytes=%s\n' "$full_balanced_map_unallocated_ram"
+        printf 'full_balanced.runtime_ram_reserve_bytes=%s\n' "$full_balanced_runtime_ram_reserve"
+        printf 'full_balanced.post_reserve_ram_bytes=%s\n' "$full_balanced_post_reserve_ram"
+        printf 'full_balanced.initial_task_stack_bytes=%s\n' "$full_balanced_initial_task_stack"
+        printf 'full_balanced.initial_task_static_frame_bytes=%s\n' "$full_balanced_initial_task_static_frame"
+        printf 'full_balanced.initial_task_logical_headroom_bytes=%s\n' "$full_balanced_initial_task_logical_headroom"
         printf 'full_balanced.resource_gate=%s\n' "$full_balanced_gate"
         printf 'full_balanced.resource_gate_log=%s\n' "${evidence_dir}/full_balanced.resource-gate.log"
         printf 'aodv_only.elf=%s\n' "$aodv_elf"
@@ -622,18 +736,40 @@ valid_candidate_args=(
     -DTRON_TARGET_INVENTORY_FILE="$FIXTURES/tavrn_inventory_valid.tsv"
 )
 
+# STACK-INIT-RED: a routed build must publish a dedicated initial-task stack
+# capacity rather than silently inheriting the kernel's 1024-byte default.
+configure_ok routed-initial-task-stack-red -DTRON_PHASE1_TARGET=ROUTED \
+    -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+initial_stack_red_manifest="$(routed_manifest_path routed-initial-task-stack-red)"
+require_line 'build.initial_task_stack_bytes=4096' "$initial_stack_red_manifest"
+
 # BUILD-P1-01: selected target isolates legacy source/identity composition.
 configure_ok default-legacy -DTRON_PHASE1_TARGET=LEGACY
 legacy_manifest="$(legacy_manifest_path default-legacy)"
 require_line 'build.phase1_target=LEGACY' "$legacy_manifest"
 require_line 'build.behavior=LEGACY_FLOOD' "$legacy_manifest"
+require_line 'build.initial_task_stack_bytes=1024' "$legacy_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes=4096' "$legacy_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=0' "$legacy_manifest"
 require_line 'identity.adva=NOT_APPLICABLE' "$legacy_manifest"
 require_line 'link_test.peer_adva=NOT_APPLICABLE' "$legacy_manifest"
 if grep '^source\.selected\.[0-9].*=' "$legacy_manifest" | grep -q 'tavrn_\|ble_link_v2_testbed'; then
     printf '%s\n' 'legacy source manifest unexpectedly imports routed/link sources' >&2
     exit 1
 fi
+if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittask.h$' "$legacy_manifest")" -ne 1 ]]; then
+    printf '%s\n' 'legacy source manifest lacks exactly one initial-task header provenance record' >&2
+    exit 1
+fi
 build_target default-legacy ble_mesh_node
+require_no_initial_task_override "$WORK_DIR/default-legacy/compile_commands.json"
+legacy_config_header="$WORK_DIR/default-legacy/app/ble_mesh_node/generated/ble_mesh_node/tron_build_config.h"
+if ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 1024u' "$legacy_config_header" ||
+   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u' "$legacy_config_header"; then
+    printf '%s\n' 'legacy generated config does not retain default initial-task RAM values' >&2
+    exit 1
+fi
 
 # BUILD-P1-02: link harness has target-scoped runtime identity and buildable
 # generated timer authority without a routed node feature level.
@@ -651,7 +787,16 @@ require_line 'formula.verification_window_ms=timer.aodv_net_traversal_ms+2*timer
 require_line 'timer.link_no_response_wall_bound_ms=840' "$runtime_manifest"
 require_line 'capacity.link_custody.state=IMPLEMENTED' "$runtime_manifest"
 require_line 'capacity.aodv_routes.state=NOT_IMPLEMENTED' "$runtime_manifest"
+require_line 'capacity.retry_log_mailbox=1' "$runtime_manifest"
+require_line 'capacity.retry_log_mailbox.policy=RETAIN_OLDEST_DROP_NEWEST' "$runtime_manifest"
+require_line 'capacity.retry_log_mailbox.dropped_telemetry=SATURATING_COUNTER' "$runtime_manifest"
+require_line 'capacity.retry_log_mailbox.state=NOT_APPLICABLE' "$runtime_manifest"
+require_line 'build.initial_task_stack_bytes=1024' "$runtime_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes=4096' "$runtime_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=0' "$runtime_manifest"
 build_target runtime-link ble_link_v2_testbed
+require_no_initial_task_override "$WORK_DIR/runtime-link/compile_commands.json"
 runtime_timer_source="$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_timer_config.c"
 runtime_config_header="$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_build_config.h"
 require_timer_profile_surface FAST_TEST "$runtime_manifest" "$runtime_timer_source" 1500
@@ -663,6 +808,8 @@ if ! grep -Fqx '    .aodv_node_traversal_ms = 10u,' "$runtime_timer_source" ||
 fi
 if [[ ! -f "$runtime_config_header" ]] ||
    ! grep -Fq '#define TRON_BUILD_RUNTIME_CONFIG_EVIDENCE "poc=link_v2_harness' "$runtime_config_header" ||
+   ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 1024u' "$runtime_config_header" ||
+   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u' "$runtime_config_header" ||
    ! grep -Fq 'timer.scheduler_poll_max_ms=2' "$runtime_config_header" ||
    ! grep -Fq 'hook.hack_drop_count=0' "$runtime_config_header"; then
     printf '%s\n' 'generated runtime configuration lacks parseable harness evidence fields' >&2
@@ -689,6 +836,10 @@ require_line 'build.phase1_target=ROUTED' "$routed_manifest"
 require_line 'build.behavior=TAVRN_ROUTED_AODV_ONLY' "$routed_manifest"
 require_line 'build.node_mode.effective=TAVRN_ROUTED' "$routed_manifest"
 require_line 'feature.level.effective=AODV_ONLY' "$routed_manifest"
+require_line 'build.initial_task_stack_bytes=4096' "$routed_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=12288' "$routed_manifest"
 require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,aodv-only,typed-runtime-observability,rreq-scope-telemetry' "$routed_manifest"
 require_line 'capacity.aodv_routes.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.aodv_action_queue.state=IMPLEMENTED' "$routed_manifest"
@@ -700,6 +851,10 @@ require_line 'capacity.router_failure_overflow.state=IMPLEMENTED_FAIL_STOP' "$ro
 require_line 'capacity.router_post_ack_pending_data=1' "$routed_manifest"
 require_line 'capacity.router_delivery_reservation=1' "$routed_manifest"
 require_line 'capacity.router_retained_aodv_action=1' "$routed_manifest"
+require_line 'capacity.retry_log_mailbox=1' "$routed_manifest"
+require_line 'capacity.retry_log_mailbox.policy=RETAIN_OLDEST_DROP_NEWEST' "$routed_manifest"
+require_line 'capacity.retry_log_mailbox.dropped_telemetry=SATURATING_COUNTER' "$routed_manifest"
+require_line 'capacity.retry_log_mailbox.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.gtt_membership.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.router_pending_incarnation_reset.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.mentor_offers.state=NOT_IMPLEMENTED' "$routed_manifest"
@@ -712,14 +867,19 @@ require_line 'capacity.maintenance_dedupe.state=NOT_IMPLEMENTED' "$routed_manife
 require_line 'capacity.maintenance_epoch.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.maintenance_pending.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'link_test.peer_adva=dc:4b:0a:06:03:f8' "$routed_manifest"
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 39 ]]; then
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 46 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
 fi
 require_unique_keys "$routed_manifest"
+if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittask.h$' "$routed_manifest")" -ne 1 ]]; then
+    printf '%s\n' 'routed AODV_ONLY source manifest lacks exactly one initial-task header provenance record' >&2
+    exit 1
+fi
 if ! grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'app/protocol/aodv_core.c' ||
    ! grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'app/protocol/tavrn_router.c' ||
    ! grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'app/tavrn_routed_node/src/routed_cycle.c' ||
+   ! grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'libs/mtkernel_3/include/sys/inittask.h' ||
     grep '^source\.selected\.[0-9].*=' "$routed_manifest" | grep -q 'tron_mesh_\|routed_full_telemetry\|tavrn_esc\|tavrn_gtt\|tavrn_full\|tavrn_maintenance\|tavrn_mentorship\|tavrn_smart_ttl\|tavrn_repair'; then
     printf '%s\n' 'routed AODV_ONLY source manifest has missing router/core or leaked sources' >&2
     exit 1
@@ -727,10 +887,17 @@ fi
 build_target routed-aodv tavrn_routed_node
 routed_aodv_config="$WORK_DIR/routed-aodv/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 0' "$routed_aodv_config" ||
-   ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_aodv_config"; then
+   ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_aodv_config" ||
+   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_aodv_config"; then
     printf '%s\n' 'AODV_ONLY generated config does not expose the selected feature macro' >&2
     exit 1
 fi
+require_compile_definition_once "$WORK_DIR/routed-aodv/compile_commands.json" \
+    "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'INITTASK_STKSZ=4096'
+require_compile_definition_once "$WORK_DIR/routed-aodv/compile_commands.json" \
+    "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
+    'mtkernel3_microbit_kernel_tavrn_routed_node'
 
 # BUILD-P4-01: FULL_TAVRN adds K=1 ESC and mentorship around the routed
 # main/router/AODV/GTT source closure.
@@ -738,11 +905,22 @@ configure_ok routed-full -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUT
     -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTRON_TIMER_PROFILE=FAST_TEST
 routed_full_manifest="$(routed_manifest_path routed-full)"
 require_line 'build.phase1_target=ROUTED' "$routed_full_manifest"
-require_line 'build.behavior=TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO' "$routed_full_manifest"
+require_line 'build.behavior=TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO_LOCAL_EXPIRY_TARGETED_FRESHNESS_RREQ_VERIFICATION_TC_METADATA' "$routed_full_manifest"
 require_line 'feature.level.effective=FULL_TAVRN' "$routed_full_manifest"
-require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,esc-k1,sid8-identity-context,mentorship-bootstrap,passive-gtt,smart-ttl,adaptive-sid8-hello,hello-ema-snap,hello-topology-reset,hello-broadcast-suppression,hello-liveness-hysteresis,hello-equality-dedupe,hello-gtt-liveness,maintenance-telemetry,typed-runtime-observability,rreq-scope-telemetry,gtt-snapshot' "$routed_full_manifest"
+require_line 'feature.repair.effective=OFF' "$routed_full_manifest"
+require_line 'capacity.repair_contexts.state=NOT_IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.repair_data.state=NOT_IMPLEMENTED' "$routed_full_manifest"
+require_line 'build.initial_task_stack_bytes=4096' "$routed_full_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_full_manifest"
+require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=12288' "$routed_full_manifest"
+    require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,esc-k1,sid8-identity-context,mentorship-bootstrap,passive-gtt,smart-ttl,adaptive-sid8-hello,hello-ema-snap,hello-topology-reset,hello-broadcast-suppression,hello-liveness-hysteresis,hello-equality-dedupe,hello-gtt-liveness,local-expiry-demand,targeted-freshness-stage0,targeted-hello-request-response,targeted-runtime-binding,retained-hop-full-diameter-rreq-verification,tc-join-leave,general-route-metadata,maintenance-telemetry,tc-metadata-telemetry,typed-runtime-observability,rreq-scope-telemetry,gtt-snapshot' "$routed_full_manifest"
 require_line 'fixed_k.state=1' "$routed_full_manifest"
 require_line 'capacity.gtt_membership.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.retry_log_mailbox=1' "$routed_full_manifest"
+require_line 'capacity.retry_log_mailbox.policy=RETAIN_OLDEST_DROP_NEWEST' "$routed_full_manifest"
+require_line 'capacity.retry_log_mailbox.dropped_telemetry=SATURATING_COUNTER' "$routed_full_manifest"
+require_line 'capacity.retry_log_mailbox.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'capacity.router_failure_overflow.state=IMPLEMENTED_FAIL_STOP' "$routed_full_manifest"
 require_line 'capacity.router_pending_incarnation_reset.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'capacity.mentor_offers.state=IMPLEMENTED' "$routed_full_manifest"
@@ -760,14 +938,28 @@ require_line 'capacity.maintenance_epoch=16' "$routed_full_manifest"
 require_line 'capacity.maintenance_epoch.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'capacity.maintenance_pending=1' "$routed_full_manifest"
 require_line 'capacity.maintenance_pending.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.metadata_candidates=4' "$routed_full_manifest"
+require_line 'capacity.metadata_candidates.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.tc_uuid=16' "$routed_full_manifest"
+require_line 'capacity.tc_uuid.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.tc_subject=16' "$routed_full_manifest"
+require_line 'capacity.tc_subject.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.tc_origin=16' "$routed_full_manifest"
+require_line 'capacity.tc_origin.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'capacity.tc_relay=16' "$routed_full_manifest"
+require_line 'capacity.tc_relay.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'bound.mentor_failure_protocol_ms=3850' "$routed_full_manifest"
 require_line 'bound.mentor_failure_protocol_ms.scope=PROTOCOL_DEADLINES_ONLY_EXCLUDES_SCHEDULER_APPLICATION_CADENCE' "$routed_full_manifest"
 require_line 'formula.mentor_failure_protocol_ms=timer.mentor_rssi_weak_delay_ms+timer.mentor_jitter_max_ms+timer.mentor_offer_window_ms+timer.mentor_page_attempts*timer.mentor_page_timeout_ms+timer.mentor_self_bootstrap_ms' "$routed_full_manifest"
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 39 ]]; then
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 46 ]]; then
     printf '%s\n' 'routed FULL_TAVRN capacity schema width is not exact' >&2
     exit 1
 fi
 require_unique_keys "$routed_full_manifest"
+if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittask.h$' "$routed_full_manifest")" -ne 1 ]]; then
+    printf '%s\n' 'FULL_TAVRN source manifest lacks exactly one initial-task header provenance record' >&2
+    exit 1
+fi
 for source in tavrn_router.c tavrn_esc.c tavrn_gtt.c tavrn_maintenance.c tavrn_mentorship.c tavrn_smart_ttl.c tavrn_full.c; do
     if ! grep '^source\.selected\.[0-9].*=' "$routed_full_manifest" | grep -q "app/protocol/${source}"; then
         printf 'FULL_TAVRN source manifest lacks %s\n' "$source" >&2
@@ -780,6 +972,11 @@ for source in routed_cycle.c routed_full_telemetry.c; do
         exit 1
     fi
 done
+if ! grep '^source\.selected\.[0-9].*=' "$routed_full_manifest" | \
+    grep -q 'libs/mtkernel_3/include/sys/inittask.h'; then
+    printf '%s\n' 'FULL_TAVRN source manifest lacks initial-task header provenance' >&2
+    exit 1
+fi
 if grep '^source\.selected\.[0-9].*=' "$routed_full_manifest" | grep -q 'tron_mesh_\|tavrn_repair'; then
     printf '%s\n' 'FULL_TAVRN source manifest leaks unimplemented feature sources' >&2
     exit 1
@@ -787,10 +984,48 @@ fi
 build_target routed-full tavrn_routed_node
 routed_full_config="$WORK_DIR/routed-full/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 1' "$routed_full_config" ||
-   ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_full_config"; then
+   ! grep -Fqx '#define TRON_BUILD_LOCAL_REPAIR 0' "$routed_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_full_config" ||
+   ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12288u' "$routed_full_config"; then
     printf '%s\n' 'FULL_TAVRN generated config does not expose the selected feature macro' >&2
     exit 1
 fi
+require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
+    "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" 'INITTASK_STKSZ=4096'
+require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
+    "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
+    'mtkernel3_microbit_kernel_tavrn_routed_node'
+
+# BUILD-P6-01: local repair is an opt-in FULL_TAVRN composition.  Its sources,
+# generated macro, manifest state and fixed capacities are absent from repair-off.
+configure_ok routed-full-repair -DTRON_PHASE1_TARGET=ROUTED \
+    -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=FULL_TAVRN \
+    -DTAVRN_ENABLE_LOCAL_REPAIR=ON -DTRON_TIMER_PROFILE=FAST_TEST
+routed_full_repair_manifest="$(routed_manifest_path routed-full-repair)"
+require_line 'feature.repair.requested=ON' "$routed_full_repair_manifest"
+require_line 'feature.repair.effective=ON' "$routed_full_repair_manifest"
+require_line 'capacity.repair_contexts.state=IMPLEMENTED' "$routed_full_repair_manifest"
+require_line 'capacity.repair_data.state=IMPLEMENTED' "$routed_full_repair_manifest"
+require_line 'build.behavior=TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO_LOCAL_EXPIRY_TARGETED_FRESHNESS_RREQ_VERIFICATION_TC_METADATA_LOCAL_REPAIR' "$routed_full_repair_manifest"
+for source in tavrn_repair.c tavrn_full_repair_binding.c; do
+    if ! grep '^source\.selected\.[0-9].*=' "$routed_full_repair_manifest" | \
+        grep -q "app/protocol/${source}"; then
+        printf 'repair-on FULL_TAVRN source manifest lacks %s\n' "$source" >&2
+        exit 1
+    fi
+done
+routed_full_repair_config="$WORK_DIR/routed-full-repair/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+if ! grep -Fqx '#define TRON_BUILD_LOCAL_REPAIR 1' "$routed_full_repair_config" ||
+   ! grep -Fq 'repair=ON' "$routed_full_repair_config"; then
+    printf '%s\n' 'repair-on generated config lacks effective repair evidence' >&2
+    exit 1
+fi
+build_target routed-full-repair tavrn_routed_node
+configure_fail_with repair-aodv 'TAVRN_ENABLE_LOCAL_REPAIR=ON requires ROUTED FULL_TAVRN' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTAVRN_ENABLE_LOCAL_REPAIR=ON
+configure_fail repair-legacy -DTRON_PHASE1_TARGET=LEGACY -DTAVRN_ENABLE_LOCAL_REPAIR=ON
 
 # BUILD-P4-02: the explicit FULL-only collision hook synthesizes one unique
 # full AdvA/SID16 while duplicating exactly the selected peer's SID8.
@@ -997,6 +1232,10 @@ if grep '^source\.selected\.[0-9].*=' "$runtime_manifest" | grep -q 'tron_mesh_\
     printf '%s\n' 'link source manifest imports legacy or future sources' >&2
     exit 1
 fi
+if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittask.h$' "$runtime_manifest")" -ne 1 ]]; then
+    printf '%s\n' 'link source manifest lacks exactly one initial-task header provenance record' >&2
+    exit 1
+fi
 require_line 'source.selected.7=generated/tron_timer_config.c' "$runtime_manifest"
 require_line 'timer.radio_tx_event_bound_ms=8' "$runtime_manifest"
 require_line 'timer.link_tx_scheduler_attempt_bound_ms=30' "$runtime_manifest"
@@ -1135,7 +1374,7 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     exit 1
 fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 73 ]] ||
-    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 39 ]]; then
+    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 46 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
 fi

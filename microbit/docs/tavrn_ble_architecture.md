@@ -323,14 +323,14 @@ matching `TX_DONE` can consume the verification stage; it is not custody DATA.
 Other `BEST_EFFORT` controls use token zero; misuse is an invalid enqueue in
 profile-aware builds.
 
-The enqueue caller assigns the token. Link-v2 and the future router-owned
-verification-control seam are the only nonzero-token owners; they use disjoint
-domains (`0001..7fff` for link custody and `8000..ffff` for verification), and a
-tracked token must be unique among all queued/in-flight items. The scheduler only
-copies and echoes it in eviction/`TX_DONE`/`TX_FAILED` results. Link-v2 allocates
-only from its domain while skipping its four outstanding tokens; maintenance
-allocates only from its four active contexts. Token zero remains untracked. This
-makes a synchronously returned nonzero eviction token unambiguous.
+The link owns the low tracked domain `0x0001..0x7fff`, shared by custody DATA and
+routed-common tracked bootstrap/incarnation HELLO; it allocates those values and
+checks uniqueness across every retained, queued, and in-flight low-domain item.
+Maintenance verification alone owns `0x8000..0xffff`. A caller-owned high token must
+be checked against every queued/in-flight token before admission. The scheduler
+only copies and echoes tokens in eviction/`TX_DONE`/`TX_FAILED` results; token zero
+remains untracked and no third domain exists. This makes a synchronously returned
+nonzero eviction token unambiguous.
 
 ### 5.3 Scheduler events and API
 
@@ -461,7 +461,12 @@ Other tasks communicate through one fixed eight-entry by-value command queue
 into the mesh task and the existing fixed eight-entry node/application event
 queue out. Diagnostics are copied into a separate fixed eight-entry best-effort
 log queue; log overflow increments a counter and cannot delay mesh service. This
-is the complete concurrency design, not a general actor/executor framework.
+is the complete concurrency design, not a general actor/executor framework. A
+separate routed-only one-slot retry-log mailbox copies a complete
+`RETRY_EXHAUSTED` event for the lower-priority logger. It retains the oldest
+pending event, drops and saturating-counts a newer one, and is intentionally not
+part of fault-diagnostic pending/progress/wait liveness; a healthy link break
+therefore cannot turn a logger drain delay into a scheduler fault.
 
 The task measures operation-return to next-poll-start. Exceeding the 2 ms bound,
 queue corruption, or an impossible scheduler state emits `SERVICE_FAULT`,
@@ -1392,12 +1397,12 @@ This direction prevents a cycle: `tavrn_full` may include public router/AODV
 types to construct hooks, while `tavrn_router.c` and `aodv_core.c` never include
 `tavrn_full.h`.
 
-### 10.1 Local expiry/demand RED boundary
+### 10.1 Implemented local expiry/demand boundary
 
-The local-expiry/demand slice is a documentation contract for later source work,
-not a claim that the implemented Phase 5 adaptive-HELLO prefix has expiry or
-verification. Its only top-level requirement tags are `GTT-02`, `GTT-03`,
-`GTT-05`, `MAINT-01`, `MAINT-02`, `MAINT-04`, and `MAINT-05`.
+The local-expiry/demand slice is implemented through the FULL-only binding and
+accepted resource evidence. Its only top-level requirement tags are `GTT-02`,
+`GTT-03`, `GTT-05`, `MAINT-01`, `MAINT-02`, `MAINT-04`, and `MAINT-05`; it does
+not itself claim targeted request/response/relay or RREQ verification.
 
 GTT remains passive. Its public application seam retains the existing active
 enumeration and separately adds a known/nondeparted enumeration/query returning
@@ -1446,7 +1451,7 @@ fixed deadline.
 | Central GTT transitions | Serial clear; confirmed/checked departure; replacement; purge; request/cancel; and all ordinary/direct/imported refreshes revise centrally. |
 | Mentorship | Uses centralized atomic SYNC merge only; no raw candidate deadline or storage-generation mutation. |
 
-`tavrn_full_maintenance_binding.{h,c}` is the one future FULL-only executable
+`tavrn_full_maintenance_binding.{h,c}` is the implemented FULL-only executable
 boundary called exactly once by routed main. Routed main alone performs short
 guarded mailbox owner-take/owner-publish operations; the binding receives only
 one copied application GTT query/request/cancel command plus exact 0/1 presence,
@@ -1484,7 +1489,7 @@ topology-reset/cadence result; topology never retains an already departed peer.
 For one copied canonical subject, maintenance resolves a unique SID8 through
 GTT/ESC, then asks generic router/AODV/link snapshots by logical ID plus the
 canonical subject AdvA. Shared reason masks and snapshot types belong in a tiny
-future GTT-free `tavrn_subject_demand.h` (not created by this RED/docs slice).
+future GTT-free `tavrn_subject_demand.h` (not created by this clarification).
 Those generic components do not include or query GTT. Final-destination demand
 reasons compare logical subject ID; AODV `VALID_ROUTE_VIA_SUBJECT` and next-hop
 reasons compare logical ID and retained canonical AdvA; precursor compares its
@@ -1496,7 +1501,142 @@ synchronously recomputes authoritative mesh-owner demand immediately before
 mutation from current AODV/link/router state—not a caller-supplied or cached
 demand observation—and fails closed on unavailable/fail-stop state.
 
-### 10.2 Local expiry resource and hardware acceptance
+### 10.2 Targeted hard-expiry stage-0 delivery boundary
+
+The targeted hard-expiry slice is FULL_TAVRN-only and follows the completed
+local-expiry/demand binding. It does not create an AODV engine, RREQ action, timer
+key, scheduler/radio API, or metadata format. `tavrn_maintenance` owns the four
+verification contexts, their exact request/response/relay work, cancellation,
+stage transitions, and verification-domain token allocation. `tavrn_router`
+revalidates route snapshots immediately before local admission, submits copied
+best-effort control, and returns every scheduler eviction, `TX_DONE`, `TX_FAILED`,
+and terminal fault to maintenance. `aodv_core` remains the sole later
+RREQ/request-ID owner and is not called by stage 0.
+
+Maintenance verification tokens are allocated only from `0x8000..0xffff`; the
+link-owned `0x0001..0x7fff` domain is shared by custody DATA and routed-common
+tracked bootstrap/incarnation HELLO. The link allocator checks every retained,
+queued, and in-flight low-domain item; a caller-owned high token is checked
+against every queued/in-flight token before admission. Token zero is untracked
+and no third domain exists. Initiator pending request, request relay, response
+relay, immediate target response, and delayed intermediary response preserve
+exact copied bytes and token across BUSY or zero-channel `TX_FAILED`, retry only
+from their owner tick while the selected route remains valid, and drop on route
+loss or the wrap-safe equality deadline
+`obligation_started_ms + timer.hello_dedupe_ms`. `obligation_started_ms` is the
+owner tick that creates/adopts a locally initiated stage-0 context after current
+hard-expiry/demand/identity validation; the post-dedupe normal request
+RX-admission time for a request relay, immediate target response, or delayed
+intermediary response; or the post-dedupe normal response RX-admission time for a
+response relay that need not have observed the request. The deterministic
+intermediary delay consumes bounded lifetime.
+BUSY before first scheduler enqueue is also bounded by this deadline.
+The target and eligible intermediary policies, including bucket selection and
+deterministic FNV-1a delay, are representation rules in wire-v2; a delayed
+intermediary consumes one of the four metadata/candidate slots, never replaces a
+live entry, and suppression can cancel only matching delayed-not-yet-enqueued
+work.
+
+Only matching-token `TX_DONE` with a nonzero completed-channel mask consumes
+stage 0. The observed completion time starts the wrap-safe remote-silence
+deadline `+ timer.aodv_net_traversal_ms`, due at equality. Wrong-token completion
+and zero-channel `TX_FAILED` do not consume it and no remote-silence timer starts
+before a matching completion. Route loss before consumption retires stage 0 as
+unconsumed and retains `STAGE1_READY`; other demand enters that retained handoff
+directly. At stage-0 timeout, maintenance retains active `STAGE1_READY` without
+emitting RREQ, departure, TC, or LEAVE. Same-subject valid liveness exactly
+cancels queued work when possible and returns its token without stage advance.
+Selected/in-flight work becomes a canceled
+tombstone that retains its token through terminal TX_DONE/TX_FAILED/eviction/fault;
+that late terminal event only retires the tombstone and never advances a stage.
+Tombstones are bounded by the same four verification contexts and fail closed.
+
+Targeted acceptance therefore requires targeted dedupe/capacity and source-list
+closure, a fresh FULL FAST stack/RAM comparison against the accepted local-expiry
+baseline, and legacy/AODV_ONLY isolation. It does not require a new 300-second
+hardware capture. No shared radio/scheduler source or timer/generated-config
+change is authorized by this slice.
+
+#### 10.2.1 Retained-hop/full-diameter verification
+
+The implemented maintenance pass keeps the same four maintenance contexts and invokes
+the one `aodv_core` through the existing router action and link admission path;
+it may not submit ordinary DATA, create an ordinary discovery slot, use an
+expanding-ring retry, or invoke ordinary Smart-TTL fallback. The local
+maintenance action carries a non-wire purpose (`STAGE1_RETAINED_HOP` or
+`STAGE2_FULL_DIAMETER`), canonical subject, AODV attempt/request ID, and tracked
+high-domain token. The router/link callback returns the same discriminators plus
+terminal kind and completed-channel mask. Maintenance validates all of them
+before changing stage state.
+
+At `STAGE1_READY`, a retained positive hard-expired hop emits exactly one
+`min(hop+2,diameter)` RREQ; no/zero hop skips directly to Stage 2 with no
+consumed RREQ. A capped Stage 1 is still distinct from Stage 2. Stage 2 emits
+exactly one full-diameter RREQ with a fresh request ID. Shared `aodv_rreq_rate`
+defers exact ready work before an ID is allocated. BUSY, eviction, local
+non-attempt, zero-mask failure, and mismatched completion retain or retry exact
+work; a matching nonzero-mask completion consumes one stage and opens only its
+`aodv_path_discovery_ms` window. Two remote response windows are bounded by
+`verification_window_ms` using wrap-safe equality comparisons.
+
+Committed valid evidence for the exact canonical subject cancels a live context;
+other-subject, stale, malformed, and ambiguous evidence cannot. After silent
+Stage 2, direct contexts wait for the independent direct-evidence deadline.
+Terminal departure remains the existing checked mutation and must re-read current
+demand and revision; DEV-027 routes only its confirmed terminal result through
+the TC/LEAVE owner. Four active contexts remain bounded,
+a fifth defers, and owner traversal is deterministic. This behavior is accepted
+by the focused `--green` runner. The `--red` runner remains the isolated
+missing-policy contract regression.
+
+#### 10.2.2 General metadata and confirmed TC boundary (DEV-027, production-composed GREEN)
+
+The FULL maintenance API exposes one fixed four-slot candidate pool. Its
+production implementation makes that owner
+for general soft-request/self-answer/intermediary-answer work and the already
+frozen delayed targeted tier-2 reservation. No slot replaces live work. The
+maintenance owner alone selects candidate copies and asks the existing router
+control path to enqueue a containing SID8 RREQ/RREP/RERR; router/link return
+admission/terminal facts. Selection and encoding do not mutate the pool. Only
+enqueue admission commits cooldown, cursor, and release; BUSY, zero-channel, or
+local-not-attempted return exact work to the owner unchanged. No host adapter may
+implement a parallel metadata store or bypass this router→link admission seam.
+Delayed targeted reservation is capacity-only: general selection/attachment never
+serializes it, and an admitted general control releases/cools only its selected
+general entries. Attachment starts with real validated RREQ/RREP/RERR controls;
+the corresponding admitted `tavrn_rx_control_event` is parsed by the FULL
+maintenance receive seam before metadata/GTT merge.
+
+The same owner must maintain a local nonzero 16-bit TC sequence stream and fixed UUID
+`{network,origin,seq}` plus subject/event equality stores. A generic sequence
+ticket prepare/commit seam is shared by mentorship JOIN and maintenance LEAVE:
+`originate_join` obtains the ticket and its successful JOIN enqueue commits it;
+mentorship has no independent join-sequence field. It prepares a local TC only
+for completed mentorship/self-bootstrap JOIN, confirmed terminal three-stage
+departure, confirmed direct timeout, or DATA `RETRY_EXHAUSTED` for the immediate
+failed H. The owner validates incoming TC fully before cache mutation. A retained
+UUID ignores any later event mutation; a fresh UUID is retained before the
+subject/event check, so matching live subject/event suppresses apply/relay while
+retaining that UUID. Only a fresh subject/event applies once through GTT as
+imported/non-direct evidence and returns a copied controlled-flood relay
+obligation. Distinct local LEAVEs and relays use bounded FIFO retention across
+BUSY; neither later fact may overwrite an earlier one. An accepted mentorship
+JOIN ticket arbitrates before a retained LEAVE, and each commits one distinct
+nonzero sequence. The router/link path retains a BUSY relay exactly and must not
+synthesize HACK/TC ACK.
+
+The corrective production closure must have three explicit sources, not a generic host callback:
+the terminal verification checked-departure path, the direct-deadline checked
+departure path, and a router retry-exhausted hook that carries the link event's
+full failed-next-hop AdvA (not final D) to the FULL binding. The binding routes
+only that hook to maintenance TC LEAVE handling. No-demand expiry, ordinary RREQ,
+BUSY/rejection/enqueue/zero-channel/local-not-attempted/deadline/RREP-ACK,
+radio/service, and repair paths have no TC origin call. The production
+implementation binds these APIs from `tavrn_full_maintenance_binding` on the mesh owner;
+AODV_ONLY, radio/scheduler, and host-only test backends remain outside that
+boundary.
+
+### 10.3 Local expiry resource and hardware acceptance
 
 `build-tavrn-ble.sh` supports
 `--stack-usage` and `--resource-baseline <manifest>` case arms, build FULL
@@ -1506,8 +1646,8 @@ invokes `python3 microbit/scripts/check_tavrn_expiry_resources.py` with
 the pre/post map, ELF, `.su` files, declared fixed-state manifest, and the
 `routed_mesh_task` root; it reports pre/post `.data/.bss`,
 the exact declared fixed-state delta, unexplained RAM delta, heap-use verdict,
-link verdict, and static owner-binding mesh-task call-chain stack. Required
-future templates, executable only after those case arms and checker exist, are:
+link verdict, and static owner-binding mesh-task call-chain stack. The accepted
+production command forms are:
 
 ```text
 ./microbit/build-tavrn-ble.sh --target tavrn_routed_node --feature FULL_TAVRN \
@@ -1574,8 +1714,41 @@ and `aodv_only.source_inventory_sha256`. Each inventory is one selected relative
 source path per line (including untracked selected production source), hashed as
 the deterministic ordered `<sha256>  <relative-path>` digest list. The checker rejects missing
 or duplicate schema keys, stale artifact hashes, wrong target/feature/timer,
-binding symbol count mismatch, stack above 3072, headroom below 1024, RAM below
-8192, unexplained delta above 512, and every failing-fixture threshold.
+binding symbol count mismatch, stack above 3072, headroom below 1024,
+post-reserve RAM below 8192, unexplained delta above 512, and every
+failing-fixture threshold.
+
+### Routed initial-task and RAM safety budget
+
+The routed boot initial task, the dedicated routed mesh task, and the map-level
+RAM reserve are separate quantities. `TRON_ROUTED_INITIAL_TASK_STACK_BYTES=4096`
+is the one CMake profile authority for the initial task's logical capacity. The
+routed application target and its target-specific μT-Kernel object target both
+compile with that exact `INITTASK_STKSZ` definition; `inittask.h` retains its
+overrideable 1024-byte default for legacy and link targets. Generated routed
+config/manifest evidence records `build.initial_task_stack_bytes=4096`,
+`capacity.routed_initial_task_stack_bytes=4096` with state `IMPLEMENTED`, and
+`resource.runtime_ram_reserve_bytes=12288`. Legacy and link evidence instead
+records initial-task default 1024, routed-capacity state `NOT_APPLICABLE`, and
+reserve zero.
+
+The 4096-byte initial-task capacity is not the existing 4096-byte
+`routed_mesh_task` stack: the latter retains the full routed-cycle static-chain
+check (at most 3072 bytes and at least 1024 bytes headroom). Separately, the
+resource gate locates exactly the production
+`app/tavrn_routed_node/src/main.c:usermain` GCC `.su` record rather than the
+weak kernel `usermain`, and requires at least 1024 bytes of logical capacity
+above that function's static frame. This is deliberately only a direct-frame
+sanity check; it does **not** claim that the frame is a complete startup call
+chain.
+
+`TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES=12288` is the conservative routed runtime
+allocation allowance for the initial task, mesh task, logger task, exception
+stack, and allocator overhead. The checker keeps the existing map-free-RAM gate,
+then subtracts that reserve without underflow and requires
+`post_reserve_ram = map_unallocated_ram - runtime_ram_reserve_bytes >= 8192`.
+Checker and acceptance-report output publish map-unallocated, reserve, and
+post-reserve byte values so the two headroom concepts cannot be conflated.
 
 For each fresh FULL profile, the checker selects the exact `main.c` command from
 that profile's `compile_commands.json`, replays it with `-E -P` and the generated
@@ -1587,25 +1760,27 @@ owner tick, and AODV exclusion. Pass/fail preprocessed-main fixtures cover an
 inactive-only binding and an ignored guard failure. Fresh FULL ELF/disassembly
 must define and call the binding; AODV_ONLY must neither define nor reference it.
 
-Routine host GREEN invokes this fresh acceptance only after zero host failures,
-then requires both capture environment paths above. Missing, stale,
+The completed local-expiry acceptance invoked this fresh check after zero host
+failures and required both capture environment paths above. Missing, stale,
 shorter-than-300-second, fewer-than-ten-pass, no hard-selected+demand-deferred
 complete pass, over-2-ms, unavailable, faulted, or targeted/RREQ/TC-control-
-emitting capture manifests are nonzero failures; there is no pending-success
-mode.
+emitting capture manifests were nonzero failures; there was no pending-success
+mode. The targeted stage-0 slice reuses that accepted capture as baseline evidence
+and requires only its fresh FULL FAST stack/RAM comparison, not another 300-second
+capture.
 
-Production slice 1 is **tooling and baseline only**: before any semantic GTT,
-AODV, link, router, maintenance, FULL, or main change, implement the build
-options/checker, generate the provenance-bound FAST/BALANCED before maps,
-baseline manifests, hashes, and selected-source inventories, then freeze those
-artifacts read-only. A later source-inventory mismatch invalidates comparison and
-restarts the production effort from that untouched baseline; it must never
-regenerate a baseline after semantic edits.
+Completed local-expiry production first established the tooling and baseline:
+before its semantic GTT, AODV, link, router, maintenance, FULL, or main change,
+it implemented the build options/checker, generated the provenance-bound
+FAST/BALANCED before maps, baseline manifests, hashes, and selected-source
+inventories, then froze those artifacts read-only. A later source-inventory
+mismatch invalidates comparison and restarts from that untouched baseline; it
+must never regenerate a baseline after semantic edits.
 
-Both links must succeed with no heap, at least 8 KiB unallocated RAM, static
+Both links must succeed with no heap, at least 8 KiB post-reserve RAM, static
 worst-case mesh-task operation chain at most 3072 bytes (leaving at least 1024
-bytes of the 4096-byte mesh stack), and unexplained RAM growth no more than 512
-bytes beyond declared fixed structs/alignment. A separate test-only FULL
+bytes of the 4096-byte mesh stack), and unexplained fixed-state growth no more
+than 512 bytes beyond declared fixed structs/alignment. A separate test-only FULL
 FAST_TEST full-table hook seeds exactly once after GTT and maintenance
 initialization and before the mesh task begins: self plus 15 deterministic
 synthetic identities. It uses the real ESC mapping to reject full-AdvA and SID8
@@ -1630,11 +1805,13 @@ deadline. It preserves last real evidence/serial/hop, clears directness and
 application request, sets fixed departed retention, and emits neither a
 received-evidence record nor a LEAVE.
 
-The four verification contexts, scheduler token consumption, targeted freshness
-request/response, and retained-hop/full-RREQ attempts are later non-overlapping
-RED slices under `MAINT-06`/`MAINT-07`; no local-expiry/demand implementation
-allocates or advances them, sends targeted control or RREQ, or originates
-expiry-driven TC. Existing mentorship bootstrap JOIN remains unchanged.
+The completed local-expiry/demand implementation allocates or advances no
+verification context, sends no targeted control or RREQ, and originates no
+expiry-driven TC. The next non-overlapping targeted slice owns stage-0 contexts,
+scheduler-token consumption, targeted request/response/relay, and the retained
+`STAGE1_READY` handoff under `MAINT-06`/`MAINT-07`; retained-hop/full-RREQ
+attempts remain a later slice. Existing mentorship bootstrap JOIN remains
+unchanged.
 
 ## 11. Patient bridge position
 
@@ -1710,17 +1887,18 @@ patient state is statically or caller allocated. None may call `malloc`,
 | mentorship competing offers | 8 | retain best deterministic offers; count overflow |
 | mentorship frozen snapshot | 16 GTT entries | reject bootstrap snapshot creation if it cannot represent local GTT |
 | mentorship active snapshot/session | 1 | reject/defer another mentee session until completion/expiry; immutable snapshot remains owned by the active session |
-| maintenance ordinary-HELLO equality dedupe | 16 keys | purge expired; reject/backpressure a new live key rather than overwrite equality protection |
+| maintenance ordinary/targeted HELLO equality dedupe | 16 keys | purge expired; reject/backpressure a new live key rather than overwrite equality protection; targeted work retains its originating key through wrap-safe `obligation_started_ms + timer.hello_dedupe_ms`, due at equality |
 | maintenance direct-peer boot epochs | 16 full-AdvA/nonce records | follow router-committed boot nonces; clear only the matching nonself GTT serial and ordinary-HELLO keys before N=0 evaluation |
-| maintenance pending ordinary HELLO | 1 control | retain the exact control on BUSY; cadence advances only after queue admission |
-| maintenance active verification FSMs | 4, later targeted/RREQ slices only | retain subject, demand, retained hop, current stage (including `WAIT_DIRECT_DEADLINE`), and one verification-domain tracked token; defer a fifth start; the local-expiry/demand slice allocates none |
-| maintenance metadata/freshness candidates | 4 | round-robin social metadata plus delayed tier-2 response state; no free slot suppresses the response rather than replacing live state or discovering a route |
+| maintenance pending ordinary HELLO | 1 control | retain exact control and visible `snapshot.next_node_sequence` on BUSY; cadence and that cursor advance only after queue admission. Targeted reservations use the internal frontier after the pending value; admission merges the visible cursor to the frontier while skipping active reservations. |
+| maintenance active verification FSMs | 4, targeted/RREQ slices only | retain subject, demand, retained hop, current stage (including `STAGE1_READY`/`WAIT_DIRECT_DEADLINE`), `obligation_started_ms`, exact pending or canceled-tombstone work, and one unique `8000..ffff` verification token checked against all queued/in-flight work; defer a fifth start and fail closed rather than exceed the same four tombstones. The completed local-expiry/demand slice allocates none. |
+| maintenance metadata/freshness candidates | 4 | round-robin social metadata plus delayed tier-2 response state; an eligible free-slot intermediary must schedule one response, while no free slot suppresses it rather than replacing live state or discovering a route |
 | concurrent repair contexts | 1 | immediate normal AODV failure/RERR path |
 | repair buffered DATA | 4 | immediate normal AODV failure/RERR path for the unbuffered item |
 | patient dedupe | 16 keys | deterministic expired/oldest replacement |
 | patient outbound queue | 8 events | incidents outrank heartbeat; count every dropped item |
 | mesh inbound command queue | 8 copied commands | reject/backpressure producer; mesh task never blocks |
 | mesh diagnostic log queue | 8 copied records | drop/count diagnostics only; never delays scheduler poll |
+| retry-exhaustion log mailbox | 1 copied `tavrn_link_event_t` | routed-only retain-oldest/drop-newest; saturating dropped telemetry; logger-only and never a fault-liveness dependency |
 | node/router application event queue | 8 events | backpressure producer; no silent overwrite |
 
 All capacities are emitted in the build manifest and guarded with compile-time
@@ -1728,8 +1906,8 @@ assertions that count fields fit their index types. Increasing a capacity is an
 architecture and memory-budget change, not a bench-only CMake override.
 
 Historical capacity evidence required measured maximum use and remaining
-headroom but imposed no numeric threshold. The later local-expiry production
-gate is now explicit: ARM `-fstack-usage`/map evidence for the complete
+headroom but imposed no numeric threshold. The completed local-expiry production
+gate is explicit: ARM `-fstack-usage`/map evidence for the complete
 `routed_mesh_task` chain must be at most 3072 bytes and preserve at least 1024
 bytes of the 4096-byte mesh task stack; fixed-size guards alone remain
 insufficient.
@@ -1860,8 +2038,8 @@ link/AODV/DATA algorithm.
 | `SHARED_BLE_SOURCES` | `ble_radio.c`, `ble_mesh_tx_queue.c`, `ble_mesh_scheduler.c`, generated build-info source |
 | `LEGACY_FLOOD_SOURCES` | `tron_mesh_packet.c`, `tron_mesh_dedupe.c`, `tron_mesh_pingpong.c`, `legacy_flood_node.c`, `tron_node_legacy.c` |
 | `ROUTED_COMMON_SOURCES` | `tavrn_wire_v2.c`, `tavrn_link_v2.c`, `aodv_core.c`, `tavrn_router.c`, `tavrn_routed_node/src/routed_cycle.c`, and `tavrn_routed_node/src/main.c` |
-| `FULL_TAVRN_SOURCES` (implemented Phase 5 adaptive HELLO) | `tavrn_gtt.c`, `tavrn_smart_ttl.c`, `tavrn_full.c`, `tavrn_esc.c`, `tavrn_mentorship.c`, `tavrn_maintenance.c`, and `routed_full_telemetry.c` only |
-| `FULL_EXPIRY_BINDING_SOURCE` (future, blocked) | `tavrn_full_maintenance_binding.c` plus its public header; compiled only by FULL_TAVRN and called once by routed main |
+| `FULL_TAVRN_SOURCES` (implemented Phase 5 hard-expiry verification closure) | `tavrn_gtt.c`, `tavrn_smart_ttl.c`, `tavrn_full.c`, `tavrn_esc.c`, `tavrn_mentorship.c`, `tavrn_maintenance.c`, and `routed_full_telemetry.c` only |
+| `FULL_EXPIRY_BINDING_SOURCE` (implemented local expiry/demand and RREQ verification) | `tavrn_full_maintenance_binding.c` plus its public header; compiled only by FULL_TAVRN and called once by routed main. |
 | `REPAIR_SOURCE` | `tavrn_repair.c` only when repair is on |
 | `PATIENT_SOURCE` | `patient_bridge.c` only when patient bridge is on |
 | `TEST_HOOK_SOURCE` | `tron_test_hooks_bench.c` only when test hooks are on; otherwise `tron_test_hooks_off.c` |
@@ -1883,30 +2061,29 @@ patient      = selected node profile + PATIENT (optional, above node facade)
 Linker maps and the sorted source manifest must prove that legacy contains no
 routed source; AODV_ONLY contains no `tavrn_full`, GTT, Smart-TTL, ESC,
 mentorship, maintenance, or repair source/header dependency; and the implemented
-Phase 5 FULL prefix contains only the common closure plus GTT, Smart-TTL,
-`tavrn_full`, ESC, mentorship, adaptive ordinary-HELLO maintenance, and copied
-FULL telemetry. Expiry, verification, metadata, expiry-driven TC maintenance,
-the future FULL expiry binding, and repair remain absent; accepted mentorship bootstrap JOIN behavior remains
-unchanged.
+Phase 5 FULL closure contains only the common closure plus GTT, Smart-TTL,
+`tavrn_full`, ESC, mentorship, adaptive ordinary-HELLO maintenance, implemented
+local expiry/demand binding, targeted stage-0 and retained-hop/full-RREQ
+verification runtime binding, copied FULL telemetry, and production-composed
+general metadata/confirmed TC. Repair remains deferred. Accepted mentorship
+bootstrap JOIN behavior remains unchanged.
 
 ### 14.3 Step 5f liveness delivery boundary
 
-Step 5f changes documentation only; it does not change generated configuration,
-production sources, or the accepted Phase 5 source closure above. The next RED
-slices are deliberately non-overlapping: (1) local expiry/demand and direct
-evidence (`GTT-02`, `GTT-03`, `GTT-05`, `MAINT-01`, `MAINT-02`, `MAINT-04`,
-`MAINT-05` only), (2)
-targeted freshness request/response, and (3) tracked retained-hop stage-1 plus
-full-diameter stage-2 RREQ. `tavrn_maintenance` owns the later fixed contexts
-and emits typed actions; `tavrn_router` owns route lookup, control-token domain
-handoff, and matching scheduler completion; `aodv_core` remains the sole
-RREQ/request-ID owner. No slice may add expiry-driven LEAVE or other new TC
-behavior: accepted mentorship bootstrap JOIN encoding/origination/relay/dedupe
-remains unchanged, and later TC JOIN/LEAVE maintenance remains separate from
-hard-expiry local departure. Before a RED slice is accepted, its generated
-configuration/manifest closure must be reconciled to the profile's 73-key
-registry; that generated-config work is intentionally outside this
-documentation-only step.
+Local expiry/demand/direct evidence (`GTT-02`, `GTT-03`, `GTT-05`, `MAINT-01`,
+`MAINT-02`, `MAINT-04`, `MAINT-05`), targeted freshness stage 0, and retained-hop
+and full-diameter RREQ verification (`MAINT-06`, `MAINT-07`, `META-01`,
+`META-03`, `META-04`) are implemented in the FULL-only closure.
+`tavrn_maintenance` owns the fixed contexts and emits
+typed actions; `tavrn_router` owns route lookup, control-token domain handoff,
+and matching scheduler completion; `aodv_core` remains the sole RREQ/request-ID
+owner. Targeted stage 0 hands the retained context to the implemented stage-1
+and stage-2 RREQ slices. No slice adds expiry-driven LEAVE or other new TC behavior:
+accepted mentorship bootstrap JOIN encoding/origination/relay/dedupe remains
+unchanged, and later TC JOIN/LEAVE maintenance remains separate from hard-expiry
+local departure. Before targeted RED acceptance, manifest/source closure must
+prove the unchanged exact 73-key registry and lower-profile isolation; generated
+configuration work remains outside this documentation-only step.
 
 ## 15. Test-hook isolation
 

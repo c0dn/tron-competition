@@ -216,6 +216,36 @@ static int router_link_service_trace_is_valid(
     return trace->link_event_present == TAVRN_ROUTER_TRACE_NOT_PRESENT;
 }
 
+static int router_tick_trace_is_valid(const tavrn_router_tick_trace_t *trace)
+{
+    if (trace == NULL || !aodv_status_is_valid(trace->status) ||
+        !router_presence_is_valid(trace->link_step_present) ||
+        !router_presence_is_valid(trace->link_event_present)) {
+        return 0;
+    }
+    if (trace->link_step_present == TAVRN_ROUTER_TRACE_NOT_PRESENT) {
+        return trace->link_step_status == TAVRN_LINK_STEP_NO_EVENT &&
+            trace->link_event_present == TAVRN_ROUTER_TRACE_NOT_PRESENT &&
+            trace->link_event.type == TAVRN_LINK_EVENT_NONE;
+    }
+    if (!link_step_status_is_valid(trace->link_step_status)) {
+        return 0;
+    }
+    if (trace->link_event_present == TAVRN_ROUTER_TRACE_NOT_PRESENT) {
+        return trace->link_step_status != TAVRN_LINK_STEP_EVENT &&
+            trace->link_event.type == TAVRN_LINK_EVENT_NONE;
+    }
+    if (trace->link_step_status == TAVRN_LINK_STEP_NO_EVENT ||
+        !link_event_type_is_valid(trace->link_event.type) ||
+        trace->link_event.type == TAVRN_LINK_EVENT_NONE) {
+        return 0;
+    }
+    if (trace->link_event.type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
+        return trace->link_step_status == TAVRN_LINK_STEP_EVENT;
+    }
+    return 1;
+}
+
 static int router_trace_is_valid(const tavrn_router_phase_trace_t *trace,
                                  tavrn_router_trace_phase_t expected_phase)
 {
@@ -227,7 +257,7 @@ static int router_trace_is_valid(const tavrn_router_phase_trace_t *trace,
     case TAVRN_ROUTER_TRACE_SCHEDULER_EVENT:
         return router_event_status_is_valid(trace->detail.scheduler_event.status);
     case TAVRN_ROUTER_TRACE_TICK:
-        return aodv_status_is_valid(trace->detail.tick.status);
+        return router_tick_trace_is_valid(&trace->detail.tick);
     case TAVRN_ROUTER_TRACE_APPLICATION_SUBMIT:
         return aodv_status_is_valid(trace->detail.submit.status);
     case TAVRN_ROUTER_TRACE_DISPATCH:
@@ -932,6 +962,65 @@ routed_cycle_result_t routed_cycle_diagnostic_dequeue(
     queue->head = (uint8_t)((queue->head + 1u) % ROUTED_CYCLE_DIAGNOSTIC_CAPACITY);
     queue->count--;
     return ROUTED_CYCLE_RESULT_OK;
+}
+
+static int retry_log_mailbox_is_valid(const routed_cycle_retry_log_mailbox_t *mailbox)
+{
+    return mailbox != NULL && mailbox->pending <= 1u &&
+        (mailbox->pending == 0u ||
+         mailbox->event.type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED);
+}
+
+void routed_cycle_retry_log_init(routed_cycle_retry_log_mailbox_t *mailbox)
+{
+    if (mailbox != NULL) {
+        memset(mailbox, 0, sizeof(*mailbox));
+    }
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_offer(
+    routed_cycle_retry_log_mailbox_t *mailbox, const tavrn_link_event_t *event)
+{
+    if (!retry_log_mailbox_is_valid(mailbox) || event == NULL ||
+        event->type != TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
+        return ROUTED_CYCLE_RETRY_LOG_INVALID;
+    }
+    if (mailbox->pending != 0u) {
+        if (mailbox->dropped_count != UINT32_MAX) {
+            mailbox->dropped_count++;
+        }
+        return ROUTED_CYCLE_RETRY_LOG_DROPPED;
+    }
+    mailbox->event = *event;
+    mailbox->pending = 1u;
+    return ROUTED_CYCLE_RETRY_LOG_OK;
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_take(
+    routed_cycle_retry_log_mailbox_t *mailbox, tavrn_link_event_t *event_out)
+{
+    if (!retry_log_mailbox_is_valid(mailbox) || event_out == NULL) {
+        return ROUTED_CYCLE_RETRY_LOG_INVALID;
+    }
+    if (mailbox->pending == 0u) {
+        return ROUTED_CYCLE_RETRY_LOG_EMPTY;
+    }
+    *event_out = mailbox->event;
+    memset(&mailbox->event, 0, sizeof(mailbox->event));
+    mailbox->pending = 0u;
+    return ROUTED_CYCLE_RETRY_LOG_OK;
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_snapshot(
+    const routed_cycle_retry_log_mailbox_t *mailbox,
+    routed_cycle_retry_log_snapshot_t *snapshot_out)
+{
+    if (!retry_log_mailbox_is_valid(mailbox) || snapshot_out == NULL) {
+        return ROUTED_CYCLE_RETRY_LOG_INVALID;
+    }
+    snapshot_out->dropped_count = mailbox->dropped_count;
+    snapshot_out->pending = mailbox->pending;
+    return ROUTED_CYCLE_RETRY_LOG_OK;
 }
 
 static int logical_id_is_valid(const tavrn_logical_id_t *identity)

@@ -637,6 +637,57 @@ static int count_data_dedupe_for_origin(const tavrn_link_v2_t *link,
     return count;
 }
 
+static int pin_transit_data(tavrn_link_v2_t *link, const tavrn_link_data_t *data,
+                            uint8_t slot)
+{
+    tavrn_data_dedupe_entry_t *entry;
+
+    if (link == NULL || data == NULL || slot >= TAVRN_LINK_DATA_DEDUPE_CAPACITY) {
+        return 0;
+    }
+    entry = &link->data_dedupe[slot];
+    memset(entry, 0, sizeof(*entry));
+    entry->valid = 1u;
+    entry->custody_pinned = 1u;
+    entry->origin = data->origin;
+    entry->final_destination = data->final_destination;
+    entry->data_seq = data->data_seq;
+    entry->app_kind = data->app_kind;
+    entry->app_source = data->app_source;
+    entry->expires_at_ms = 10000u;
+    return 1;
+}
+
+static int externally_pin_transit_data(tavrn_link_v2_t *link,
+                                       const tavrn_link_data_t *data,
+                                       uint8_t slot)
+{
+    return pin_transit_data(link, data, slot) &&
+        tavrn_link_v2_transfer_rx_custody_to_external(link, data, 0u) ==
+            TAVRN_LINK_RESOLVE_OK;
+}
+
+static int transit_pin_is_marked(const tavrn_link_v2_t *link,
+                                 const tavrn_link_data_t *data,
+                                 uint8_t slot)
+{
+    const tavrn_data_dedupe_entry_t *entry;
+
+    if (link == NULL || data == NULL || slot >= TAVRN_LINK_DATA_DEDUPE_CAPACITY) {
+        return 0;
+    }
+    entry = &link->data_dedupe[slot];
+    return entry->valid != 0u && entry->custody_pinned != 0u &&
+        entry->external_custody_owner != 0u &&
+        entry->incarnation_clear_on_release != 0u &&
+        entry->origin.width == data->origin.width &&
+        entry->origin.value == data->origin.value &&
+        entry->final_destination.width == data->final_destination.width &&
+        entry->final_destination.value == data->final_destination.value &&
+        entry->data_seq == data->data_seq && entry->app_kind == data->app_kind &&
+        entry->app_source == data->app_source;
+}
+
 static int count_flood_dedupe_for_origin(const tavrn_link_v2_t *link,
                                           uint16_t origin)
 {
@@ -1228,6 +1279,192 @@ static int test_serial_04_queued_local_rerr_is_preserved(void)
     return ok;
 }
 
+static int test_serial_04_external_pins_survive_peer_clear_until_release(void)
+{
+    incarnation_fixture_t fixture;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b, TAVRN_IDENTITY_SID16);
+    tavrn_link_data_t origin_pinned;
+    tavrn_link_data_t destination_pinned;
+    tavrn_link_data_t origin_internal;
+    tavrn_link_data_t destination_internal;
+
+    if (!setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                       TAVRN_IDENTITY_SID16, 0x4a4au, 0u)) {
+        return 0;
+    }
+    memset(&origin_pinned, 0, sizeof(origin_pinned));
+    origin_pinned.origin = peer_b.logical_id;
+    origin_pinned.final_destination = make_peer(adva_c, TAVRN_IDENTITY_SID16).logical_id;
+    origin_pinned.data_seq = 0x6101u;
+    origin_pinned.ttl = 1u;
+    origin_pinned.app_kind = 0x7fu;
+    origin_pinned.app_source = 0x31u;
+    origin_pinned.app_len = 1u;
+    origin_pinned.app_bytes[0] = 0xa5u;
+    origin_pinned.ownership = TAVRN_DATA_TRANSIT;
+    destination_pinned = origin_pinned;
+    destination_pinned.origin = make_peer(adva_d, TAVRN_IDENTITY_SID16).logical_id;
+    destination_pinned.final_destination = peer_b.logical_id;
+    destination_pinned.data_seq++;
+    origin_internal = origin_pinned;
+    origin_internal.data_seq++;
+    destination_internal = destination_pinned;
+    destination_internal.data_seq++;
+    return externally_pin_transit_data(&fixture.link, &origin_pinned, 0u) &&
+        externally_pin_transit_data(&fixture.link, &destination_pinned, 1u) &&
+        pin_transit_data(&fixture.link, &origin_internal, 2u) &&
+        pin_transit_data(&fixture.link, &destination_internal, 3u) &&
+        tavrn_link_v2_clear_peer_incarnation(&fixture.link, &peer_b, 1u) ==
+            TAVRN_LINK_RESOLVE_OK &&
+        transit_pin_is_marked(&fixture.link, &origin_pinned, 0u) &&
+        transit_pin_is_marked(&fixture.link, &destination_pinned, 1u) &&
+        fixture.link.data_dedupe[2].valid == 0u &&
+        fixture.link.data_dedupe[3].valid == 0u &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &origin_pinned, 2u) ==
+            TAVRN_LINK_RESOLVE_OK &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &destination_pinned, 3u) ==
+            TAVRN_LINK_RESOLVE_OK &&
+        fixture.link.data_dedupe[0].valid == 0u &&
+        fixture.link.data_dedupe[1].valid == 0u;
+}
+
+static tavrn_link_data_t make_multihop_transit_data(uint16_t sequence)
+{
+    tavrn_link_data_t data;
+
+    memset(&data, 0, sizeof(data));
+    data.origin = make_peer(adva_c, TAVRN_IDENTITY_SID16).logical_id;
+    data.final_destination = make_peer(adva_d, TAVRN_IDENTITY_SID16).logical_id;
+    data.data_seq = sequence;
+    data.ttl = 2u;
+    data.app_kind = 0x7fu;
+    data.app_source = 0x31u;
+    data.app_len = 1u;
+    data.app_bytes[0] = 0xa5u;
+    data.ownership = TAVRN_DATA_TRANSIT;
+    return data;
+}
+
+static int transit_pin_is_externally_owned(const tavrn_link_v2_t *link,
+                                           const tavrn_link_data_t *data,
+                                           uint8_t slot)
+{
+    const tavrn_data_dedupe_entry_t *entry;
+
+    if (link == NULL || data == NULL || slot >= TAVRN_LINK_DATA_DEDUPE_CAPACITY) {
+        return 0;
+    }
+    entry = &link->data_dedupe[slot];
+    return entry->valid != 0u && entry->custody_pinned != 0u &&
+        entry->external_custody_owner != 0u &&
+        entry->origin.width == data->origin.width &&
+        entry->origin.value == data->origin.value &&
+        entry->final_destination.width == data->final_destination.width &&
+        entry->final_destination.value == data->final_destination.value &&
+        entry->data_seq == data->data_seq && entry->app_kind == data->app_kind &&
+        entry->app_source == data->app_source;
+}
+
+static int test_serial_04_pending_ingest_pin_clears_on_transmitter_reset(void)
+{
+    incarnation_fixture_t fixture;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b, TAVRN_IDENTITY_SID16);
+    tavrn_link_data_t pending_data = make_multihop_transit_data(0x6201u);
+    tavrn_link_data_t externally_owned_data = make_multihop_transit_data(0x6202u);
+    tavrn_validated_control_t hello = make_bootstrap_hello(
+        adva_b, TAVRN_IDENTITY_SID16, 0x6201u);
+    int ok = 1;
+
+    ok &= setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                        TAVRN_IDENTITY_SID16, 0x6262u, 0u) &&
+        finish_aodv_only_boot(&fixture, 1u) &&
+        deliver_control(&fixture, &hello, adva_b, 2u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        pin_transit_data(&fixture.link, &pending_data, 0u) &&
+        externally_pin_transit_data(&fixture.link, &externally_owned_data, 1u);
+    /* The public candidate path immediately consumes accepted data.  Seed the
+     * exposed retained input to isolate B as the transmitter-only reset key. */
+    fixture.router.pending_ingest.input.transmitter = peer_b;
+    fixture.router.pending_ingest.input.data = pending_data;
+    fixture.router.pending_ingest.valid = 1u;
+    hello = make_bootstrap_hello(adva_b, TAVRN_IDENTITY_SID16, 0x6202u);
+    ok &= fixture.link.data_dedupe[0].custody_pinned != 0u &&
+        fixture.link.data_dedupe[0].external_custody_owner == 0u &&
+        deliver_control(&fixture, &hello, adva_b, 3u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        fixture.router.pending_ingest.valid == 0u &&
+        fixture.link.data_dedupe[0].custody_pinned == 0u &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &pending_data, 4u) ==
+            TAVRN_LINK_RESOLVE_TOKEN_INVALID &&
+        transit_pin_is_externally_owned(&fixture.link, &externally_owned_data, 1u) &&
+        fixture.link.data_dedupe[1].incarnation_clear_on_release == 0u &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &externally_owned_data, 4u) ==
+            TAVRN_LINK_RESOLVE_OK;
+    return ok;
+}
+
+static int test_serial_04_retained_forward_pin_clears_on_next_hop_reset(void)
+{
+    incarnation_fixture_t fixture;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b, TAVRN_IDENTITY_SID16);
+    tavrn_link_data_t data = make_multihop_transit_data(0x6301u);
+    tavrn_validated_control_t hello = make_bootstrap_hello(
+        adva_b, TAVRN_IDENTITY_SID16, 0x6301u);
+    int ok = 1;
+
+    ok &= setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                        TAVRN_IDENTITY_SID16, 0x6363u, 0u) &&
+        finish_aodv_only_boot(&fixture, 1u) &&
+        deliver_control(&fixture, &hello, adva_b, 2u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        pin_transit_data(&fixture.link, &data, 0u);
+    memset(&fixture.router.retained_action, 0, sizeof(fixture.router.retained_action));
+    fixture.router.retained_action.type = AODV_ACTION_FORWARD_DATA;
+    fixture.router.retained_action.detail.data.next_hop = peer_b;
+    fixture.router.retained_action.detail.data.data = data;
+    fixture.router.retained_action_valid = 1u;
+    hello = make_bootstrap_hello(adva_b, TAVRN_IDENTITY_SID16, 0x6302u);
+    ok &= fixture.link.data_dedupe[0].custody_pinned != 0u &&
+        fixture.link.data_dedupe[0].external_custody_owner == 0u &&
+        deliver_control(&fixture, &hello, adva_b, 3u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        fixture.router.retained_action_valid == 0u &&
+        fixture.link.data_dedupe[0].custody_pinned == 0u &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &data, 4u) ==
+            TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    return ok;
+}
+
+static int test_serial_04_queued_forward_pin_clears_on_next_hop_reset(void)
+{
+    incarnation_fixture_t fixture;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b, TAVRN_IDENTITY_SID16);
+    tavrn_direct_peer_t peer_d = make_peer(adva_d, TAVRN_IDENTITY_SID16);
+    tavrn_link_data_t data = make_multihop_transit_data(0x6401u);
+    tavrn_validated_control_t hello = make_bootstrap_hello(
+        adva_b, TAVRN_IDENTITY_SID16, 0x6401u);
+    aodv_data_input_t input;
+    aodv_action_t action;
+    int ok = 1;
+
+    ok &= setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                        TAVRN_IDENTITY_SID16, 0x6464u, 0u) &&
+        finish_aodv_only_boot(&fixture, 1u) &&
+        deliver_control(&fixture, &hello, adva_b, 2u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        install_route_via(&fixture, &peer_b, peer_d.logical_id, 3u);
+    memset(&input, 0, sizeof(input));
+    input.transmitter = peer_b;
+    input.data = data;
+    ok &= aodv_core_ingest_data(&fixture.aodv, &input, 5u) == AODV_STATUS_OK &&
+        pin_transit_data(&fixture.link, &data, 0u);
+    hello = make_bootstrap_hello(adva_b, TAVRN_IDENTITY_SID16, 0x6402u);
+    ok &= fixture.link.data_dedupe[0].custody_pinned != 0u &&
+        fixture.link.data_dedupe[0].external_custody_owner == 0u &&
+        deliver_control(&fixture, &hello, adva_b, 6u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+        fixture.link.data_dedupe[0].custody_pinned == 0u &&
+        tavrn_link_v2_release_rx_custody(&fixture.link, &data, 7u) ==
+            TAVRN_LINK_RESOLVE_TOKEN_INVALID &&
+        aodv_core_poll_action(&fixture.aodv, &action) == AODV_ACTION_POLL_OK &&
+        action.type == AODV_ACTION_SEND_RERR;
+    return ok;
+}
+
 static int test_serial_04_relay_delivery_cancelled_by_origin(void)
 {
     incarnation_fixture_t fixture;
@@ -1603,6 +1840,14 @@ int main(void)
     CHECK("SERIAL-04", test_serial_04_committed_reset_retries_once());
     CHECK("SERIAL-04", test_serial_04_collision_prefilter());
     CHECK("SERIAL-04", test_serial_04_queued_local_rerr_is_preserved());
+    CHECK("SERIAL-04",
+          test_serial_04_external_pins_survive_peer_clear_until_release());
+    CHECK("SERIAL-04",
+          test_serial_04_pending_ingest_pin_clears_on_transmitter_reset());
+    CHECK("SERIAL-04",
+          test_serial_04_retained_forward_pin_clears_on_next_hop_reset());
+    CHECK("SERIAL-04",
+          test_serial_04_queued_forward_pin_clears_on_next_hop_reset());
     CHECK("SERIAL-04", test_serial_04_relay_delivery_cancelled_by_origin());
     CHECK("SERIAL-04",
           test_serial_04_rrep_and_ack_cleanup_through_unrelated_next_hop());

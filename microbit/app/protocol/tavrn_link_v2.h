@@ -15,6 +15,24 @@
 
 typedef uint16_t tavrn_rx_candidate_token_t;
 
+/* Low tracked tokens remain link-owned.  Maintenance owns the disjoint high
+ * verification domain and only asks link-v2 to copy those tokens into a
+ * validated targeted HELLO scheduler item. */
+typedef enum tavrn_targeted_freshness_low_work {
+    TAVRN_TARGETED_LOW_CUSTODY = 0,
+    TAVRN_TARGETED_LOW_BOOTSTRAP,
+} tavrn_targeted_freshness_low_work_t;
+
+typedef enum tavrn_targeted_freshness_status {
+    TAVRN_TARGETED_FRESHNESS_OK = 0,
+    TAVRN_TARGETED_FRESHNESS_BUSY,
+    TAVRN_TARGETED_FRESHNESS_DEFERRED,
+    TAVRN_TARGETED_FRESHNESS_DUPLICATE,
+    TAVRN_TARGETED_FRESHNESS_DROPPED,
+    TAVRN_TARGETED_FRESHNESS_INVALID,
+    TAVRN_TARGETED_FRESHNESS_UNAVAILABLE,
+} tavrn_targeted_freshness_status_t;
+
 typedef enum tavrn_rx_decision {
     TAVRN_RX_ACCEPTED = 0,
     TAVRN_RX_BUSY,
@@ -198,6 +216,24 @@ typedef struct tavrn_link_peer_incarnation_snapshot {
     uint8_t data_dedupe_count;
 } tavrn_link_peer_incarnation_snapshot_t;
 
+/* A bounded, copied view of link-owned DATA custody and its exact direct next
+ * hop.  Slot order is physical custody-array order; callers never receive a
+ * mutable slot or scheduler token. */
+typedef struct tavrn_link_custody_data_record {
+    tavrn_direct_peer_t next_hop;
+    tavrn_link_data_t data;
+} tavrn_link_custody_data_record_t;
+
+typedef struct tavrn_link_custody_data_snapshot {
+    tavrn_link_custody_data_record_t records[TAVRN_LINK_CUSTODY_CAPACITY];
+    uint8_t count;
+} tavrn_link_custody_data_snapshot_t;
+
+typedef enum tavrn_link_custody_snapshot_status {
+    TAVRN_LINK_CUSTODY_SNAPSHOT_OK = 0,
+    TAVRN_LINK_CUSTODY_SNAPSHOT_INVALID,
+} tavrn_link_custody_snapshot_status_t;
+
 typedef enum tavrn_custody_phase {
     TAVRN_CUSTODY_FREE = 0,
     TAVRN_CUSTODY_READY_NOT_ELIGIBLE,
@@ -210,6 +246,11 @@ typedef enum tavrn_custody_phase {
 typedef struct tavrn_data_dedupe_entry {
     uint8_t valid;
     uint8_t custody_pinned;
+    /* These consume the existing alignment padding before `origin`.  An
+     * external owner has copied the transit DATA and is responsible for its
+     * exact release; reset preserves only that owner until release. */
+    uint8_t incarnation_clear_on_release;
+    uint8_t external_custody_owner;
     tavrn_logical_id_t origin;
     tavrn_logical_id_t final_destination;
     uint16_t data_seq;
@@ -287,6 +328,38 @@ tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome,
     ble_mesh_tx_token_t *scheduler_token_out);
+/* Caller-owned tracked control admits only an exact SID8 targeted HELLO or an
+ * exact SID8 controlled-flood E_RREQ.  The caller supplies a high-domain token
+ * and receives any synchronous tracked eviction by value; generic low-domain
+ * ownership remains link-local. */
+tavrn_link_send_status_t tavrn_link_v2_send_tracked_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop, ble_mesh_tx_token_t token,
+    uint32_t now_ms, ble_mesh_tx_token_t *evicted_token_out);
+/* A non-mutating admission check for caller-owned high-token control.  It is
+ * used before a one-shot request-ID allocation, so a full equal-priority queue
+ * cannot consume an ID. */
+int tavrn_link_v2_tracked_control_may_admit(const tavrn_link_v2_t *link);
+/* Cancels an exact queued caller-owned tracked control.  A non-queued token is
+ * deliberately distinguishable from malformed input so maintenance can retain
+ * an in-flight tombstone until its terminal scheduler event arrives. */
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    ble_mesh_tx_token_t token, uint8_t *canceled_out);
+/* Cancels one exact queued tracked token without decoding its payload.  It
+ * refuses link-owned custody tokens and duplicate queue copies, but remains
+ * available after the mesh fault latch so external owners can retire queued
+ * work before their fault callback releases its registration. */
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_token(
+    tavrn_link_v2_t *link, ble_mesh_tx_token_t token, uint8_t *canceled_out);
+int tavrn_link_v2_tracked_token_in_use(const tavrn_link_v2_t *link,
+                                       ble_mesh_tx_token_t token);
+/* Host-test-only low-domain token probe for custody/bootstrap bookkeeping. */
+#if defined(BLE_RADIO_HOST_TEST)
+tavrn_targeted_freshness_status_t tavrn_link_v2_reserve_targeted_low_token(
+    tavrn_link_v2_t *link, tavrn_targeted_freshness_low_work_t work,
+    uint16_t *token_out);
+#endif
 /* Cancels every still-queued exact copy of one locally-originated control.
  * It does not affect an already selected/in-flight scheduler item. */
 tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
@@ -304,6 +377,17 @@ int tavrn_link_v2_rx_candidate_matches(
 tavrn_link_resolve_status_t tavrn_link_v2_release_rx_custody(
     tavrn_link_v2_t *link, const tavrn_link_data_t *data,
     uint32_t now_ms);
+/* Transfers one exact, already-pinned transit DATA dedupe record from the
+ * common router to an external copied-data owner.  It refuses stale, double,
+ * incomplete, or still-link-custodied records without changing dedupe state. */
+tavrn_link_resolve_status_t tavrn_link_v2_transfer_rx_custody_to_external(
+    tavrn_link_v2_t *link, const tavrn_link_data_t *data,
+    uint32_t now_ms);
+/* Drops the exact router/AODV-owned transit dedupe pin.  A missing, unpinned,
+ * externally owned, or still-link-custodied exact record is already disposed
+ * for this owner and succeeds without mutation. */
+tavrn_link_resolve_status_t tavrn_link_v2_discard_internal_rx_custody(
+    tavrn_link_v2_t *link, const tavrn_link_data_t *data);
 tavrn_link_step_status_t tavrn_link_v2_on_scheduler_event(
     tavrn_link_v2_t *link, const ble_mesh_sched_event_t *input,
     uint32_t now_ms, tavrn_link_event_t *output);
@@ -328,6 +412,12 @@ tavrn_link_resolve_status_t tavrn_link_v2_quarantine_peer_incarnation(
 tavrn_link_resolve_status_t tavrn_link_v2_peer_incarnation_snapshot(
     const tavrn_link_v2_t *link, const tavrn_direct_peer_t *peer,
     tavrn_link_peer_incarnation_snapshot_t *snapshot_out);
+/* Copies every non-free custody DATA record whose final destination exactly
+ * matches `destination`.  The output is always cleared before validation. */
+tavrn_link_custody_snapshot_status_t
+tavrn_link_v2_custody_snapshot_for_destination(
+    const tavrn_link_v2_t *link, const tavrn_logical_id_t *destination,
+    tavrn_link_custody_data_snapshot_t *snapshot_out);
 /* Identity-width handover is one mesh-task operation: it discards every
  * width-dependent custody, candidate, dedupe and queued routed transmission
  * before replacing the local direct-peer namespace. */

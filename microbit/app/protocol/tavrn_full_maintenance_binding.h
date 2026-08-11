@@ -33,7 +33,14 @@ typedef struct tavrn_full_maintenance_binding_result {
     tavrn_router_local_broadcast_snapshot_t broadcast;
     tavrn_maintenance_status_t broadcast_observation_status;
     tavrn_maintenance_status_t activation_status;
+    tavrn_targeted_freshness_status_t targeted_owner_status;
+    tavrn_targeted_freshness_action_t targeted_owner_action;
+    tavrn_rreq_verification_status_t verification_owner_status;
+    tavrn_rreq_verification_action_t verification_owner_action;
+    tavrn_tc_metadata_status_t metadata_owner_status;
+    tavrn_tc_metadata_status_t tc_owner_status;
     tavrn_maintenance_owner_post_tick_result_t post_tick;
+    tavrn_maintenance_counters_t maintenance_counters;
 } tavrn_full_maintenance_binding_result_t;
 
 /* `result_out` is required caller-owned storage.  A NULL output is invalid and
@@ -42,5 +49,11 @@ typedef struct tavrn_full_maintenance_binding_result {
 tavrn_full_maintenance_binding_status_t tavrn_full_maintenance_binding_tick(
     tavrn_full_maintenance_binding_input_t input, uint32_t now_ms,
     tavrn_full_maintenance_binding_result_t *result_out);
+/* Install the concrete FULL adapters on generic router ports.  Router-common
+ * receives only copied controls and failed-link facts; this binding owns all
+ * metadata, TC, and GTT policy. */
+tavrn_full_maintenance_binding_status_t tavrn_full_maintenance_binding_install(
+    tavrn_router_t *router, tavrn_mentorship_t *mentorship,
+    tavrn_maintenance_t *maintenance);
 
 #endif /* TAVRN_FULL_MAINTENANCE_BINDING_H */

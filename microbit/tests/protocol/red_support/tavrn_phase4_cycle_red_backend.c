@@ -82,6 +82,36 @@ routed_cycle_result_t routed_cycle_diagnostic_dequeue(
     return ROUTED_CYCLE_RESULT_EMPTY;
 }
 
+void routed_cycle_retry_log_init(routed_cycle_retry_log_mailbox_t *mailbox)
+{
+    (void)mailbox;
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_offer(
+    routed_cycle_retry_log_mailbox_t *mailbox, const tavrn_link_event_t *event)
+{
+    (void)mailbox;
+    (void)event;
+    return ROUTED_CYCLE_RETRY_LOG_INVALID;
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_take(
+    routed_cycle_retry_log_mailbox_t *mailbox, tavrn_link_event_t *event_out)
+{
+    (void)mailbox;
+    (void)event_out;
+    return ROUTED_CYCLE_RETRY_LOG_EMPTY;
+}
+
+routed_cycle_retry_log_status_t routed_cycle_retry_log_snapshot(
+    const routed_cycle_retry_log_mailbox_t *mailbox,
+    routed_cycle_retry_log_snapshot_t *snapshot_out)
+{
+    (void)mailbox;
+    (void)snapshot_out;
+    return ROUTED_CYCLE_RETRY_LOG_INVALID;
+}
+
 void routed_cycle_rreq_queue_init(routed_cycle_rreq_queue_t *queue)
 {
     (void)queue;

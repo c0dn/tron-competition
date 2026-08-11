@@ -37,6 +37,7 @@ stack_usage="OFF"
 resource_baseline=""
 resource_checker="${repo_root}/scripts/check_tavrn_expiry_resources.py"
 resource_gate="NOT_REQUESTED"
+repair="OFF"
 
 usage() {
     cat <<'EOF'
@@ -59,7 +60,8 @@ Legacy options:
   --node-id VALUE           Legacy label; zero derives its existing FICR label
 
 Routed PoC options:
-  --feature AODV_ONLY|FULL_TAVRN
+   --feature AODV_ONLY|FULL_TAVRN
+   --repair ON|OFF           Enable local repair (FULL_TAVRN only; default OFF)
   --peer-adva ADDR          Direct diagnostic peer AdvA
   --initiator ON|OFF        Emit bounded diagnostic DATA directly to peer
   --tx-interval-ms MS       Diagnostic DATA interval
@@ -100,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         --tx-interval-ms) tx_interval_ms="${2:?Missing value for --tx-interval-ms}"; shift 2 ;;
         --transaction-target) transaction_target="${2:?Missing value for --transaction-target}"; shift 2 ;;
         --feature) feature="${2:?Missing value for --feature}"; feature_requested=yes; shift 2 ;;
+        --repair) repair="${2:?Missing value for --repair}"; shift 2 ;;
         --stack-usage) stack_usage="ON"; shift ;;
         --resource-baseline) resource_baseline="${2:?Missing value for --resource-baseline}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
@@ -119,6 +122,15 @@ fi
 if [[ "$target" == "tavrn_routed_node" && "$feature" != "AODV_ONLY" &&
       "$feature" != "FULL_TAVRN" ]]; then
     printf '%s\n' '--feature must be AODV_ONLY or FULL_TAVRN for tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ "$repair" != "ON" && "$repair" != "OFF" ]]; then
+    printf '%s\n' '--repair must be ON or OFF' >&2
+    exit 2
+fi
+if [[ "$repair" == "ON" &&
+      ( "$target" != "tavrn_routed_node" || "$feature" != "FULL_TAVRN" ) ]]; then
+    printf '%s\n' '--repair ON requires --target tavrn_routed_node --feature FULL_TAVRN' >&2
     exit 2
 fi
 if [[ "$expiry_full_table" != "ON" && "$expiry_full_table" != "OFF" ]]; then
@@ -209,6 +221,7 @@ cmake_args=(
     -DTRON_PHASE1_TARGET="$phase1_target"
     -DTRON_NODE_MODE="$node_mode"
     -DTAVRN_FEATURE_LEVEL="$feature_level"
+    -DTAVRN_ENABLE_LOCAL_REPAIR="$repair"
     -DTRON_STACK_USAGE="$stack_usage"
     -DTRON_TIMER_PROFILE="$timer_profile"
     -DTRON_BENCH_ROLE="$role"
@@ -295,6 +308,37 @@ test -s "$build_dir/compile_commands.json"
 test -s "$build_dir/build.ninja"
 test -s "$build_dir/CMakeCache.txt"
 
+resource_declared_fixed_state_delta=0
+if [[ "$stack_usage" == "ON" ]]; then
+    build_behavior=""
+    while IFS='=' read -r manifest_key manifest_value; do
+        if [[ "$manifest_key" == "build.behavior" ]]; then
+            build_behavior="$manifest_value"
+            break
+        fi
+    done < "$config_manifest"
+    if [[ "$build_behavior" == \
+        "TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO_LOCAL_EXPIRY_TARGETED_FRESHNESS_RREQ_VERIFICATION_TC_METADATA" ||
+          "$build_behavior" == \
+        "TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO_LOCAL_EXPIRY_TARGETED_FRESHNESS_RREQ_VERIFICATION_TC_METADATA_LOCAL_REPAIR" ]]; then
+        # Stage 0 accounts for 1044 bytes and the retained RREQ-verification
+        # context/accounting adds 948 bytes. TC/metadata adds 2592 bytes for
+        # exact 16-entry origin/relay retention, four shared metadata slots,
+        # and the owner-held atomic GTT rollback image. The copied FULL-only
+        # TC/metadata logger snapshot adds 32 bytes. One exact retry-exhausted
+        # LEAVE overflow obligation adds 8 bytes. The routed initial-task growth
+        # is dynamically allocated and is accounted by the separate runtime RAM
+        # reserve, not by the fixed-state allowance. Future .data or .bss growth
+        # remains subject to the checker's unexplained limit.
+        resource_declared_fixed_state_delta=4624
+        if [[ "$repair" == "ON" ]]; then
+            # Local repair adds one bounded 436-byte repair context, one
+            # 56-byte production binding, and one 188-byte copied tick result.
+            resource_declared_fixed_state_delta=5304
+        fi
+    fi
+fi
+
 commit="$(git -C "$repo_root" rev-parse HEAD)"
 tree="$(git -C "$repo_root" rev-parse HEAD^{tree})"
 commit12="${commit:0:12}"
@@ -341,7 +385,9 @@ else
     else
         feature_tag="aodv-only"
     fi
-    artifact_base="tron-ble-routed-${feature_tag}-${timer_tag}-${role,,}-${identity_tag}-${commit12}"
+    repair_bit=0
+    [[ "$repair" == "ON" ]] && repair_bit=1
+    artifact_base="tron-ble-routed-${feature_tag}-repair${repair_bit}-${timer_tag}-${role,,}-${identity_tag}-${commit12}"
 fi
 
 install -m 0644 "$source_elf" "$out_dir/${artifact_base}.elf"
@@ -462,7 +508,8 @@ PY
         --full-manifest "$config_manifest" --compile-commands "$out_dir/${compile_commands_evidence_name}" \
         --selected-sources "$out_dir/${source_inventory_evidence_name}" \
         --disassembly "$out_dir/${disassembly_evidence_name}" \
-        --config-header "$out_dir/${config_header_evidence_name}"
+        --config-header "$out_dir/${config_header_evidence_name}" \
+        --declared-fixed-state-delta "$resource_declared_fixed_state_delta"
     test -s "$out_dir/${resource_manifest_name}"
 fi
 
@@ -581,6 +628,8 @@ fi
         printf 'resource.manifest.name=%s\n' "$resource_manifest_name"
         printf 'resource.manifest.sha256=%s\n' "$(sha256sum "$out_dir/${resource_manifest_name}" | cut -d' ' -f1)"
         printf 'resource.manifest.size=%s\n' "$(wc -c < "$out_dir/${resource_manifest_name}")"
+        printf 'resource.fixed_state.declared_delta_bytes=%s\n' \
+            "$resource_declared_fixed_state_delta"
     else
         printf 'resource.stack_usage=OFF\n'
     fi

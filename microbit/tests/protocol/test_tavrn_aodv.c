@@ -197,6 +197,21 @@ static tavrn_link_data_t make_link_data(tavrn_logical_id_t origin,
     return data;
 }
 
+typedef struct peer_discard_recorder {
+    aodv_data_action_t actions[2];
+    uint8_t count;
+} peer_discard_recorder_t;
+
+static void record_peer_data_discard(void *context,
+                                     const aodv_data_action_t *action)
+{
+    peer_discard_recorder_t *recorder = context;
+
+    if (recorder != NULL && action != NULL && recorder->count < 2u) {
+        recorder->actions[recorder->count++] = *action;
+    }
+}
+
 static int poll_control(const char *requirement, aodv_core_t *core,
                         aodv_action_type_t expected_type,
                         aodv_action_t *action_out)
@@ -1365,6 +1380,63 @@ static void test_aodv_07_purge_unsent_rrep_ack_wait_capacity(void)
     }
 }
 
+static void test_aodv_peer_quarantine_reports_discarded_data(void)
+{
+    aodv_core_t core;
+    tavrn_codec_config_t codec = make_codec_config(adva_a);
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_b = make_peer(adva_b);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    aodv_data_input_t forward_input;
+    aodv_data_input_t delivery_input;
+    aodv_action_t action;
+    peer_discard_recorder_t recorder;
+
+    memset(&recorder, 0, sizeof(recorder));
+    if (!init_core(&core, adva_a, 1u) ||
+        !decode_control("AODV-07", &codec, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply) ||
+        !install_route_through_next_hop("AODV-07", &core, &peer_a, &peer_b,
+                                        &peer_a, peer_c.logical_id, &reply, 1u)) {
+        return;
+    }
+    memset(&forward_input, 0, sizeof(forward_input));
+    forward_input.transmitter = peer_a;
+    forward_input.data = make_link_data(peer_a.logical_id, peer_c.logical_id,
+                                        0x680fu);
+    memset(&delivery_input, 0, sizeof(delivery_input));
+    delivery_input.transmitter = peer_b;
+    delivery_input.data = make_link_data(peer_b.logical_id, peer_a.logical_id,
+                                         0x6810u);
+    CHECK("AODV-07", aodv_core_ingest_data(&core, &forward_input, 4u) ==
+                         AODV_STATUS_OK &&
+                         aodv_core_ingest_data(&core, &delivery_input, 5u) ==
+                         AODV_STATUS_OK);
+    CHECK("AODV-07", aodv_core_quarantine_peer_incarnation_with_data_discard(
+                         &core, &peer_b, record_peer_data_discard, &recorder) ==
+                         AODV_FAILURE_OK);
+    CHECK("AODV-07", recorder.count == 2u &&
+                         ((recorder.actions[0].next_hop.logical_id.value ==
+                               peer_b.logical_id.value &&
+                           recorder.actions[0].data.final_destination.value ==
+                               peer_c.logical_id.value &&
+                           recorder.actions[1].data.origin.value ==
+                               peer_b.logical_id.value &&
+                           recorder.actions[1].data.final_destination.value ==
+                               peer_a.logical_id.value) ||
+                          (recorder.actions[1].next_hop.logical_id.value ==
+                               peer_b.logical_id.value &&
+                           recorder.actions[1].data.final_destination.value ==
+                               peer_c.logical_id.value &&
+                           recorder.actions[0].data.origin.value ==
+                               peer_b.logical_id.value &&
+                           recorder.actions[0].data.final_destination.value ==
+                               peer_a.logical_id.value)));
+    CHECK("AODV-07", aodv_core_poll_action(&core, &action) ==
+                         AODV_ACTION_POLL_EMPTY);
+}
+
 static void test_blocker_failure_rediscovery_resumes_data(void)
 {
     aodv_core_t node_a;
@@ -1582,6 +1654,7 @@ int main(void)
     test_blocker_late_ack_and_blacklist_admission();
     test_aodv_07_cancel_unsent_action();
     test_aodv_07_purge_unsent_rrep_ack_wait_capacity();
+    test_aodv_peer_quarantine_reports_discarded_data();
     test_blocker_failure_rediscovery_resumes_data();
     test_blocker_eight_pending_with_rrep_ack_drains();
     test_serial_04_incarnation_destination_reset_and_relearn();

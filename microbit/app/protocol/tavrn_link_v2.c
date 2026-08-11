@@ -216,9 +216,9 @@ static uint16_t control_pdu_id(const tavrn_validated_control_t *control,
 }
 
 static int control_send_shape_valid(const tavrn_link_v2_t *link,
-                                    const tavrn_validated_control_t *control,
-                                    const tavrn_direct_peer_t *next_hop_or_null,
-                                    uint8_t controlled_flood)
+                                     const tavrn_validated_control_t *control,
+                                     const tavrn_direct_peer_t *next_hop_or_null,
+                                     uint8_t controlled_flood)
 {
     uint8_t receiver_offset;
 
@@ -264,6 +264,42 @@ static int control_send_shape_valid(const tavrn_link_v2_t *link,
     receiver_offset = control->type == TAVRN_WIRE_E_RREP ? 7u : 6u;
     return control_pdu_id(control, receiver_offset) ==
         next_hop_or_null->logical_id.value;
+}
+
+static int targeted_control_send_shape_valid(
+    const tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop, ble_mesh_tx_token_t token)
+{
+    if (link != NULL && control != NULL && token >= 0x8000u &&
+        control->type == TAVRN_WIRE_E_RREQ) {
+        return next_hop == NULL &&
+            link->config.local_peer.logical_id.width == TAVRN_IDENTITY_SID8 &&
+            control_send_shape_valid(link, control, NULL, 1u);
+    }
+    if (link == NULL || control == NULL || !direct_peer_valid(next_hop) ||
+        token < 0x8000u || control->type != TAVRN_WIRE_HELLO ||
+        control->pdu_len != 20u || control->pdu[0] != 0x54u ||
+        control->pdu[1] != 0x52u || control->pdu[2] != 0x02u ||
+        control->pdu[3] != link->config.network_id ||
+        control->pdu[4] != TAVRN_WIRE_HELLO ||
+        (control->pdu[5] != 0xb8u && control->pdu[5] != 0xa8u) ||
+        control->pdu[17] != 1u ||
+        next_hop->logical_id.width != TAVRN_IDENTITY_SID8 ||
+        next_hop->logical_id.value != control->pdu[7]) {
+        return 0;
+    }
+    if (control->pdu[6] == 0u || control->pdu[7] == 0u ||
+        control->pdu[7] == 0xffu || control->pdu[8] == 0u ||
+        control->pdu[8] == 0xffu || control->pdu[18] == 0u ||
+        control->pdu[18] == 0xffu ||
+        (control->pdu[5] == 0xb8u &&
+         (control->pdu[18] != control->pdu[8] || control->pdu[19] != 0x01u)) ||
+        (control->pdu[5] == 0xa8u && (control->pdu[19] & 0x0fu) != 0u)) {
+        return 0;
+    }
+    return (control->pdu[6] & 0x0fu) != 0u ||
+        memcmp(&control->pdu[9], link->config.local_peer.adva.bytes,
+               TAVRN_ADVA_LEN) == 0;
 }
 
 static tavrn_codec_config_t codec_config(const tavrn_link_v2_t *link)
@@ -390,10 +426,11 @@ static ble_mesh_tx_token_t allocate_scheduler_token(tavrn_link_v2_t *link)
 {
     uint32_t attempts;
 
-    for (attempts = 0u; attempts < 0xffffu; attempts++) {
+    for (attempts = 0u; attempts < 0x7fffu; attempts++) {
         link->next_scheduler_token++;
-        if (link->next_scheduler_token == BLE_MESH_TX_TOKEN_NONE) {
-            link->next_scheduler_token++;
+        if (link->next_scheduler_token == BLE_MESH_TX_TOKEN_NONE ||
+            link->next_scheduler_token > 0x7fffu) {
+            link->next_scheduler_token = 1u;
         }
         if (!token_in_use(link, link->next_scheduler_token)) {
             return link->next_scheduler_token;
@@ -401,6 +438,64 @@ static ble_mesh_tx_token_t allocate_scheduler_token(tavrn_link_v2_t *link)
     }
     return BLE_MESH_TX_TOKEN_NONE;
 }
+
+int tavrn_link_v2_tracked_token_in_use(const tavrn_link_v2_t *link,
+                                        ble_mesh_tx_token_t token)
+{
+    return link != NULL && token_in_use(link, token);
+}
+
+int tavrn_link_v2_tracked_control_may_admit(const tavrn_link_v2_t *link)
+{
+    const ble_mesh_tx_queue_t *queue;
+    uint8_t index;
+    uint8_t occupied = 0u;
+    uint8_t free_slot = 0u;
+    uint8_t evictable = 0u;
+
+    if (link == NULL || link->scheduler == NULL || link->mesh_fault_latched != 0u) {
+        return 0;
+    }
+    queue = &link->scheduler->routed_tx_queue;
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry = &queue->entries[index];
+
+        if (entry->occupied == 0u) {
+            free_slot = 1u;
+            continue;
+        }
+        occupied++;
+        if (entry->item.priority < BLE_MESH_TX_PRIORITY_CONTROL) {
+            evictable = 1u;
+        }
+    }
+    return occupied == queue->count &&
+        (free_slot != 0u || evictable != 0u);
+}
+
+#if defined(BLE_RADIO_HOST_TEST)
+tavrn_targeted_freshness_status_t tavrn_link_v2_reserve_targeted_low_token(
+    tavrn_link_v2_t *link, tavrn_targeted_freshness_low_work_t work,
+    uint16_t *token_out)
+{
+    ble_mesh_tx_token_t token;
+
+    if (token_out != NULL) {
+        *token_out = BLE_MESH_TX_TOKEN_NONE;
+    }
+    if (link == NULL || token_out == NULL ||
+        (work != TAVRN_TARGETED_LOW_CUSTODY &&
+         work != TAVRN_TARGETED_LOW_BOOTSTRAP)) {
+        return TAVRN_TARGETED_FRESHNESS_INVALID;
+    }
+    token = allocate_scheduler_token(link);
+    if (token == BLE_MESH_TX_TOKEN_NONE) {
+        return TAVRN_TARGETED_FRESHNESS_BUSY;
+    }
+    *token_out = token;
+    return TAVRN_TARGETED_FRESHNESS_OK;
+}
+#endif
 
 static tavrn_rx_candidate_token_t allocate_candidate_token(tavrn_link_v2_t *link)
 {
@@ -444,7 +539,8 @@ static int transit_dedupe_can_release(tavrn_link_v2_t *link,
         return data != NULL;
     }
     entry = find_data_dedupe_exact(link, data);
-    return entry != NULL && entry->custody_pinned != 0u;
+    return entry != NULL && entry->custody_pinned != 0u &&
+        logical_id_equal(&entry->final_destination, &data->final_destination);
 }
 
 static int release_transit_dedupe(tavrn_link_v2_t *link,
@@ -459,7 +555,12 @@ static int release_transit_dedupe(tavrn_link_v2_t *link,
         return 1;
     }
     entry = find_data_dedupe_exact(link, data);
-    entry->custody_pinned = 0u;
+    if (entry->incarnation_clear_on_release != 0u) {
+        memset(entry, 0, sizeof(*entry));
+    } else {
+        entry->custody_pinned = 0u;
+        entry->external_custody_owner = 0u;
+    }
     return 1;
 }
 
@@ -1127,6 +1228,57 @@ tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
     return TAVRN_LINK_SEND_OK;
 }
 
+tavrn_link_send_status_t tavrn_link_v2_send_tracked_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop, ble_mesh_tx_token_t token,
+    uint32_t now_ms, ble_mesh_tx_token_t *evicted_token_out)
+{
+    tavrn_codec_config_t config;
+    tavrn_decoded_frame_t frame;
+    ble_mesh_tx_item_t item;
+    ble_mesh_sched_enqueue_result_t result;
+    size_t adv_len = 0u;
+
+    (void)now_ms;
+    if (evicted_token_out != NULL) {
+        *evicted_token_out = BLE_MESH_TX_TOKEN_NONE;
+    }
+    if (!targeted_control_send_shape_valid(link, control, next_hop, token)) {
+        return TAVRN_LINK_SEND_INVALID;
+    }
+    if (link->mesh_fault_latched != 0u) {
+        return TAVRN_LINK_SEND_MESH_FAULTED;
+    }
+    if (token_in_use(link, token)) {
+        return TAVRN_LINK_SEND_BUSY;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.type = control->type;
+    frame.network_id = link->config.network_id;
+    frame.detail.control = *control;
+    config = codec_config(link);
+    memset(&item, 0, sizeof(item));
+    if (tavrn_wire_v2_encode(&config, &frame, item.adv_data,
+                             sizeof(item.adv_data), &adv_len) != TAVRN_CODEC_OK ||
+        adv_len > sizeof(item.adv_data)) {
+        return TAVRN_LINK_SEND_INVALID;
+    }
+    item.adv_len = (uint8_t)adv_len;
+    item.channel_mask = BLE_RADIO_ADV_CH_ALL;
+    item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
+    item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.not_before_ms = now_ms;
+    item.token = token;
+    result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
+    if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
+        return TAVRN_LINK_SEND_BUSY;
+    }
+    if (evicted_token_out != NULL) {
+        *evicted_token_out = result.evicted_token;
+    }
+    return TAVRN_LINK_SEND_OK;
+}
+
 tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
     tavrn_link_v2_t *link, const tavrn_validated_control_t *control)
 {
@@ -1162,6 +1314,97 @@ tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
             return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
         }
     }
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_control(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    ble_mesh_tx_token_t token, uint8_t *canceled_out)
+{
+    tavrn_decoded_frame_t frame;
+    tavrn_codec_config_t config;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+    uint8_t index;
+
+    if (canceled_out != NULL) {
+        *canceled_out = 0u;
+    }
+    if (link == NULL || link->scheduler == NULL || canceled_out == NULL ||
+        control == NULL || token < 0x8000u ||
+        !((control->type == TAVRN_WIRE_HELLO && control->pdu_len == 20u &&
+           (control->pdu[5] == 0xb8u || control->pdu[5] == 0xa8u)) ||
+          (control->type == TAVRN_WIRE_E_RREQ &&
+           control_send_shape_valid(link, control, NULL, 1u)))) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.type = control->type;
+    frame.network_id = link->config.network_id;
+    frame.detail.control = *control;
+    config = codec_config(link);
+    if (tavrn_wire_v2_encode(&config, &frame, encoded, sizeof(encoded),
+                             &encoded_len) != TAVRN_CODEC_OK) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        ble_mesh_tx_queue_entry_t *entry =
+            &link->scheduler->routed_tx_queue.entries[index];
+
+        if (entry->occupied == 0u || entry->item.token != token ||
+            entry->item.adv_len != encoded_len ||
+            memcmp(entry->item.adv_data, encoded, encoded_len) != 0) {
+            continue;
+        }
+        if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
+                                      NULL)) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+        *canceled_out = 1u;
+        return TAVRN_LINK_RESOLVE_OK;
+    }
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_token(
+    tavrn_link_v2_t *link, ble_mesh_tx_token_t token, uint8_t *canceled_out)
+{
+    uint8_t index;
+    uint8_t matched_index = BLE_MESH_TX_QUEUE_CAPACITY;
+
+    if (canceled_out != NULL) {
+        *canceled_out = 0u;
+    }
+    if (link == NULL || link->scheduler == NULL || canceled_out == NULL ||
+        token == BLE_MESH_TX_TOKEN_NONE) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        if (link->custody[index].phase != TAVRN_CUSTODY_FREE &&
+            link->custody[index].scheduler_token == token) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &link->scheduler->routed_tx_queue.entries[index];
+
+        if (entry->occupied == 0u || entry->item.token != token) {
+            continue;
+        }
+        if (matched_index != BLE_MESH_TX_QUEUE_CAPACITY) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+        matched_index = index;
+    }
+    if (matched_index == BLE_MESH_TX_QUEUE_CAPACITY) {
+        return TAVRN_LINK_RESOLVE_OK;
+    }
+    if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, matched_index,
+                                   NULL)) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    *canceled_out = 1u;
     return TAVRN_LINK_RESOLVE_OK;
 }
 
@@ -1228,8 +1471,67 @@ tavrn_link_resolve_status_t tavrn_link_v2_release_rx_custody(
         return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
     }
     entry = find_data_dedupe(link, data, now_ms);
-    if (entry == NULL || entry->custody_pinned == 0u) {
+    if (entry == NULL || entry->custody_pinned == 0u ||
+        !logical_id_equal(&entry->final_destination, &data->final_destination)) {
         return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    if (entry->incarnation_clear_on_release != 0u) {
+        memset(entry, 0, sizeof(*entry));
+    } else {
+        entry->custody_pinned = 0u;
+        entry->external_custody_owner = 0u;
+    }
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_transfer_rx_custody_to_external(
+    tavrn_link_v2_t *link, const tavrn_link_data_t *data, uint32_t now_ms)
+{
+    tavrn_data_dedupe_entry_t *entry;
+    uint8_t index;
+
+    (void)now_ms;
+    if (link == NULL || !data_valid(data) ||
+        data->ownership != TAVRN_DATA_TRANSIT) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    entry = find_data_dedupe_exact(link, data);
+    if (entry == NULL || entry->custody_pinned == 0u ||
+        entry->external_custody_owner != 0u ||
+        !logical_id_equal(&entry->final_destination, &data->final_destination)) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        if (link->custody[index].phase != TAVRN_CUSTODY_FREE &&
+            link_data_equal(&link->custody[index].data, data)) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+    }
+    entry->external_custody_owner = 1u;
+    return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_resolve_status_t tavrn_link_v2_discard_internal_rx_custody(
+    tavrn_link_v2_t *link, const tavrn_link_data_t *data)
+{
+    tavrn_data_dedupe_entry_t *entry;
+    uint8_t index;
+
+    if (link == NULL || !data_valid(data) ||
+        data->ownership != TAVRN_DATA_TRANSIT) {
+        return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+    }
+    entry = find_data_dedupe_exact(link, data);
+    if (entry == NULL || entry->custody_pinned == 0u ||
+        entry->external_custody_owner != 0u ||
+        !logical_id_equal(&entry->final_destination, &data->final_destination)) {
+        return TAVRN_LINK_RESOLVE_OK;
+    }
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        if (link->custody[index].phase != TAVRN_CUSTODY_FREE &&
+            link_data_equal(&link->custody[index].data, data)) {
+            return TAVRN_LINK_RESOLVE_OK;
+        }
     }
     entry->custody_pinned = 0u;
     return TAVRN_LINK_RESOLVE_OK;
@@ -1744,12 +2046,15 @@ static void clear_peer_data_dedupe(tavrn_link_v2_t *link,
 
         if (entry->valid != 0u &&
             (logical_id_equal(&entry->origin, &peer->logical_id) ||
-             logical_id_equal(&entry->final_destination, &peer->logical_id))) {
-            /* RX admission pins before router forwarding creates custody.  A
-             * reset can therefore own this entry solely through an endpoint,
-             * with no slot available to release it first. */
-            entry->custody_pinned = 0u;
-            memset(entry, 0, sizeof(*entry));
+              logical_id_equal(&entry->final_destination, &peer->logical_id))) {
+            /* Router/AODV-owned pins die with this reset.  Preserve only an
+             * explicit external copied-data owner through exact release. */
+            if (entry->custody_pinned != 0u &&
+                entry->external_custody_owner != 0u) {
+                entry->incarnation_clear_on_release = 1u;
+            } else {
+                memset(entry, 0, sizeof(*entry));
+            }
         }
     }
 }
@@ -1765,12 +2070,12 @@ tavrn_link_resolve_status_t tavrn_link_v2_quarantine_peer_incarnation(
     if (!clear_peer_custody(link, peer)) {
         return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
     }
+    clear_peer_data_dedupe(link, peer);
     if (link->candidate_valid != 0u &&
         candidate_uses_direct_peer(&link->candidate, peer)) {
         memset(&link->candidate, 0, sizeof(link->candidate));
         link->candidate_valid = 0u;
     }
-    clear_peer_data_dedupe(link, peer);
     return TAVRN_LINK_RESOLVE_OK;
 }
 
@@ -1818,6 +2123,40 @@ tavrn_link_resolve_status_t tavrn_link_v2_peer_incarnation_snapshot(
         }
     }
     return TAVRN_LINK_RESOLVE_OK;
+}
+
+tavrn_link_custody_snapshot_status_t
+tavrn_link_v2_custody_snapshot_for_destination(
+    const tavrn_link_v2_t *link, const tavrn_logical_id_t *destination,
+    tavrn_link_custody_data_snapshot_t *snapshot_out)
+{
+    uint8_t index;
+
+    if (snapshot_out != NULL) {
+        memset(snapshot_out, 0, sizeof(*snapshot_out));
+    }
+    if (link == NULL || destination == NULL || snapshot_out == NULL ||
+        !logical_id_valid(destination, 0) ||
+        destination->width != link->config.local_peer.logical_id.width) {
+        return TAVRN_LINK_CUSTODY_SNAPSHOT_INVALID;
+    }
+    for (index = 0u; index < TAVRN_LINK_CUSTODY_CAPACITY; index++) {
+        const tavrn_custody_slot_t *slot = &link->custody[index];
+
+        if (slot->phase == TAVRN_CUSTODY_FREE ||
+            !logical_id_equal(&slot->data.final_destination, destination)) {
+            continue;
+        }
+        if (!data_valid(&slot->data) || !direct_peer_valid(&slot->next_hop) ||
+            snapshot_out->count >= TAVRN_LINK_CUSTODY_CAPACITY) {
+            memset(snapshot_out, 0, sizeof(*snapshot_out));
+            return TAVRN_LINK_CUSTODY_SNAPSHOT_INVALID;
+        }
+        snapshot_out->records[snapshot_out->count].next_hop = slot->next_hop;
+        snapshot_out->records[snapshot_out->count].data = slot->data;
+        snapshot_out->count++;
+    }
+    return TAVRN_LINK_CUSTODY_SNAPSHOT_OK;
 }
 
 tavrn_link_resolve_status_t tavrn_link_v2_reconfigure_identity(

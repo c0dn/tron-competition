@@ -1,5 +1,7 @@
 #include "tavrn_mentorship.h"
 
+#include "tavrn_maintenance.h"
+
 #include <string.h>
 
 static int time_due(uint32_t now_ms, uint32_t deadline_ms)
@@ -537,6 +539,11 @@ static tavrn_mentorship_status_t flush_pending_control(
         tavrn_router_note_local_broadcast(mentorship->router, now_ms);
     }
     memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
+    if (outcome.type != TAVRN_LINK_EVENT_NONE &&
+        tavrn_router_handle_link_event(mentorship->router, &outcome, now_ms) ==
+            TAVRN_ROUTER_EVENT_INVALID) {
+        return TAVRN_MENTORSHIP_INVALID;
+    }
     switch ((tavrn_mentorship_pending_purpose_t)pending.purpose) {
     case TAVRN_MENTORSHIP_PENDING_OFFER:
         mentorship->pending_offer_valid = 0u;
@@ -566,9 +573,11 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
         tavrn_link_event_t outcome;
         tavrn_link_send_status_t send_status;
         tavrn_mentorship_record_t record;
+        tavrn_adva_t join_origin;
         tavrn_esc_context_match_t candidate_match;
         tavrn_esc_context_status_t candidate_context;
         tavrn_mentorship_status_t revalidation;
+        uint16_t join_sequence;
 
         if (pending->valid == 0u) {
             continue;
@@ -612,19 +621,45 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
             tavrn_router_note_local_broadcast(mentorship->router, now_ms);
         }
         if (pending->purpose == TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN) {
+            int sequence_commit_ok = 1;
+
+            if (mentorship->tc_metadata != NULL) {
+                tavrn_tc_sequence_ticket_t ticket;
+
+                memset(&ticket, 0, sizeof(ticket));
+                ticket.sequence = pending->join_sequence;
+                ticket.event = TAVRN_TC_EVENT_JOIN;
+                ticket.valid = 1u;
+                if (tavrn_maintenance_tc_sequence_commit(
+                        mentorship->tc_metadata, &ticket,
+                        TAVRN_TC_ADMISSION_ADMITTED, now_ms) != TAVRN_TC_METADATA_OK) {
+                    sequence_commit_ok = 0;
+                }
+            }
+            memset(pending, 0, sizeof(*pending));
+            if (outcome.type != TAVRN_LINK_EVENT_NONE &&
+                tavrn_router_handle_link_event(mentorship->router, &outcome, now_ms) ==
+                    TAVRN_ROUTER_EVENT_INVALID) {
+                return TAVRN_MENTORSHIP_INVALID;
+            }
+            if (sequence_commit_ok == 0) {
+                return TAVRN_MENTORSHIP_INVALID;
+            }
             mentorship->state.join_originated = 1u;
             mentorship->counters.join_originated++;
-            mentorship->next_join_sequence =
-                (uint16_t)(pending->join_sequence + 1u);
-            if (mentorship->next_join_sequence == 0u) {
-                mentorship->next_join_sequence = 1u;
-            }
         } else if (pending->purpose == TAVRN_MENTORSHIP_PENDING_JOIN_RELAY) {
+            join_origin = pending->join_origin;
+            join_sequence = pending->join_sequence;
+            memset(pending, 0, sizeof(*pending));
+            if (outcome.type != TAVRN_LINK_EVENT_NONE &&
+                tavrn_router_handle_link_event(mentorship->router, &outcome, now_ms) ==
+                    TAVRN_ROUTER_EVENT_INVALID) {
+                return TAVRN_MENTORSHIP_INVALID;
+            }
             if (!gtt_observe_record(mentorship, &record, now_ms)) {
                 return TAVRN_MENTORSHIP_BUSY;
             }
-            remember_join(mentorship, &pending->join_origin,
-                          pending->join_sequence, now_ms);
+            remember_join(mentorship, &join_origin, join_sequence, now_ms);
             mentorship->counters.join_received++;
             mentorship->counters.join_relayed++;
         }
@@ -637,13 +672,22 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
 static void originate_join(tavrn_mentorship_t *mentorship)
 {
     tavrn_validated_control_t join;
-    uint16_t sequence;
+    uint16_t sequence = 1u;
 
     if (mentorship == NULL || mentorship->state.join_originated != 0u) {
         return;
     }
-    sequence = mentorship->next_join_sequence == 0u ? 1u :
-        mentorship->next_join_sequence;
+    if (mentorship->tc_metadata != NULL) {
+        tavrn_tc_sequence_ticket_t ticket;
+        tavrn_tc_metadata_status_t status = tavrn_maintenance_tc_sequence_prepare(
+            mentorship->tc_metadata, TAVRN_TC_EVENT_JOIN, &ticket);
+
+        if ((status != TAVRN_TC_METADATA_PREPARED &&
+             status != TAVRN_TC_METADATA_RETAINED) || ticket.valid == 0u) {
+            return;
+        }
+        sequence = ticket.sequence;
+    }
     if (build_join_for_local(mentorship, sequence, &join) != TAVRN_MENTORSHIP_OK) {
         return;
     }
@@ -666,13 +710,22 @@ tavrn_mentorship_status_t tavrn_mentorship_init(
     mentorship->gtt = gtt;
     mentorship->config = *config;
     mentorship->started_at_ms = now_ms;
-    mentorship->next_join_sequence = 1u;
     mentorship->state.state = TAVRN_MENTORSHIP_REJOINING;
     mentorship->state.active_width = TAVRN_IDENTITY_SID16;
     mentorship->state.ordinary_traffic_gated = 1u;
     mentorship->state.full_bootstrap_admission_enabled = 1u;
     tavrn_link_v2_set_identity_admission(router->link, sid8_identity_conflict,
                                          mentorship);
+    return TAVRN_MENTORSHIP_OK;
+}
+
+tavrn_mentorship_status_t tavrn_mentorship_bind_tc_metadata(
+    tavrn_mentorship_t *mentorship, struct tavrn_tc_metadata_state *state)
+{
+    if (mentorship == NULL || state == NULL || mentorship->tc_metadata != NULL) {
+        return TAVRN_MENTORSHIP_INVALID;
+    }
+    mentorship->tc_metadata = state;
     return TAVRN_MENTORSHIP_OK;
 }
 
@@ -1670,7 +1723,12 @@ tavrn_mentorship_status_t tavrn_mentorship_handle_scheduler_event(
         }
         break;
     case TAVRN_WIRE_TC_UPDATE:
-        result = process_join(mentorship, control_event, now_ms);
+        /* The installed FULL maintenance binding owns generic TC validation,
+         * GTT apply, dedupe, and relay.  Mentorship keeps the legacy bootstrap
+         * JOIN path only when that binding is absent. */
+        if (mentorship->tc_metadata == NULL) {
+            result = process_join(mentorship, control_event, now_ms);
+        }
         break;
     default:
         break;

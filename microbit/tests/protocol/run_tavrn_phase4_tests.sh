@@ -58,6 +58,7 @@ if [[ "$1" == "--green" || "$1" == "--esc" || "$1" == "--bootstrap" ]]; then
     SOURCES+=(
         "${MICROBIT_ROOT}/app/protocol/tavrn_esc.c"
         "${MICROBIT_ROOT}/app/protocol/tavrn_mentorship.c"
+        "${MICROBIT_ROOT}/app/protocol/tavrn_maintenance.c"
     )
 else
     SOURCES+=("${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_phase4_esc_mentor_red_backend.c")

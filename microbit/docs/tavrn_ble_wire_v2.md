@@ -96,6 +96,22 @@ when its active, non-departed encoded remaining-TTL bucket is strictly greater
 than twice the received request bucket. Tier 3 sources remain silent. This uses
 the profile's fixed metadata-candidate store and starts no standalone control.
 
+The one four-slot candidate pool is shared with delayed targeted tier-2
+reservations. General classes select soft requests, subject-self answers,
+eligible intermediary answers, then ordinary active dissemination, round-robin
+within each class. A soft expiry creates only a request candidate; an admitted
+request may create a request-clear subject-self or strictly-fresher intermediary
+answer, and an admitted answer atomically merges and clears its resolved request.
+There is no recursive answer, standalone metadata control, or general departed
+entry. Selection and encoding are non-consuming. Only containing-control enqueue
+admission starts cooldown, releases the selected entry, and advances its cursor;
+BUSY, zero-channel failure, and local-not-attempted preserve exact work. A newer
+semantic state invalidates obsolete cooldown. Every general claim is attributed
+to immediate outer AdvA; the targeted response's preserved-full-origin rule is
+the sole exception. A delayed targeted reservation is capacity-only: it remains
+live while general RREQ/RREP/RERR selects only general entries and it may never
+be serialized as a general metadata entry.
+
 ## 3. Full legacy advertising wrapper
 
 **WIRE-V2-001:** An encoder emits exactly the following two AdvData AD
@@ -446,14 +462,38 @@ without adding a SID16 HELLO field.
 
 Targeted HELLO is fixed-k SID8, `N=0`, and has unicast immediate receiver and
 final target. It is only the `MAINT-06` stage-0 demanded hard-expiry exchange;
-soft social metadata never originates this form. The origin owns the node
-sequence: a request origin owns its request sequence and a response origin owns
-its response sequence; each retains that sequence across local admission
-failures. A targeted origin uses the valid route's positive hop count as its
-initial TTL and `hops=0`; a newly originated targeted request or response must
-have full origin equal to outer AdvA. Every relay changes only immediate receiver
-and TTL/hops while preserving full origin. A targeted control never starts route
-discovery.
+soft social metadata never originates this form. It is implemented only in the
+FULL runtime. Retained-hop/full RREQ verification is also implemented but reuses
+the unchanged `E_RREQ` shape; DEV-027 implements general metadata on eligible
+SID8 RREQ/RREP/RERR controls and confirmed TC JOIN/LEAVE. After establishment, ordinary
+`N=0` HELLO and every newly originated targeted request/response share one local
+HELLO node-sequence stream. A semantic targeted transaction/context reserves one
+current reservation-frontier value at creation, then advances that frontier modulo
+65536. BUSY or zero-channel `TX_FAILED` retries retain exact bytes and the reserved sequence;
+relays preserve the request/response origin sequence; four concurrent contexts
+reserve distinct values; and gaps after canceled unsent work are legal. A
+pending ordinary HELLO retains its exact visible node sequence until queue
+admission; targeted reservations use the internal frontier after that pending
+value without changing pending bytes or the visible cursor. Ordinary admission
+then merges the visible cursor to that frontier while skipping active targeted
+reservations. The exact shared-stream ordering and nonreuse rules are in
+`SERIAL-01` and the identity contract. A targeted origin uses the valid route's
+positive hop count as its initial TTL and `hops=0`; a newly originated targeted
+request or response must have full origin
+equal to outer AdvA. Every relay changes only immediate receiver and TTL/hops
+while preserving full origin and node sequence. A targeted control never starts
+route discovery.
+
+The implemented continuation reuses the existing `E_RREQ` wire shape unchanged:
+Stage-1/Stage-2 purpose is retained only with the local maintenance context and
+the copied AODV action, never serialized into a new flag or metadata record. The
+future action must retain `{purpose, request ID, token, subject}` until the
+router/link reports its physical completion. A test may synthesize only that
+completion callback fact; it must not fabricate a lifecycle/telemetry record.
+Wrong purpose, token, or request ID, a zero completion mask, and a local
+non-attempt are non-consuming. The frozen RED contract for this unchanged wire
+continuation remains `run_tavrn_phase5_rreq_verification_tests.sh --red`;
+production verification is accepted by the corresponding `--green` runner.
 
 - A targeted freshness request is exactly `I=1,N=0,T=1,Q=1,M=1` (`0xb8`). Its
   full origin is the requester, its final target is the subject, and it has
@@ -467,31 +507,57 @@ discovery.
   valid return route, and it has
   exactly one metadata entry for the requested subject with
   `freshness_request=0` and `departed=0`. The target subject responds immediately
-  when it has a valid route to the requester. A non-target intermediary may
-  respond only with active, non-departed evidence whose encoded remaining-TTL
-  bucket is strictly greater than twice the request bucket; it waits one chosen
-  delay in the inclusive
-  `timer.freshness_response_min_ms..timer.freshness_response_max_ms` interval.
-   After normal structural, receiver, identity, and dedupe admission, a response
-   for the same requester/subject may suppress a pending intermediary response.
-   A tier-3 or stale source remains silent.
+  when it has a valid return route to the requester and encodes its fresh local
+  self evidence as `min(15, floor(timer.gtt_hard_expiry_ms / 20000))`; this is
+  deliberately not a countdown of a target-local remaining deadline. A
+  non-target intermediary is eligible only with active, non-departed evidence
+  whose encoded actual remaining-hard-lifetime bucket is strictly greater than
+  twice the request bucket. Because this targeted request is normatively bucket
+  zero, the targeted boundary is exactly response bucket greater than zero:
+  active bucket zero remains silent and bucket one is eligible. The general
+  twice-the-request-bucket rule remains material for non-targeted social
+  metadata. An eligible intermediary with a free candidate slot MUST schedule
+  exactly one response. Its delay is deterministic FNV-1a 32-bit:
+  initialize `2166136261`, then XOR/multiply modulo `2^32` by prime `16777619`
+  for the network byte, requester full AdvA bytes `0..5`, request sequence
+  little-endian bytes, final-target SID8, and subject SID8, in that exact order.
+  Map the result to the inclusive response interval as
+  `min_ms + hash % (max_ms - min_ms + 1)`. After normal structural, receiver,
+  identity, and dedupe admission, a same requester/subject response suppresses
+  only matching delayed-not-yet-enqueued intermediary work. Queued or in-flight
+  work is not retractable through suppression. A tier-3 or stale source remains
+  silent.
 
 For an admitted targeted freshness response, the preserved full origin is the
 evidence source for its one subject claim; outer AdvA is direct evidence only for
 the immediate relay. This is the targeted-response exception to ordinary metadata
 attribution, not permission to use a relay as the subject evidence source.
 
-For either targeted form, missing return route, local BUSY, rate/capacity denial,
-or zero-channel TX failure sends no response, starts no discovery, and proves no
-departure. A response with `Q=0` is incapable of recursively eliciting another
-response. Base length is 19 (SID16) or 17 (SID8). HELLO has zero general metadata
-slots; the only exceptions are the two 20-byte (`17 + 1 + 2`) targeted forms
-above. Any other HELLO metadata count or flag combination is malformed. Ordinary
-`N=0` dedupe key is `{network, full origin AdvA, node_sequence, T=0}`; targeted
-request and response keys are respectively `{network, full origin AdvA,
-node_sequence, final_target, subject, Q=1}` and `{network, full origin AdvA,
-node_sequence, final_target, subject, Q=0}`. N=1 uses the incarnation pair
-above, not the ordinary HELLO dedupe/high-water path.
+For either targeted form, missing selected route, local BUSY, capacity denial, or
+zero-channel TX failure sends no response immediately, starts no discovery, and
+proves no departure. A retained request relay, response relay, immediate target
+response, delayed intermediary response, or initiator pending request retries
+its exact work only on owner ticks while its selected route exists. Its
+`obligation_started_ms` is the owner tick that creates/adopts the locally
+initiated stage-0 context after current hard-expiry/demand/identity validation;
+the post-dedupe normal request RX-admission time for a request relay, immediate
+target response, or delayed intermediary response; or the post-dedupe normal
+response RX-admission time for a response relay that need not have observed the
+request. The wrap-safe equality deadline is
+`obligation_started_ms + timer.hello_dedupe_ms`; BUSY before first scheduler
+enqueue is within that bound, and the delayed response's deterministic wait
+consumes part of it. Route loss or deadline expiry drops work without discovery
+or departure. Stage 0 has no independent rate limiter or timer key;
+`timer.aodv_rreq_rate` applies only to later RREQ stages.
+A response with `Q=0` is incapable of recursively eliciting another response.
+Base length is 19 (SID16) or 17 (SID8). HELLO has zero general metadata slots; the
+only exceptions are the two 20-byte (`17 + 1 + 2`) targeted forms above. Any other
+HELLO metadata count or flag combination is malformed. Ordinary `N=0` dedupe key
+is `{network, full origin AdvA, node_sequence, T=0}`; targeted request and
+response keys are respectively `{network, full origin AdvA, node_sequence,
+final_target, subject, Q=1}` and `{network, full origin AdvA, node_sequence,
+final_target, subject, Q=0}`. N=1 uses the incarnation pair above, not the
+ordinary HELLO dedupe/high-water path.
 
 ### 6.2 SYNC_OFFER (`type=05`)
 
@@ -588,6 +654,21 @@ UUID and subject retention use `timer.tc_uuid_ms` and `timer.tc_subject_ms`;
 they are not wire literals (BALANCED: 30 s and 1 s). There is no room for
 metadata; none may be appended.
 
+`ttl_hops` is origin `15/0`; a relay validates the complete frame before any
+dedupe mutation. A retained UUID ignores every later copy, including a changed
+event byte. For a fresh UUID, retain UUID first, then test subject/event: a live
+matching subject/event suppresses local apply and relay but keeps the fresh UUID;
+a fresh subject/event applies locally once and then may relay. JOIN and LEAVE are
+different subject/event keys. TTL zero applies locally but does not forward. For
+nonzero TTL a fresh applicable event preserves bytes 7..23 other than
+`ttl_hops`, emits TTL-1/hops+1, and its own outer AdvA is the next receiver's
+immediate transmitter. Relay BUSY preserves exact work. Overhearing an already
+retained UUID is duplicate/implicit gossip ACK: TC has no HACK or explicit
+acknowledgment. `uptime` is advisory and must not affect UUID, dedupe, or
+freshness. The Phase-4 mentorship self-JOIN keeps its existing enqueue-tied
+local GTT/dedupe compatibility exception; general TC maintenance must not
+rewrite that commit point.
+
 ## 7. Identity-role matrix
 
 **WIRE-V2-020:** A decoder and tests MUST distinguish these roles rather than
@@ -683,13 +764,24 @@ AdvData exceeds 31. They MUST NOT rely on `ble_radio_advertise()` truncation.
    type/status-permitted liveness update (BUSY/REJECTED HACK never refreshes
    route or GTT state);
 8. check the type-specific equality-only dedupe/correlation key; after successful
-   normal admission, a newly admitted targeted freshness response may suppress a
-   pending delayed intermediary response for the same requester/subject;
+   normal admission, a newly admitted targeted freshness response suppresses a
+   matching delayed-not-yet-enqueued intermediary response for the same
+   requester/subject, but never retracts queued or in-flight work;
 9. for new DATA emit a candidate token without dedupe/HACK/state commit; the
    router/application performs the ACK contract's synchronous
    reserve-and-`resolve_rx` phase, with defensive
    `timer.link_candidate_resolve_ms` BUSY timeout (BALANCED 10 ms);
    other types perform their validated route, GTT, or relay side effects.
+
+A SID8 decoder context requires its identity conflict/resolution callback. For a
+SID8 HACK only, the full outer immediate transmitter and immediate receiver
+require current unambiguous context validation. `data_origin` and
+`final_destination` are custody-correlation keys: they require the encoded SID8
+width, unicast syntax, nonreserved value, and otherwise valid encoded form, but
+do not require current live GTT resolution. DATA and every other control retain
+normal SID8 identity admission. Exact active-custody correlation, including the
+outer AdvA and every HACK custody key, is the state-mutation boundary; this
+exception is not HACK authentication.
 
 No partial metadata, route, GTT, or duplicate-cache mutation is permitted for
 a malformed or foreign frame. A routed magic match with unsupported version,
@@ -717,7 +809,7 @@ custody/application action, but generates a fresh DUPLICATE HACK.
 | E_RREP | semantic/correlation tuple in section 5.2 | through the correlated discovery/route-install decision and then `timer.aodv_rrep_dedupe_ms` (BALANCED 10 s) |
 | E_RERR | `{network,reporter,rerr_seq}` | `timer.aodv_rerr_dedupe_ms` (BALANCED 10 s) |
 | E_RREP_ACK | exact pending RREP tuple | no receive-cache insertion; consume at most one pending wait |
-| HELLO | key in section 6.1 | `timer.hello_dedupe_ms`, except the identity contract's idempotent rejoin barrier (BALANCED 10 s) |
+| HELLO | key in section 6.1 | Ordinary HELLO uses `timer.hello_dedupe_ms`; targeted work retains its originating equality key through wrap-safe `obligation_started_ms + timer.hello_dedupe_ms`, due at equality, except the identity contract's idempotent rejoin barrier (BALANCED 10 s) |
 | SYNC_* | full mentor/mentee snapshot/index tuple | through bootstrap completion plus `timer.mentor_sync_dedupe_ms` (BALANCED 10 s) |
 | TC_UPDATE | `{network,full_origin,tc_seq}` | `timer.tc_uuid_ms`; subject key `{full_subject,event}` additionally uses `timer.tc_subject_ms` (BALANCED 30 s / 1 s) |
 
@@ -834,11 +926,12 @@ PDU=20, AdvData=27.
 ### Fixed-k targeted freshness response HELLO8
 
 Board B responds directly to requester A about subject B, with response node
-sequence `0003` and an active bucket of 10:
+sequence `0003` and target-self bucket 15 (`min(15, floor(300000/20000))` for
+the BALANCED hard expiry):
 
 ```text
 02 01 06 17 ff ff ff 54 52 02 2a 04 a8 10 18 18 dc 4b 0a
-06 03 f8 03 00 01 dc a0
+06 03 f8 03 00 01 dc f0
 ```
 
 PDU=20, AdvData=27. The full origin and outer AdvA are B; the final target and

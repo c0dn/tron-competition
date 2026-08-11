@@ -139,6 +139,25 @@ typedef struct aodv_rreq_attempt {
     uint8_t ring_ordinal;
 } aodv_rreq_attempt_t;
 
+/* A single locally-owned RREQ with no DATA, discovery slot, or retry state.
+ * The caller retains its off-wire purpose and completion lifecycle.  This
+ * generic seam deliberately names no FULL/GTT type. */
+typedef enum aodv_single_rreq_status {
+    AODV_SINGLE_RREQ_OK = 0,
+    AODV_SINGLE_RREQ_RATE_DEFERRED,
+    AODV_SINGLE_RREQ_BUSY,
+    AODV_SINGLE_RREQ_INVALID,
+} aodv_single_rreq_status_t;
+
+/* A caller may retain one locally created RREQ attempt without creating the
+ * core's ordinary discovery/pending-DATA state.  This result is a pure
+ * correlation check for an incoming RREP; it performs no route mutation. */
+typedef enum aodv_rrep_attempt_match_status {
+    AODV_RREP_ATTEMPT_MATCH = 0,
+    AODV_RREP_ATTEMPT_NO_MATCH,
+    AODV_RREP_ATTEMPT_INVALID,
+} aodv_rrep_attempt_match_status_t;
+
 typedef enum aodv_action_type {
     AODV_ACTION_NONE = 0,
     AODV_ACTION_SEND_RREQ,
@@ -168,6 +187,11 @@ typedef struct aodv_data_action {
     tavrn_direct_peer_t next_hop;
     tavrn_link_data_t data;
 } aodv_data_action_t;
+
+/* This synchronous observer sees each queued DATA action immediately before
+ * peer-incarnation cleanup removes it.  It must not re-enter aodv_core. */
+typedef void (*aodv_peer_incarnation_data_discard_fn)(
+    void *context, const aodv_data_action_t *action);
 
 typedef struct aodv_failure_action {
     tavrn_logical_id_t destination;
@@ -344,6 +368,22 @@ aodv_status_t aodv_core_submit_application_scoped_ex(
     aodv_core_t *core, const tron_application_data_t *data,
     uint8_t initial_scope, aodv_rreq_scope_source_t scope_source,
     uint32_t now_ms);
+/* The shared RREQ limiter is checked before this allocates the on-wire request
+ * ID.  On success the caller receives one complete SEND_RREQ action and owns
+ * any physical retry/completion policy. */
+aodv_single_rreq_status_t aodv_core_create_single_rreq(
+    aodv_core_t *core, const tavrn_logical_id_t *destination, uint8_t scope,
+    uint32_t now_ms, aodv_action_t *action_out);
+/* Semantically validates an RREP for the supplied retained local attempt. It
+ * applies normal RREP validation, blacklist, dedupe, route-install, and ACK
+ * policy, but deliberately has no ordinary discovery-slot prerequisite or
+ * pending-DATA/discovery release behavior. */
+aodv_status_t aodv_core_ingest_rrep_for_attempt(
+    aodv_core_t *core, const aodv_control_input_t *input,
+    const aodv_rreq_attempt_t *attempt, uint32_t now_ms);
+aodv_rrep_attempt_match_status_t aodv_core_rrep_matches_attempt(
+    const aodv_core_t *core, const aodv_control_input_t *input,
+    const aodv_rreq_attempt_t *attempt);
 aodv_rreq_telemetry_status_t aodv_core_set_rreq_telemetry(
     aodv_core_t *core,
     const aodv_rreq_telemetry_config_t *config_or_null);
@@ -394,11 +434,22 @@ aodv_failure_status_t aodv_core_finish_deferred_rerr(
  * freshness/dedupe state.  BUSY therefore leaves all peer state untouched. */
 aodv_failure_status_t aodv_core_reset_peer_incarnation(
     aodv_core_t *core, const tavrn_direct_peer_t *peer, uint32_t now_ms);
+/* As reset_peer_incarnation(), while reporting every queued DATA action that
+ * this call discards.  Passing NULL preserves the ordinary reset behavior. */
+aodv_failure_status_t aodv_core_reset_peer_incarnation_with_data_discard(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer, uint32_t now_ms,
+    aodv_peer_incarnation_data_discard_fn on_data_discard, void *context);
 /* Drops only queued actions that could send through or name a barred direct
  * peer.  It is the BUSY-time quarantine half of a later reset; routes and
  * freshness remain untouched until a reset reserves its RERR. */
 aodv_failure_status_t aodv_core_quarantine_peer_incarnation(
     aodv_core_t *core, const tavrn_direct_peer_t *peer);
+/* As quarantine_peer_incarnation(), while reporting every queued DATA action
+ * that this call discards.  Passing NULL preserves the ordinary quarantine
+ * behavior. */
+aodv_failure_status_t aodv_core_quarantine_peer_incarnation_with_data_discard(
+    aodv_core_t *core, const tavrn_direct_peer_t *peer,
+    aodv_peer_incarnation_data_discard_fn on_data_discard, void *context);
 aodv_failure_status_t aodv_core_peer_incarnation_snapshot(
     const aodv_core_t *core, const tavrn_direct_peer_t *peer,
     aodv_peer_incarnation_snapshot_t *snapshot_out);

@@ -55,6 +55,11 @@ static const uint8_t hack16[] = {
     0x42u, 0x18u, 0x42u, 0x11u, 0x22u, 0x34u, 0x12u,
     0x01u, 0x07u, 0x00u,
 };
+static const uint8_t hack8_rejected[] = {
+    0x02u, 0x01u, 0x06u, 0x11u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x11u, 0x80u, 0x18u,
+    0x18u, 0x11u, 0x34u, 0x12u, 0x01u, 0x07u, 0x03u,
+};
 static const uint8_t flood16[] = {
     0x02u, 0x01u, 0x06u, 0x13u, 0xffu, 0xffu, 0xffu,
     0x54u, 0x52u, 0x02u, 0x2au, 0x12u, 0x00u, 0x40u,
@@ -126,7 +131,7 @@ static const uint8_t hello8_verification[] = {
     0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
     0x54u, 0x52u, 0x02u, 0x2au, 0x04u, 0xb8u, 0x10u,
     0xdcu, 0xdcu, 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au,
-    0xddu, 0x02u, 0x00u, 0x01u, 0xdcu, 0xa1u,
+    0xddu, 0x02u, 0x00u, 0x01u, 0xdcu, 0x01u,
 };
 static const uint8_t sync_offer[] = {
     0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
@@ -170,6 +175,8 @@ typedef struct conflict_probe {
     tavrn_logical_id_t last_remote;
     tavrn_adva_t last_adva;
     int conflict;
+    uint16_t reject_direct_value;
+    uint16_t reject_remote_value;
 } conflict_probe_t;
 
 static int identity_probe(void *context, const tavrn_logical_id_t *logical_id,
@@ -181,11 +188,16 @@ static int identity_probe(void *context, const tavrn_logical_id_t *logical_id,
         probe->direct_calls++;
         probe->last_direct = *logical_id;
         probe->last_adva = *direct_adva_or_null;
+        return probe->conflict != 0 ||
+            (probe->reject_direct_value != 0u &&
+             logical_id->value == probe->reject_direct_value);
     } else {
         probe->remote_calls++;
         probe->last_remote = *logical_id;
+        return probe->conflict != 0 ||
+            (probe->reject_remote_value != 0u &&
+             logical_id->value == probe->reject_remote_value);
     }
-    return probe->conflict;
 }
 
 static tavrn_direct_peer_t make_peer(const uint8_t adva[6],
@@ -468,6 +480,86 @@ static void test_bearer_02_exact_modes_callbacks_and_error_outputs(void)
                             memcmp(&encoded[21], &data16[24], 7u) == 0);
 }
 
+static void test_bearer_02_sid8_hack_custody_correlation_identity_exception(void)
+{
+    conflict_probe_t probe;
+    tavrn_codec_config_t sid8_config;
+    tavrn_codec_config_t no_callback_config;
+    tavrn_codec_config_t sid16_config;
+    tavrn_decoded_frame_t frame;
+    uint8_t malformed[sizeof(hack8_rejected)];
+
+    memset(&probe, 0, sizeof(probe));
+    sid8_config = make_config(adva_a, TAVRN_IDENTITY_SID8, &probe);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_HACK &&
+                            frame.detail.hack.immediate_receiver.value == adva_a[0] &&
+                            frame.detail.hack.data_origin.value == adva_a[0] &&
+                            frame.detail.hack.final_destination.value == adva_c[0] &&
+                            frame.detail.hack.data_seq == 0x1234u &&
+                            frame.detail.hack.status == TAVRN_HACK_REJECTED);
+    CHECK("BEARER-02", probe.direct_calls == 1u && probe.remote_calls == 1u &&
+                            probe.last_direct.width == TAVRN_IDENTITY_SID8 &&
+                            probe.last_direct.value == adva_b[0] &&
+                            memcmp(probe.last_adva.bytes, adva_b, TAVRN_ADVA_LEN) == 0 &&
+                            probe.last_remote.width == TAVRN_IDENTITY_SID8 &&
+                            probe.last_remote.value == adva_a[0]);
+
+    no_callback_config = make_config(adva_a, TAVRN_IDENTITY_SID8, NULL);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&no_callback_config, adva_b,
+                                               hack8_rejected, sizeof(hack8_rejected),
+                                               &frame) == TAVRN_CODEC_IDENTITY_CONFLICT);
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&no_callback_config, adva_a,
+                                               sync_offer, sizeof(sync_offer), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            zero_bytes(&frame, sizeof(frame)));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(NULL, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_INVALID_ARGUMENT);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_direct_value = adva_b[0];
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            probe.direct_calls == 1u && probe.remote_calls == 0u);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_remote_value = adva_a[0];
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            probe.direct_calls == 1u && probe.remote_calls == 1u);
+
+    memset(&probe, 0, sizeof(probe));
+    memcpy(malformed, hack8_rejected, sizeof(malformed));
+    malformed[14] = 0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, malformed,
+                                               sizeof(malformed), &frame) ==
+                            TAVRN_CODEC_MALFORMED_FIELD && probe.direct_calls == 0u &&
+                            probe.remote_calls == 0u);
+    memcpy(malformed, hack8_rejected, sizeof(malformed));
+    malformed[15] = 0xffu;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, malformed,
+                                               sizeof(malformed), &frame) ==
+                            TAVRN_CODEC_MALFORMED_FIELD && probe.direct_calls == 0u &&
+                            probe.remote_calls == 0u);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_remote_value = adva_c[0];
+    sid8_config = make_config(adva_b, TAVRN_IDENTITY_SID8, &probe);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, data8_max,
+                                               sizeof(data8_max), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT);
+
+    sid16_config = make_config(adva_a, TAVRN_IDENTITY_SID16, NULL);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid16_config, adva_b, hack16,
+                                               sizeof(hack16), &frame) == TAVRN_CODEC_OK);
+}
+
 static void check_control_round_trip(const tavrn_codec_config_t *config,
                                      const uint8_t outer_adva[6],
                                      const uint8_t *vector, size_t vector_len)
@@ -616,13 +708,19 @@ static void test_bearer_02_control_budget_shapes_and_hello_q(void)
     mutation[26] = 0xa0u;
     CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
                                                sizeof(mutation), &frame) ==
-                       TAVRN_CODEC_MALFORMED_FIELD);
+                        TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[25] = 0x18u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                        TAVRN_CODEC_MALFORMED_FIELD);
 }
 
 int main(void)
 {
     test_bearer_01_wrapper_decode_and_exact_data16();
     test_bearer_02_exact_modes_callbacks_and_error_outputs();
+    test_bearer_02_sid8_hack_custody_correlation_identity_exception();
     test_bearer_02_control_budget_shapes_and_hello_q();
     if (failures != 0u) {
         printf("tavrn_wire_v2 RED tests failed: %u assertion(s)\n", failures);

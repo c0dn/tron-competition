@@ -203,7 +203,7 @@ typedef struct tavrn_mentorship {
     uint32_t pending_offer_due_ms;
     uint16_t active_page_snapshot_id;
     uint16_t serving_boot_nonce;
-    uint16_t next_join_sequence;
+    struct tavrn_tc_metadata_state *tc_metadata;
     uint16_t receiving_page_bitmap;
     uint32_t next_join_admission_order;
     uint8_t pending_offer_valid;
@@ -219,6 +219,11 @@ typedef struct tavrn_mentorship {
 tavrn_mentorship_status_t tavrn_mentorship_init(
     tavrn_mentorship_t *mentorship, tavrn_router_t *router, tavrn_gtt_t *gtt,
     const tavrn_mentorship_config_t *config, uint32_t now_ms);
+/* FULL maintenance installs the one shared local TC serial stream after both
+ * owners are initialized.  Unbound legacy host fixtures retain bootstrap JOIN
+ * coverage but are not a production TC origin. */
+tavrn_mentorship_status_t tavrn_mentorship_bind_tc_metadata(
+    tavrn_mentorship_t *mentorship, struct tavrn_tc_metadata_state *state);
 tavrn_mentorship_status_t tavrn_mentorship_freeze_snapshot(
     tavrn_mentorship_t *mentorship, uint16_t snapshot_id, uint32_t now_ms,
     tavrn_mentorship_snapshot_data_t *snapshot_out);

@@ -569,7 +569,7 @@ static tavrn_codec_result_t validate_hello_pdu(const uint8_t *pdu, size_t pdu_le
     if ((pdu[5] & 0x07u) != 0u) {
         return TAVRN_CODEC_MALFORMED_FLAGS;
     }
-    if ((pdu[5] & 0x10u) != 0u && pdu[5] != 0xb8u) {
+    if ((pdu[5] & 0x10u) != 0u && pdu[5] != 0xb8u && pdu[5] != 0xa8u) {
         return TAVRN_CODEC_MALFORMED_FLAGS;
     }
     if (pdu_len < base_len) {
@@ -599,10 +599,15 @@ static tavrn_codec_result_t validate_hello_pdu(const uint8_t *pdu, size_t pdu_le
         return pdu_len == base_len ? TAVRN_CODEC_OK :
             TAVRN_CODEC_MALFORMED_EXACT_LENGTH;
     }
-    if (pdu[5] != 0xb8u || pdu_len != TAVRN_WIRE_HELLO8_VERIFICATION_LEN ||
-        pdu[base_len] != 1u ||
-        !pdu_id_is_unicast(pdu, base_len + 1u, TAVRN_IDENTITY_SID8) ||
-        (pdu[base_len + 2u] & 0x0fu) != 0x01u) {
+    if ((pdu[5] != 0xb8u && pdu[5] != 0xa8u) ||
+        pdu_len != TAVRN_WIRE_HELLO8_VERIFICATION_LEN ||
+        pdu[6] == 0u ||
+         pdu[base_len] != 1u ||
+         !pdu_id_is_unicast(pdu, base_len + 1u, TAVRN_IDENTITY_SID8) ||
+         (pdu[5] == 0xb8u && pdu[base_len + 1u] != pdu[7u + width_len]) ||
+         (pdu[5] == 0xb8u && pdu[base_len + 2u] != 0x01u) ||
+        (pdu[5] == 0xa8u && (pdu[base_len + 2u] & 0x0fu) != 0u) ||
+        ((pdu[6] & 0x0fu) == 0u && !ids_equal(&pdu[origin_offset], outer_adva))) {
         return TAVRN_CODEC_MALFORMED_FIELD;
     }
     return TAVRN_CODEC_OK;
@@ -817,14 +822,15 @@ static tavrn_codec_result_t check_pdu_identities(
     tavrn_adva_t direct_adva;
     tavrn_codec_result_t result;
 
+    if (config->local_peer.logical_id.width == TAVRN_IDENTITY_SID8 &&
+        config->identity_conflict == NULL) {
+        return TAVRN_CODEC_IDENTITY_CONFLICT;
+    }
     if (is_full_identity_control(pdu)) {
         return TAVRN_CODEC_OK;
     }
     if (width != config->local_peer.logical_id.width) {
         return TAVRN_CODEC_MALFORMED_FIELD;
-    }
-    if (width == TAVRN_IDENTITY_SID8 && config->identity_conflict == NULL) {
-        return TAVRN_CODEC_IDENTITY_CONFLICT;
     }
     derive_id(outer_adva, width, &direct);
     if (!is_unicast_id(&direct)) {
@@ -848,12 +854,9 @@ static tavrn_codec_result_t check_pdu_identities(
         return result;
     case TAVRN_WIRE_HACK:
         result = check_pdu_id(config, pdu, 6u, width);
-        if (result == TAVRN_CODEC_OK) {
-            result = check_pdu_id(config, pdu, 6u + width_len, width);
-        }
-        if (result == TAVRN_CODEC_OK) {
-            result = check_pdu_id(config, pdu, 6u + (size_t)2u * width_len, width);
-        }
+        /* validate_hack_pdu() structurally validates the origin/destination
+         * custody keys.  Only the immediate receiver is live-resolved here;
+         * exact active-custody correlation remains the mutation boundary. */
         return result;
     case TAVRN_WIRE_FLOOD:
         return check_pdu_id(config, pdu, 7u, width);

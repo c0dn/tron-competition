@@ -200,6 +200,17 @@ typedef enum tavrn_gtt_sync_merge_status {
     TAVRN_GTT_SYNC_MERGE_UNAVAILABLE,
 } tavrn_gtt_sync_merge_status_t;
 
+/* General metadata carries a bounded remaining-lifetime claim, never a GTT
+ * serial.  The merge therefore preserves any subject serial/direct evidence
+ * already retained by the table and refuses to revive a departed tombstone. */
+typedef enum tavrn_gtt_metadata_merge_status {
+    TAVRN_GTT_METADATA_MERGE_COMMITTED = 0,
+    TAVRN_GTT_METADATA_MERGE_UNCHANGED,
+    TAVRN_GTT_METADATA_MERGE_TOMBSTONE,
+    TAVRN_GTT_METADATA_MERGE_INVALID,
+    TAVRN_GTT_METADATA_MERGE_UNAVAILABLE,
+} tavrn_gtt_metadata_merge_status_t;
+
 typedef enum tavrn_gtt_init_status {
     TAVRN_GTT_INIT_OK = 0,
     TAVRN_GTT_INIT_INVALID_ARGUMENT,
@@ -277,5 +288,8 @@ tavrn_gtt_application_command_result_t tavrn_gtt_apply_application_command(
 tavrn_gtt_sync_merge_status_t tavrn_gtt_sync_merge(
     tavrn_gtt_t *gtt, const tavrn_gtt_sync_record_t *records,
     uint8_t record_count, uint32_t now_ms);
+tavrn_gtt_metadata_merge_status_t tavrn_gtt_metadata_merge(
+    tavrn_gtt_t *gtt, const tavrn_adva_t *identity, uint8_t ttl_bucket,
+    uint32_t now_ms);
 
 #endif /* TAVRN_GTT_H */

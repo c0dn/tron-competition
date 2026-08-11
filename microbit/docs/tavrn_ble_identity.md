@@ -107,6 +107,14 @@ or configure a separate SID16 value.
 produced a collision-free full-identity GTT. Every remote SID8 lookup requires
 exactly one full-identity context match. The common wrapper, type values, role
 semantics, sequence widths, and route core remain routed wire-v2 in both modes.
+A SID8 decoder context requires its identity conflict/resolution callback. The
+sole HACK exception is that its full outer immediate transmitter and immediate
+receiver remain current unambiguous context checks, while HACK origin and final
+destination are structurally validated SID8 custody-correlation keys (correct
+width, unicast syntax, nonreserved value, valid encoded form) and are not live
+GTT lookups. DATA and every other control retain normal identity admission.
+Exact active-custody correlation is the mutation boundary; this is not HACK
+authentication.
 
 Dynamic entropy and `k=2..6` are not encoded by this proof of concept. A future
 wire version must add an explicit mode before using another width; it may not
@@ -247,7 +255,8 @@ Collision scope depends on identity width:
 4. before transitioning from SID16 to SID8;
 5. when binding a direct outer AdvA to its SID16 next-hop identity;
 6. before resolving any SID8 receiver, origin, destination, subject, or
-   metadata entry; and
+   metadata entry, except structurally validated HACK origin/final
+   custody-correlation keys; and
 7. whenever a later full-identity update changes the active set.
 
 Required behavior:
@@ -292,9 +301,24 @@ Counter initialization/allocation is exact:
 
 - after establishment, DATA sequence, generic flood sequence, AODV request ID,
   RERR sequence, HELLO node sequence, TC sequence, and mentor snapshot ID each
-  initialize independently to `0001`;
-- a new semantic transaction uses the current value and then increments modulo
-  65536; zero is legal after normal wrap;
+  initialize independently to `0001`. The one HELLO node-sequence stream covers
+  ordinary `N=0` HELLO and every newly originated targeted request/response;
+- an ordinary HELLO pending on BUSY retains its exact
+  `snapshot.next_node_sequence`; it advances neither cadence nor that visible
+  cursor until queue admission. One internal reservation frontier makes the
+  shared stream collision-free. With no ordinary pending, a newly created/adopted
+  targeted context reserves current `next_node_sequence` and immediately advances
+  it and the frontier modulo 65536 while skipping active targeted reservations.
+  With an ordinary pending, that ordinary value is reserved first and targeted
+  contexts reserve subsequent frontier values without changing the pending bytes
+  or visible cursor. On ordinary admission, merge `next_node_sequence` to the
+  frontier, or ordinary+1 when no targeted reservation exists, skipping still
+  active targeted reservations. BUSY or zero-channel `TX_FAILED` retries retain
+  exact target bytes/value, relays preserve origin value, four contexts reserve
+  distinct values, and canceled unsent targeted values are legal gaps that are
+  never reused during that incarnation;
+- every other new semantic transaction uses the current value from its own stream
+  and then increments modulo 65536; zero is legal after normal wrap;
 - each locally emitted expanding-ring RREQ transmission is a new semantic
   request and therefore allocates a fresh request ID; the off-wire discovery
   generation groups those IDs;
@@ -302,6 +326,17 @@ Counter initialization/allocation is exact:
   and
 - destination sequence zero means unknown only where the E_RREQ `U` bit is
   set. It is otherwise an ordinary serial value within an incarnation.
+
+Scheduler tracking tokens are separate from node sequences. `0x0001..0x7fff` is
+the link-owned tracked domain shared by custody DATA and routed-common tracked
+bootstrap/incarnation HELLO; its allocator checks every retained, queued, and
+in-flight low-domain item. `0x8000..0xffff` is maintenance verification only. A
+caller-owned high token is checked against every queued/in-flight token before
+admission; token zero is untracked and no third domain exists.
+
+The implemented FULL runtime routes targeted stage-0 `TX_DONE`, `TX_FAILED`, and
+terminal scheduler-fault events back to that high-token owner. Retained-hop and
+full-diameter RREQ verification remain deferred and consume no high token here.
 
 **ID-007:** Rejoin is a routed-common incarnation barrier shared by AODV_ONLY
 and FULL_TAVRN:
@@ -418,6 +453,10 @@ Later tests must cover at least:
   self-establishment via `timer.router_reboot_announce_ms`, and FULL_TAVRN
   continued SYNC/`timer.mentor_self_bootstrap_ms`;
 - equality-only dedupe versus same-stream exact-half freshness behavior;
+- one shared post-establishment HELLO node-sequence stream across ordinary HELLO
+  and newly originated targeted request/response, including modulo wrap, four
+  distinct concurrent reservations, legal canceled-unsent gaps, exact BUSY and
+  zero-channel-failure retry bytes, and relay preservation;
 - bounded init/idle/listen/restore/snapshot/TX failures install no partial
   identity, while nonzero completed-channel TX evidence remains an attempt even
   with a later fault;

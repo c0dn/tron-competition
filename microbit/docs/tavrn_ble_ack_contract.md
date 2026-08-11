@@ -65,9 +65,15 @@ The pending sender key is:
 
 **ACK-002:** A HACK matches only when every field above matches and its outer
 AdvA exactly equals the retained direct-next-hop binding. SID16 DATA
-origin/destination fields need no remote full-identity resolution; SID8 fields
-still require unique FULL_TAVRN context. Network/type isolation, reserved bits,
-exact HACK length, logical receiver, and status are validated first.
+origin/destination fields need no remote full-identity resolution. For SID8
+HACK, the full outer immediate transmitter and immediate receiver require current
+unambiguous context validation. HACK origin and final destination are
+custody-correlation keys: they require correct SID8 width, unicast syntax,
+nonreserved values, and valid encoded form, but do not require current live GTT
+resolution. This exception applies only to HACK; DATA and all other controls
+retain normal identity admission. Network/type isolation, reserved bits, exact
+HACK length, logical receiver, and status are validated first. Exact
+active-custody correlation is the mutation boundary, not HACK authentication.
 An unmatched or late HACK is counted and ignored. It cannot complete another
 pending DATA item that happens to share a sequence number.
 

@@ -1202,6 +1202,139 @@ static int source_lines_are_ordered(const char *path, const char *first,
     return 0;
 }
 
+static int bounded_suppression_normal_time(void)
+{
+    maintenance_fixture_t fixture;
+    tavrn_maintenance_snapshot_t state;
+    const tavrn_maintenance_counters_t *counters;
+    uint32_t armed_at;
+
+    if (!setup_adaptive_armed(&fixture, 0u, &armed_at) || armed_at != 20u ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 30u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK ||
+        state.current_interval_ms != 32u || state.next_hello_due_ms != 62u ||
+        state.next_node_sequence != 0xffffu) {
+        return 0;
+    }
+    if (tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 31u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 61u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 62u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK) {
+        return 0;
+    }
+    counters = tavrn_maintenance_counters(&fixture.maintenance);
+    if (state.current_interval_ms != 32u || state.next_hello_due_ms != 62u ||
+        state.next_node_sequence != 0xffffu || state.pending != 0u ||
+        queued_ordinary_hello_count(&fixture) != 0u || counters == NULL ||
+        counters->local_broadcast_suppressed != 4u ||
+        counters->interval_advanced != 1u ||
+        tavrn_maintenance_tick(&fixture.maintenance, 61u) != TAVRN_MAINTENANCE_OK ||
+        queued_ordinary_hello_count(&fixture) != 0u ||
+        tavrn_maintenance_tick(&fixture.maintenance, 62u) != TAVRN_MAINTENANCE_OK ||
+        !queued_hello_matches(sole_queued_ordinary_hello(&fixture), adva_a, 0xffffu) ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK ||
+        state.current_interval_ms != 42u || state.next_hello_due_ms != 104u ||
+        state.next_node_sequence != 0u) {
+        return 0;
+    }
+    clear_queued_controls(&fixture);
+    if (tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 63u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 64u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK) {
+        return 0;
+    }
+    counters = tavrn_maintenance_counters(&fixture.maintenance);
+    return state.current_interval_ms == 50u && state.next_hello_due_ms == 113u &&
+        state.next_node_sequence == 0u && state.pending == 0u && counters != NULL &&
+        counters->local_broadcast_suppressed == 6u &&
+        counters->interval_advanced == 3u;
+}
+
+static int bounded_suppression_pending_busy(void)
+{
+    maintenance_fixture_t fixture;
+    tavrn_maintenance_snapshot_t state;
+    const tavrn_maintenance_counters_t *counters;
+    uint32_t armed_at;
+
+    if (!setup_adaptive_armed(&fixture, 0u, &armed_at) || armed_at != 20u ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 30u) !=
+            TAVRN_MAINTENANCE_OK ||
+        !fill_control_queue(&fixture, 61u) ||
+        tavrn_maintenance_tick(&fixture.maintenance, 62u) !=
+            TAVRN_MAINTENANCE_BUSY ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK ||
+        state.pending == 0u || state.next_hello_due_ms != 62u ||
+        state.next_node_sequence != 0xffffu ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 63u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK) {
+        return 0;
+    }
+    counters = tavrn_maintenance_counters(&fixture.maintenance);
+    if (state.pending != 0u || state.next_hello_due_ms != 62u ||
+        state.current_interval_ms != 32u || state.next_node_sequence != 0xffffu ||
+        counters == NULL || counters->local_broadcast_suppressed != 2u ||
+        counters->interval_advanced != 1u) {
+        return 0;
+    }
+    clear_queued_controls(&fixture);
+    return tavrn_maintenance_tick(&fixture.maintenance, 64u) ==
+            TAVRN_MAINTENANCE_OK &&
+        queued_hello_matches(sole_queued_ordinary_hello(&fixture), adva_a, 0xffffu) &&
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) ==
+            TAVRN_MAINTENANCE_OK &&
+        state.pending == 0u && state.next_node_sequence == 0u;
+}
+
+static int bounded_suppression_wraparound(void)
+{
+    maintenance_fixture_t fixture;
+    tavrn_maintenance_snapshot_t state;
+    const tavrn_maintenance_counters_t *counters;
+    uint32_t armed_at;
+
+    if (!setup_adaptive_armed(&fixture, 0xffffffe0u, &armed_at) ||
+        armed_at != 0xfffffff4u ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance,
+                                                   0xfffffffau) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance,
+                                                   0xffffffffu) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 0u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_observe_local_broadcast(&fixture.maintenance, 0x19u) !=
+            TAVRN_MAINTENANCE_OK ||
+        tavrn_maintenance_snapshot(&fixture.maintenance, &state) !=
+            TAVRN_MAINTENANCE_OK) {
+        return 0;
+    }
+    counters = tavrn_maintenance_counters(&fixture.maintenance);
+    return state.current_interval_ms == 32u && state.next_hello_due_ms == 0x1au &&
+        state.next_node_sequence == 0xffffu && counters != NULL &&
+        counters->local_broadcast_suppressed == 4u &&
+        counters->interval_advanced == 1u &&
+        tavrn_maintenance_tick(&fixture.maintenance, 0x19u) ==
+            TAVRN_MAINTENANCE_OK &&
+        queued_ordinary_hello_count(&fixture) == 0u &&
+        tavrn_maintenance_tick(&fixture.maintenance, 0x1au) ==
+            TAVRN_MAINTENANCE_OK &&
+        queued_hello_matches(sole_queued_ordinary_hello(&fixture), adva_a, 0xffffu);
+}
+
 static int test_maint_02_adaptive_contract(void)
 {
     maintenance_fixture_t fixture;
@@ -1224,6 +1357,9 @@ static int test_maint_02_adaptive_contract(void)
     int ok = 1;
 
     ok &= adaptive_config_contract_is_validated();
+    ok &= bounded_suppression_normal_time();
+    ok &= bounded_suppression_pending_busy();
+    ok &= bounded_suppression_wraparound();
     ok &= setup_adaptive_armed(&fixture, 0xffffffe0u, &armed_at) &&
         armed_at == 0xfffffff4u &&
         tavrn_maintenance_snapshot(&fixture.maintenance, &state) ==

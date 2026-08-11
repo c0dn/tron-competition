@@ -40,6 +40,22 @@ STACK_LIMIT = 3072
 STACK_HEADROOM = 1024
 RAM_MINIMUM = 8192
 FIXED_DELTA_MAXIMUM = 512
+REQUIRED_ROUTED_INITIAL_TASK_STACK_BYTES = 4096
+REQUIRED_ROUTED_RUNTIME_RAM_RESERVE_BYTES = 12288
+
+# The supplied manifest selects the measured path but is not allowed to weaken
+# the routed FULL root contract.  These edges cover both routed-cycle callbacks
+# and the maintenance binding's targeted owner branch.
+REQUIRED_ROOTED_STACK_EDGES = frozenset({
+    ("routed_mesh_task", "routed_cycle_run_task", "call", "always"),
+    ("routed_cycle_run_task", "routed_cycle_run_once", "call", "always"),
+    ("routed_cycle_run_once", "routed_cycle_operations.router_scheduler_event",
+     "indirect", "always"),
+    ("routed_cycle_run_once", "routed_cycle_operations.router_tick", "indirect", "always"),
+    ("routed_cycle_router_tick", "tavrn_full_maintenance_binding_tick", "call", "binding"),
+    ("tavrn_full_maintenance_binding_tick", "tavrn_maintenance_targeted_owner_tick",
+     "call", "binding"),
+})
 
 RESOURCE_KEYS = {
     "schema", "name", "target", "feature", "timer", "ram", "fixed_state",
@@ -70,6 +86,26 @@ class StackFrame:
 
 
 @dataclass(frozen=True)
+class RoutedRuntimeDeclaration:
+    initial_task_stack_bytes: int
+    runtime_ram_reserve_bytes: int
+
+
+@dataclass(frozen=True)
+class RuntimeRamReport:
+    map_unallocated_ram_bytes: int
+    runtime_ram_reserve_bytes: int
+    post_reserve_ram_bytes: int
+
+
+@dataclass(frozen=True)
+class InitialTaskStackReport:
+    initial_task_stack_bytes: int
+    static_frame_bytes: int
+    logical_headroom_bytes: int
+
+
+@dataclass(frozen=True)
 class BaselineEvidence:
     baseline_of_record: str
     before_source_inventory_sha256: str
@@ -82,6 +118,8 @@ class RunResult:
     verdict: str
     baseline: BaselineEvidence | None
     stack_chain: str | None
+    runtime_ram: RuntimeRamReport | None
+    initial_task_stack: InitialTaskStackReport | None
 
 
 class StackFrames:
@@ -142,6 +180,25 @@ class StackFrames:
         # static symbol.  Conservatively charge the largest observed frame.
         maximum = max(frame.frame_bytes for frame in candidates)
         return StackFrame("%s:<ambiguous-max>" % symbol, symbol, maximum)
+
+    def resolve_source_function(self, source: Path, function: str) -> StackFrame:
+        """Resolve one exact source/function frame, never a same-named fallback."""
+        source_resolved = source.resolve()
+        candidates: list[StackFrame] = []
+        for frame in self._by_identity.values():
+            frame_source, separator, frame_function = frame.identity.rpartition(":")
+            if not separator or frame_function != function:
+                continue
+            try:
+                if Path(frame_source).resolve() == source_resolved:
+                    candidates.append(frame)
+            except OSError:
+                continue
+        if len(candidates) != 1:
+            raise CheckFailure(
+                "stack", "production %s:%s has %d .su frames; expected exactly one" %
+                (source, function, len(candidates)))
+        return candidates[0]
 
 
 def sha256_file(path: Path) -> str:
@@ -310,6 +367,70 @@ def parse_kv_manifest(path: Path) -> dict[str, str]:
             raise CheckFailure("provenance", "duplicate or empty manifest key %r" % key)
         result[key] = value
     return result
+
+
+def require_manifest_decimal(manifest: dict[str, str], key: str, expected: int) -> int:
+    value = manifest.get(key)
+    if value is None:
+        raise CheckFailure("provenance", "build manifest lacks required declaration: " + key)
+    if not re.fullmatch(r"0|[1-9][0-9]*", value):
+        raise CheckFailure("provenance", "build manifest declaration is malformed: " + key)
+    parsed = int(value, 10)
+    if parsed != expected:
+        raise CheckFailure("provenance", "build manifest declaration differs: %s=%d, expected %d" %
+                           (key, parsed, expected))
+    return parsed
+
+
+def config_uint_macro(config_header: Path, macro: str, label: str,
+                      failure_code: str = "provenance") -> int:
+    try:
+        source = config_header.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CheckFailure(failure_code, "cannot read generated config header: %s" % error)
+    matches = re.findall(r"^#define\s+%s\s+([0-9]+)u?\s*$" % re.escape(macro),
+                         source, flags=re.MULTILINE)
+    if len(matches) != 1:
+        raise CheckFailure(failure_code, "generated config lacks one %s macro" % label)
+    return int(matches[0], 10)
+
+
+def validate_routed_runtime_declarations(
+        manifest: dict[str, str], config_header: Path) -> RoutedRuntimeDeclaration:
+    """Cross-check the generated routed stack/reserve declaration surface."""
+    if manifest.get("build.kind") != "ROUTED" or \
+            manifest.get("build.phase1_target") != "ROUTED":
+        raise CheckFailure("provenance", "resource evidence is not a routed build manifest")
+    if manifest.get("capacity.routed_initial_task_stack_bytes.state") != "IMPLEMENTED":
+        raise CheckFailure("provenance", "routed initial-task capacity state is not IMPLEMENTED")
+    initial_stack = require_manifest_decimal(
+        manifest, "build.initial_task_stack_bytes",
+        REQUIRED_ROUTED_INITIAL_TASK_STACK_BYTES)
+    capacity_stack = require_manifest_decimal(
+        manifest, "capacity.routed_initial_task_stack_bytes",
+        REQUIRED_ROUTED_INITIAL_TASK_STACK_BYTES)
+    reserve = require_manifest_decimal(
+        manifest, "resource.runtime_ram_reserve_bytes",
+        REQUIRED_ROUTED_RUNTIME_RAM_RESERVE_BYTES)
+    config_initial_stack = config_uint_macro(
+        config_header, "TRON_BUILD_INITIAL_TASK_STACK_BYTES", "initial-task-stack")
+    config_reserve = config_uint_macro(
+        config_header, "TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES", "runtime-ram-reserve")
+    if config_initial_stack != initial_stack or config_initial_stack != capacity_stack:
+        raise CheckFailure("provenance", "generated initial-task stack declarations disagree")
+    if config_reserve != reserve:
+        raise CheckFailure("provenance", "generated runtime RAM reserve declarations disagree")
+    return RoutedRuntimeDeclaration(initial_stack, reserve)
+
+
+def post_reserve_ram_bytes(map_unallocated_ram_bytes: int,
+                           runtime_ram_reserve_bytes: int) -> int:
+    if runtime_ram_reserve_bytes > map_unallocated_ram_bytes:
+        raise CheckFailure("ram_unallocated", "runtime RAM reserve exceeds map unallocated RAM")
+    post_reserve = map_unallocated_ram_bytes - runtime_ram_reserve_bytes
+    if post_reserve < RAM_MINIMUM:
+        raise CheckFailure("ram_unallocated", "post-reserve RAM is below 8192 bytes")
+    return post_reserve
 
 
 def parse_map(path: Path) -> MapUsage:
@@ -486,6 +607,16 @@ def load_stack_contract(path: Path, root: str) -> dict[str, Any]:
     return document
 
 
+def require_rooted_stack_edges(contract: dict[str, Any]) -> None:
+    supplied = {(edge["from"], edge["to"], edge["kind"], edge["when"])
+                for edge in contract["edges"]}
+    missing = sorted(REQUIRED_ROOTED_STACK_EDGES - supplied)
+    if missing:
+        raise CheckFailure(
+            "stack", "required rooted stack edges are missing: " +
+            ",".join("%s->%s[%s,%s]" % edge for edge in missing))
+
+
 def verify_declared_leaf_evidence(contract: dict[str, Any], manifest_path: Path | None,
                                   manifest: dict[str, str]) -> None:
     if not contract["declared_leaves"]:
@@ -626,7 +757,8 @@ def validate_edges(contract_or_path: dict[str, Any] | Path, resolvers: dict[str,
     return [frames.resolve(symbol) for symbol in sorted(deepest)[0]]
 
 
-def parse_compile_command(commands_path: Path, source: Path) -> tuple[list[str], Path]:
+def parse_compile_command(commands_path: Path, source: Path,
+                          target: str | None = None) -> tuple[list[str], Path]:
     try:
         entries = json.loads(commands_path.read_text(encoding="utf-8"), object_pairs_hook=strict_pairs)
     except (OSError, json.JSONDecodeError, ValueError) as error:
@@ -637,6 +769,9 @@ def parse_compile_command(commands_path: Path, source: Path) -> tuple[list[str],
     for entry in entries:
         if not isinstance(entry, dict) or "file" not in entry:
             continue
+        if target is not None and (not isinstance(entry.get("output"), str) or
+                                   "CMakeFiles/%s.dir/" % target not in entry["output"]):
+            continue
         candidate = Path(entry["file"])
         if not candidate.is_absolute():
             candidate = Path(entry.get("directory", commands_path.parent)) / candidate
@@ -646,7 +781,8 @@ def parse_compile_command(commands_path: Path, source: Path) -> tuple[list[str],
         except OSError:
             continue
     if len(matches) != 1:
-        raise CheckFailure("preprocess", "selected main has %d compile commands" % len(matches))
+        label = target if target is not None else "selected main"
+        raise CheckFailure("preprocess", "%s has %d compile commands" % (label, len(matches)))
     entry = matches[0]
     if "arguments" in entry and isinstance(entry["arguments"], list):
         arguments = [str(value) for value in entry["arguments"]]
@@ -657,6 +793,46 @@ def parse_compile_command(commands_path: Path, source: Path) -> tuple[list[str],
     if not arguments:
         raise CheckFailure("preprocess", "empty compile command")
     return arguments, Path(entry.get("directory", commands_path.parent))
+
+
+def require_initial_task_compile_definition(commands_path: Path, source: Path,
+                                            initial_task_stack_bytes: int,
+                                            target: str | None = None) -> None:
+    arguments, _ = parse_compile_command(commands_path, source, target)
+    definitions = [argument for argument in arguments
+                   if argument.startswith("-DINITTASK_STKSZ")]
+    expected = "-DINITTASK_STKSZ=%d" % initial_task_stack_bytes
+    if definitions != [expected]:
+        raise CheckFailure(
+            "provenance", "compile command for %s must contain exactly one %s" %
+            (source, expected))
+
+
+def require_routed_initial_task_compile_definitions(
+        commands_path: Path, initial_task_stack_bytes: int) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    require_initial_task_compile_definition(
+        commands_path, repo_root / "app/tavrn_routed_node/src/main.c",
+        initial_task_stack_bytes)
+    require_initial_task_compile_definition(
+        commands_path, repo_root / "libs/mtkernel_3/kernel/inittask/inittask.c",
+        initial_task_stack_bytes, "mtkernel3_microbit_kernel_tavrn_routed_node")
+
+
+def initial_task_stack_report(declaration: RoutedRuntimeDeclaration,
+                              frames: StackFrames, main_source: Path) -> InitialTaskStackReport:
+    # This checks the production initial-task function's own static frame only.
+    # The independent routed_mesh_task chain remains the complete call-chain
+    # check; this must not be read as a startup-chain claim.
+    frame = frames.resolve_source_function(main_source, "usermain")
+    if frame.frame_bytes > declaration.initial_task_stack_bytes:
+        raise CheckFailure("stack", "production usermain static frame exceeds initial-task stack")
+    headroom = declaration.initial_task_stack_bytes - frame.frame_bytes
+    if headroom < STACK_HEADROOM:
+        raise CheckFailure("stack", "production usermain static frame leaves less than 1024 bytes "
+                           "of logical initial-task headroom")
+    return InitialTaskStackReport(declaration.initial_task_stack_bytes,
+                                  frame.frame_bytes, headroom)
 
 
 def preprocess_main(commands: Path, source: Path, output: Path) -> str:
@@ -880,6 +1056,17 @@ def inventory_hash(path: Path) -> str:
     return hashlib.sha256("".join(records).encode("utf-8")).hexdigest()
 
 
+def require_initial_task_source_provenance(path: Path) -> None:
+    try:
+        sources = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+    except OSError as error:
+        raise CheckFailure("provenance", "cannot read selected sources: %s" % error)
+    required = "libs/mtkernel_3/include/sys/inittask.h"
+    if sources.count(required) != 1:
+        raise CheckFailure("provenance", "selected-source inventory lacks one inittask.h record")
+
+
 def manifest_sidecar(manifest_path: Path, manifest: dict[str, str], key: str) -> Path | None:
     name = manifest.get(key)
     if name is None:
@@ -951,15 +1138,8 @@ def verify_manifest_hash(manifest: dict[str, str], key: str, path: Path) -> None
 
 
 def mesh_stack_bytes(config_header: Path) -> int:
-    try:
-        source = config_header.read_text(encoding="utf-8")
-    except OSError as error:
-        raise CheckFailure("stack", "cannot read generated config header: %s" % error)
-    matches = re.findall(r"^#define\s+TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES\s+([0-9]+)u?\s*$",
-                         source, flags=re.MULTILINE)
-    if len(matches) != 1:
-        raise CheckFailure("stack", "generated config lacks one mesh-stack-size macro")
-    value = int(matches[0], 10)
+    value = config_uint_macro(config_header, "TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES",
+                              "mesh-stack-size", "stack")
     if value == 0:
         raise CheckFailure("stack", "generated mesh stack size must be nonzero")
     return value
@@ -986,8 +1166,11 @@ def verify_baseline(args: argparse.Namespace, document: dict[str, Any]) -> Basel
     if args.before_map is None or args.baseline_sha256 is None:
         raise CheckFailure("provenance", "baseline requires before map and baseline hash")
     baseline_path = Path(args.baseline_manifest)
+    before_path = Path(args.before_map)
+    if args.full_map is not None and before_path.resolve() == Path(args.full_map).resolve():
+        raise CheckFailure("provenance", "baseline map must not be the current map")
     baseline = validate_resource_document(load_json(baseline_path, "baseline manifest"),
-                                          "baseline manifest")
+                                           "baseline manifest")
     try:
         checksum_line = Path(args.baseline_sha256).read_text(encoding="utf-8").strip()
     except OSError as error:
@@ -996,10 +1179,10 @@ def verify_baseline(args: argparse.Namespace, document: dict[str, Any]) -> Basel
     if expected is None or expected.group(1) != sha256_file(baseline_path) or \
        Path(expected.group(2)).name != baseline_path.name:
         raise CheckFailure("provenance", "baseline manifest hash is stale or malformed")
-    before_usage = parse_map(Path(args.before_map))
+    before_usage = parse_map(before_path)
     if baseline["ram"]["data_bytes"] != before_usage.data_bytes or \
        baseline["ram"]["bss_bytes"] != before_usage.bss_bytes or \
-       baseline["provenance"]["map_sha256"] != sha256_file(Path(args.before_map)):
+        baseline["provenance"]["map_sha256"] != sha256_file(before_path):
         raise CheckFailure("provenance", "baseline map data does not match its manifest")
     if baseline["schema"] != document["schema"] or baseline["target"] != document["target"] or \
        baseline["feature"] != document["feature"] or baseline["timer"] != document["timer"] or \
@@ -1029,6 +1212,7 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
         selected_hash = inventory_hash(Path(args.selected_sources))
     manifest: dict[str, str] = {}
     manifest_path: Path | None = None
+    config_header_path = Path(args.config_header) if args.config_header else None
     if args.full_manifest is not None:
         manifest_path = Path(args.full_manifest)
         manifest = parse_kv_manifest(manifest_path)
@@ -1045,6 +1229,20 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
                                  Path(args.compile_commands))
         if args.disassembly:
             verify_manifest_hash(manifest, "evidence.disassembly.sha256", Path(args.disassembly))
+        if config_header_path is None:
+            config_header_path = manifest_sidecar(
+                manifest_path, manifest, "evidence.target_config_header.name")
+            if config_header_path is not None:
+                verify_manifest_hash(manifest, "evidence.target_config_header.sha256",
+                                     config_header_path)
+        if config_header_path is None:
+            raise CheckFailure("provenance", "routed build manifest lacks generated config header evidence")
+        declaration = validate_routed_runtime_declarations(manifest, config_header_path)
+        if args.selected_sources is not None:
+            require_initial_task_source_provenance(Path(args.selected_sources))
+        if args.compile_commands:
+            require_routed_initial_task_compile_definitions(
+                Path(args.compile_commands), declaration.initial_task_stack_bytes)
     uses_heap = False
     symbols = nm_symbols(elf_path)
     heap_names = ("malloc", "calloc", "realloc", "free", "_sbrk", "sbrk")
@@ -1061,16 +1259,15 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
         raise CheckFailure("binding", "FULL binding symbol/call is absent from fresh evidence")
     stack_bytes = 0
     if args.config_header:
-        stack_bytes = mesh_stack_bytes(Path(args.config_header))
+        stack_bytes = mesh_stack_bytes(config_header_path)
     elif manifest_path is not None:
-        header_path = manifest_sidecar(manifest_path, manifest, "evidence.target_config_header.name")
-        if header_path is not None:
-            verify_manifest_hash(manifest, "evidence.target_config_header.sha256", header_path)
-            stack_bytes = mesh_stack_bytes(header_path)
+        if config_header_path is not None:
+            stack_bytes = mesh_stack_bytes(config_header_path)
     stack = {"root": args.stack_root or "routed_mesh_task", "chain": [], "total_bytes": 0,
              "headroom_bytes": stack_bytes}
     if args.su_glob and args.required_edge_manifest and args.stack_root:
         contract = load_stack_contract(Path(args.required_edge_manifest), args.stack_root)
+        require_rooted_stack_edges(contract)
         verify_declared_leaf_evidence(contract, manifest_path, manifest)
         su_paths = [Path(path) for path in sorted(glob.glob(args.su_glob, recursive=True))]
         su_digest = stack_usage_hash(su_paths, args.su_glob)
@@ -1116,7 +1313,8 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
                 "unallocated_bytes": map_usage.unallocated_bytes},
         "fixed_state": {"before_bytes": map_usage.allocated_bytes,
                         "after_bytes": map_usage.allocated_bytes,
-                        "declared_delta_bytes": 0, "unexplained_delta_bytes": 0},
+                        "declared_delta_bytes": args.declared_fixed_state_delta,
+                        "unexplained_delta_bytes": 0},
         "stack": stack, "heap": {"uses_heap": uses_heap},
         "binding": {"full_symbol_count": full_symbol_count, "full_call_count": full_call_count,
                     "aodv_symbol_count": aodv_symbols, "aodv_reference_count": aodv_refs},
@@ -1134,8 +1332,36 @@ def build_evidence_document(args: argparse.Namespace) -> dict[str, Any]:
     return validate_resource_document(document, "generated resource manifest")
 
 
+def routed_runtime_reports(args: argparse.Namespace) -> tuple[RuntimeRamReport,
+                                                               InitialTaskStackReport | None]:
+    if args.full_manifest is None or args.full_map is None:
+        raise CheckFailure("arguments", "routed runtime reports require map and build manifest")
+    manifest_path = Path(args.full_manifest)
+    manifest = parse_kv_manifest(manifest_path)
+    config_header = Path(args.config_header) if args.config_header else manifest_sidecar(
+        manifest_path, manifest, "evidence.target_config_header.name")
+    if config_header is None:
+        raise CheckFailure("provenance", "routed build manifest lacks generated config header evidence")
+    declaration = validate_routed_runtime_declarations(manifest, config_header)
+    map_usage = parse_map(Path(args.full_map))
+    ram_report = RuntimeRamReport(
+        map_usage.unallocated_bytes,
+        declaration.runtime_ram_reserve_bytes,
+        post_reserve_ram_bytes(map_usage.unallocated_bytes,
+                               declaration.runtime_ram_reserve_bytes))
+    initial_task_report: InitialTaskStackReport | None = None
+    if args.require_binding_call:
+        su_paths = [Path(path) for path in sorted(glob.glob(args.su_glob, recursive=True))]
+        frames = parse_su(su_paths)
+        initial_task_report = initial_task_stack_report(
+            declaration, frames, Path(args.main_source))
+    return ram_report, initial_task_report
+
+
 def validate_live_evidence(args: argparse.Namespace,
-                           document: dict[str, Any]) -> BaselineEvidence | None:
+                           document: dict[str, Any]) -> tuple[BaselineEvidence | None,
+                                                               RuntimeRamReport | None,
+                                                               InitialTaskStackReport | None]:
     if args.stack_baseline_only and args.require_binding_call:
         raise CheckFailure("arguments", "stack/baseline-only mode cannot require the binding")
     if args.stack_baseline_only:
@@ -1147,9 +1373,10 @@ def validate_live_evidence(args: argparse.Namespace,
         if missing:
             raise CheckFailure("arguments", "stack/baseline-only mode lacks " + ",".join(missing))
     if args.require_binding_call and (not args.compile_commands or not args.main_source or
-                                      not args.preprocessed_main_out or not args.su_glob or
-                                      not args.stack_root or not args.required_edge_manifest or
-                                      not args.disassembly or not args.config_header):
+                                       not args.preprocessed_main_out or not args.su_glob or
+                                       not args.stack_root or not args.required_edge_manifest or
+                                       not args.disassembly or not args.config_header or
+                                       not args.full_manifest):
         raise CheckFailure("arguments", "binding gate requires main, stack, FULL and AODV evidence")
     if args.resource_manifest and args.full_map and args.full_elf:
         observed = build_evidence_document(args)
@@ -1183,7 +1410,11 @@ def validate_live_evidence(args: argparse.Namespace,
         source = preprocess_main(Path(args.compile_commands), Path(args.main_source),
                                  Path(args.preprocessed_main_out))
         validate_preprocessed_main(source)
-    return verify_baseline(args, document)
+    runtime_ram: RuntimeRamReport | None = None
+    initial_task_stack: InitialTaskStackReport | None = None
+    if args.full_manifest is not None and args.full_map is not None:
+        runtime_ram, initial_task_stack = routed_runtime_reports(args)
+    return verify_baseline(args, document), runtime_ram, initial_task_stack
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1202,6 +1433,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--before-map")
     parser.add_argument("--baseline-manifest")
     parser.add_argument("--baseline-sha256")
+    parser.add_argument("--declared-fixed-state-delta", type=int, default=0)
     parser.add_argument("--selected-sources")
     parser.add_argument("--su-glob")
     parser.add_argument("--stack-root")
@@ -1224,11 +1456,47 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def has_live_artifact_arguments(args: argparse.Namespace) -> bool:
+    return any((
+        args.full_elf, args.full_map, args.full_manifest, args.before_map,
+        args.baseline_manifest, args.baseline_sha256, args.selected_sources,
+        args.su_glob, args.stack_root, args.required_edge_manifest,
+        args.resolve_operation_edge, args.disassembly, args.compile_commands,
+        args.config_header, args.main_source, args.preprocessed_main_out,
+        args.aodv_elf, args.aodv_map, args.aodv_manifest,
+        args.aodv_compile_commands, args.aodv_disassembly,
+        args.require_binding_call, args.hardware_capture,
+        args.capture_artifact_manifest,
+    ))
+
+
+def require_complete_live_evidence(args: argparse.Namespace) -> None:
+    required = (
+        "full_elf", "full_map", "full_manifest", "before_map",
+        "baseline_manifest", "baseline_sha256", "selected_sources", "su_glob",
+        "stack_root", "required_edge_manifest", "disassembly", "compile_commands",
+        "config_header", "main_source", "preprocessed_main_out",
+    )
+    missing = [name for name in required if not getattr(args, name)]
+    if not args.require_binding_call:
+        missing.append("require_binding_call")
+    if missing:
+        raise CheckFailure("arguments", "incomplete fresh resource evidence: " +
+                           ",".join(missing))
+
+
 def run(args: argparse.Namespace) -> RunResult:
     live_fixture: dict[str, Any] | None = None
     baseline: BaselineEvidence | None = None
+    runtime_ram: RuntimeRamReport | None = None
+    initial_task_stack: InitialTaskStackReport | None = None
+    if args.declared_fixed_state_delta < 0:
+        raise CheckFailure("arguments", "declared fixed-state delta must be nonnegative")
     if args.stack_baseline_only and args.fixture:
         raise CheckFailure("arguments", "stack/baseline-only mode requires fresh resource evidence")
+    live_artifacts = has_live_artifact_arguments(args)
+    if not args.emit_resource_manifest and not args.stack_baseline_only and live_artifacts:
+        require_complete_live_evidence(args)
     if args.fixture:
         fixture = validate_resource_document(load_json(Path(args.fixture), "fixture"), "fixture")
         if args.full_map and args.full_elf:
@@ -1253,9 +1521,10 @@ def run(args: argparse.Namespace) -> RunResult:
         target = Path(args.emit_resource_manifest)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return RunResult("EMITTED", None, None)
-    if not args.fixture or live_fixture is not None:
-        baseline = validate_live_evidence(args, document)
+        return RunResult("EMITTED", None, None, None, None)
+    live_invocation = args.stack_baseline_only or live_artifacts
+    if live_invocation:
+        baseline, runtime_ram, initial_task_stack = validate_live_evidence(args, document)
     if live_fixture is not None:
         # The real artifact must satisfy every normal gate before a synthetic
         # threshold-failing fixture is allowed to prove its one named boundary.
@@ -1276,7 +1545,15 @@ def run(args: argparse.Namespace) -> RunResult:
     validate_thresholds(document, binding_required, bool(args.aodv_elf))
     stack_chain = json.dumps(document["stack"]["chain"], sort_keys=True,
                               separators=(",", ":")) if document["stack"]["chain"] else None
-    return RunResult("PASS", baseline, stack_chain)
+    if live_invocation:
+        verdict = "PASS"
+    elif args.fixture:
+        verdict = "FIXTURE_PASS"
+    elif args.resource_manifest:
+        verdict = "MANIFEST_PASS"
+    else:
+        raise CheckFailure("arguments", "ordinary PASS requires fresh resource evidence")
+    return RunResult(verdict, baseline, stack_chain, runtime_ram, initial_task_stack)
 
 
 def main(argv: list[str]) -> int:
@@ -1314,6 +1591,15 @@ def main(argv: list[str]) -> int:
         print("SOURCE_INVENTORY_DRIFT=" + result.baseline.source_inventory_drift)
     if result.stack_chain is not None:
         print("STACK_CHAIN=" + result.stack_chain)
+    if result.runtime_ram is not None:
+        print("MAP_UNALLOCATED_RAM_BYTES=" + str(result.runtime_ram.map_unallocated_ram_bytes))
+        print("RUNTIME_RAM_RESERVE_BYTES=" + str(result.runtime_ram.runtime_ram_reserve_bytes))
+        print("POST_RESERVE_RAM_BYTES=" + str(result.runtime_ram.post_reserve_ram_bytes))
+    if result.initial_task_stack is not None:
+        print("INITIAL_TASK_STACK_BYTES=" + str(result.initial_task_stack.initial_task_stack_bytes))
+        print("INITIAL_TASK_STATIC_FRAME_BYTES=" + str(result.initial_task_stack.static_frame_bytes))
+        print("INITIAL_TASK_LOGICAL_HEADROOM_BYTES=" +
+              str(result.initial_task_stack.logical_headroom_bytes))
     target = args.emit_resource_manifest or args.fixture or args.resource_manifest or "resource evidence"
     print("%s %s" % (result.verdict, target))
     return 0

@@ -127,7 +127,56 @@
     "microbit/hardware-results/2026-08-08-tavrn-expiry-full-table/README.md",
     "microbit/hardware-results/2026-08-08-tavrn-expiry-full-table/board-A-330s.log",
     "microbit/hardware-results/2026-08-08-tavrn-expiry-full-table/board-A-330s.capture.json",
-    "microbit/hardware-results/2026-08-04-ble-mesh-qualification.md"
+    "microbit/hardware-results/2026-08-04-ble-mesh-qualification.md",
+    "microbit/tests/protocol/test_tavrn_phase5_targeted_freshness.c",
+    "microbit/tests/protocol/run_tavrn_phase5_targeted_freshness_tests.sh",
+    "microbit/tests/protocol/red_support/tavrn_phase5_targeted_freshness_contract.h",
+    "microbit/tests/protocol/red_support/tavrn_phase5_targeted_freshness_red_backend.c",
+    "microbit/tests/protocol/test_tavrn_expiry_resources.py",
+    "/tmp/opencode/tavrn-targeted-review-resource-acceptance.env",
+    "microbit/tests/protocol/test_tavrn_phase5_rreq_verification.c",
+    "microbit/tests/protocol/run_tavrn_phase5_rreq_verification_tests.sh",
+    "microbit/tests/protocol/red_support/tavrn_phase5_rreq_verification_contract.h",
+    "microbit/tests/protocol/red_support/tavrn_phase5_rreq_verification_red_backend.c",
+    "/tmp/opencode/tavrn-rreq-response-resource-acceptance.env",
+    "microbit/tests/protocol/test_tavrn_phase5_tc_metadata.c",
+    "microbit/tests/protocol/run_tavrn_phase5_tc_metadata_tests.sh",
+    "microbit/tests/protocol/red_support/tavrn_phase5_tc_metadata_contract.h",
+    "microbit/tests/protocol/red_support/tavrn_phase5_tc_metadata_red_backend.c",
+    "microbit/app/protocol/tavrn_full_maintenance_binding.h",
+    "microbit/app/protocol/tavrn_full_maintenance_binding.c",
+    "microbit/app/ble_mesh_node/config/tron_build_manifest.in",
+    "/tmp/opencode/tavrn-tc-metadata-resource-acceptance.env",
+    "/tmp/opencode/tavrn-tc-metadata-completion-resource-acceptance.env",
+    "/tmp/opencode/tavrn-hack-custody-final-resource.env",
+    "/tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-events.log",
+    "/tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-A.log",
+    "/tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-B.log",
+    "/tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-C.log",
+    "microbit/app/protocol/aodv_core.c",
+    "microbit/app/protocol/aodv_core.h",
+    "/tmp/opencode/tavrn-repair-off-baseline-20260810.env",
+    "/tmp/opencode/tavrn-repair-off-baseline-hil-20260810-events.log",
+    "/tmp/opencode/tavrn-repair-off-baseline-hil-20260810-A.log",
+    "/tmp/opencode/tavrn-repair-off-baseline-hil-20260810-B.log",
+    "/tmp/opencode/tavrn-repair-off-baseline-hil-20260810-C.log",
+    "/tmp/opencode/tavrn-repair-off-baseline-fast",
+    "/tmp/opencode/tavrn-repair-off-baseline-balanced",
+    "/tmp/opencode/tavrn-repair-off-baseline-aodv",
+    "microbit/tests/protocol/test_tavrn_phase6_repair.c",
+    "microbit/tests/protocol/run_tavrn_phase6_repair_tests.sh",
+    "microbit/tests/protocol/red_support/tavrn_phase6_repair_contract.h",
+    "microbit/tests/protocol/red_support/tavrn_phase6_repair_red_backend.c",
+    "microbit/app/protocol/tavrn_repair.h",
+    "microbit/app/protocol/tavrn_repair.c",
+    "microbit/app/protocol/tavrn_full_repair_binding.h",
+    "microbit/app/protocol/tavrn_full_repair_binding.c",
+    "microbit/tests/protocol/test_tavrn_full_repair_binding.c",
+    "/tmp/opencode/phase6-final5-off-fast",
+    "/tmp/opencode/phase6-final5-off-balanced",
+    "/tmp/opencode/phase6-final5-on-fast",
+    "/tmp/opencode/phase6-final5-on-balanced",
+    "/tmp/opencode/phase6-final5-aodv-fast"
   ],
   "planFile": ".opencode/workplan/tavrn-ble-testbed.md",
   "specFiles": [
@@ -487,83 +536,115 @@
           "status": "completed"
         },
         {
+          "id": "step-5f-targeted-freshness-red",
+          "title": "Author targeted hard-expiry freshness RED",
+          "target": "microbit/tests/protocol/test_tavrn_phase5_targeted_freshness.c; microbit/tests/protocol/run_tavrn_phase5_targeted_freshness_tests.sh; minimal red_support contract/backend only if production API absence requires it; wire-v2 golden-vector correction",
+          "action": "Author assertion-level RED coverage for MAINT-06, MAINT-07, META-01, META-03, META-04 and SERIAL-01 targeted behavior: exact 0xb8/0xa8 vectors and malformed forms; route-only stage-0 eligibility/revalidation; request relay, response-only relay, target, and intermediary behavior; deterministic delay/suppression; accepted ordinary-HELLO BUSY semantics plus collision-free targeted reservation-frontier ordering/merge/gaps/wrap; 16-key dedupe and four-context/candidate caps; exact obligation_started_ms anchors for local context creation, post-dedupe request RX, and independent post-dedupe response-relay RX, with due-at-equality lifetime; exact BUSY/zero-channel retention; low link-owned custody/bootstrap token domain versus high verification domain with concurrent wrap/collision cases and terminal eviction; same-subject queued/in-flight cancellation; matching nonzero-mask completion; wrap-safe STAGE1_READY timeout handoff; and ordinary-HELLO/lower-profile isolation. Record one exact RED command whose assertion failures are only missing targeted production behavior.",
+          "validation": "PASS: `./microbit/tests/protocol/run_tavrn_phase5_targeted_freshness_tests.sh --red` exits 1 with six required REACHED scenarios and ordered approved requirement tags MAINT-06, MAINT-07, META-01, META-03, META-04, SERIAL-01; 110 reachable policy failures, no structural/test-wrapper failure. `--green` exits 2 only because production targeted APIs are not yet defined. Adaptive Phase 5, expiry-host GREEN, and link/wire/radio-scheduler suites pass; git diff --check passes. Final adversarial RED review ses_01df13f4fffeUEZuSfbsV2f3gH: READY.",
+          "status": "completed"
+        },
+        {
           "id": "step-5f-targeted-freshness",
           "title": "Implement targeted hard-expiry freshness",
-          "target": "wire-v2, router, maintenance, tracked control path, RED/GREEN tests",
-          "action": "Implement the hard-expiry-only route-assisted targeted freshness request and nonrecursive freshness response while ordinary HELLO remains one-hop and reply-free. BUSY retains exact work and only tracked nonzero-channel TX completion consumes the stage.",
-          "validation": "Golden vectors, relay/target/intermediate response, dedupe, BUSY, cancellation, timeout, and ordinary-HELLO isolation tests pass.",
-          "status": "draft"
+          "target": "tavrn_wire_v2.{h,c}; tavrn_link_v2.{h,c}; tavrn_router.{h,c}; tavrn_maintenance.{h,c}; tavrn_full_maintenance_binding.{h,c}; routed main copied completion binding; FULL profile/source manifest; targeted RED/GREEN tests; fresh FULL FAST resource comparison",
+          "action": "Implement only targeted stage 0 around the existing router/link path. Add strict 0xb8/0xa8 codec and route-assisted request/response forwarding without discovery; one shared local HELLO sequence with an internal targeted reservation frontier that preserves accepted pending ordinary-HELLO BUSY behavior; four fixed verification contexts plus delayed candidate/tombstone state; low link-owned custody/bootstrap tokens and high caller-owned verification tokens with typed terminal completion/eviction; work-kind-specific obligation_started_ms anchors, including response-relay post-dedupe 0xa8 RX admission; exact BUSY/zero-channel retry; deterministic eligible intermediary response and delayed-only suppression; same-subject cancellation; matching nonzero-mask consumption; and retained STAGE1_READY on route loss or observed-TX_DONE plus net-traversal timeout. Reconcile FULL behavior/source manifests and rerun the accepted stack/RAM checker. Do not add RREQ, departure, TC/LEAVE, general metadata, hardware publication, scheduler/radio edits, a timer key, or a new routing engine.",
+          "validation": "Focused targeted GREEN passes golden vectors, malformed admission, relay/target/intermediate response, dedupe, BUSY, route loss, capacity, ordinary-pending plus targeted reservation order/merge/gap/wrap, low custody/bootstrap plus high verification token allocation/collision/wrap/eviction, obligation lifetime anchors, queued/in-flight cancellation, timeout/wrap, ordinary HELLO isolation and deferred-side-effect guards. Link/wire, fixed/adaptive/local-expiry Phase 5, Phase 3, Phase 4 core/incarnation/runtime/scheduler, AODV, build-profile and AODV_ONLY/FULL firmware gates pass. Fresh FULL FAST evidence remains no-heap, >=8 KiB free RAM, <=3072-byte rooted static chain, >=1024-byte mesh-stack headroom, and <=512-byte unexplained RAM delta against the accepted baseline. Adversarial review has no blocker/major; no new 300-second hardware run is required.",
+          "status": "completed"
+        },
+        {
+          "id": "step-5f-rreq-verification-red",
+          "title": "Author retained-hop/full-diameter verification RED",
+          "target": "Phase 5 verification runner, production API contract, maintenance/AODV integration fixture, authoritative profile/wire/deviation/matrix docs",
+          "action": "Freeze and run one assertion-level RED mode before implementation. Cover distinct verification purpose, retained-hop+2 stage 1 with diameter cap, missing/zero-hop skip, fresh request IDs, stage 2 full diameter, no ordinary discovery retries or pending DATA, shared RREQ-rate handling, matching nonzero-mask completion, timeout/direct-deadline/terminal departure, same-subject cancellation, capacity, wrap, and exact spec status changes. Keep lower suites green.",
+          "validation": "RED exits 1 only on absent stage-1/stage-2 production behavior and reports MAINT-06/07; compile/crash/structural failure exits 2; lower gates remain green.",
+          "status": "completed"
         },
         {
           "id": "step-5f-rreq-verification",
-          "title": "Implement hop-N and full RREQ verification",
-          "target": "single AODV core, router tracked completion, maintenance FSM, RED/GREEN tests",
-          "action": "Add control-only verification purpose to the existing AODV core: exactly one retained-hop+2 RREQ followed by exactly one full-diameter RREQ, each consumed only by matching nonzero-channel TX completion. Enforce fixed four/four caps, liveness cancellation, and checked terminal departure; no TC in this slice.",
-          "validation": "Three-stage boundary, fresh request IDs, cap/fairness, BUSY/TX_FAILED nondeparture, cancellation, and lower-profile trace tests pass; host matrix and FULL firmware build pass.",
-          "status": "draft"
+          "title": "Implement retained-hop and full-diameter RREQ verification",
+          "target": "single AODV core, maintenance FSM, tracked router completion, Phase 5 verification tests and authoritative docs",
+          "action": "Implement stage 1 as exactly one retained-hop+2 verification RREQ capped at diameter and stage 2 as exactly one fresh-ID full-diameter RREQ, both through the one AODV core. Use verification-purpose state without ordinary discovery retries or pending DATA, obey the shared RREQ rate, consume only matching nonzero-mask completion, preserve skip/cap distinctions, enforce path-discovery and complete verification bounds, cancel only on valid same-subject evidence, and perform direct-deadline/terminal departure exactly as frozen. Turn profile/deviation/matrix status from deferred to implemented.",
+          "validation": "Focused RED becomes GREEN; exact fresh-ID/scope/completion/timeout/cancel/departure scenarios pass across wrap; targeted stage 0 and lower suites/builds remain green; no second route table or discovery engine appears.",
+          "status": "completed"
+        },
+        {
+          "id": "step-5g-tc-metadata-red",
+          "title": "Author general-metadata and TC maintenance RED",
+          "target": "general SID8 metadata candidates/frame budgets and TC JOIN/LEAVE origination/admission/relay/dedupe contracts",
+          "action": "Add one compact serial RED suite before implementation. Freeze the shared four-candidate store, priority/fairness/cooldown, legal RREQ/RREP/RERR capacities and no-truncation behavior, confirmed JOIN/LEAVE triggers, TC UUID/subject dedupe, TTL relay, preservation of mentorship bootstrap JOIN, and negative cases for BUSY/rejection/link failures/local silent expiry.",
+          "validation": "RED exits 1 only on missing META-01..04/MAINT-08 production behavior; all lower and completed verification suites stay green.",
+          "status": "completed"
+        },
+        {
+          "id": "step-5g2-tc-metadata-corrective-red",
+          "title": "Freeze production-composed TC and metadata corrections",
+          "target": "TC/GTT serial domains, single-owner receive/relay, retained obligations, subject metadata merge, exact delayed reservations, ordinary expiry triggers, routed BUSY retention and production-composed host gates",
+          "action": "Clarify the existing profile without widening Phase 5 scope, then add assertion-level RED coverage using the real GTT, maintenance, mentorship, router and FULL binding paths. Current production must fail for the confirmed defects while lower profiles remain green.",
+          "validation": "Accepted 2026-08-09: `run_tavrn_phase5_tc_metadata_tests.sh --red` exits exactly 1 after the preserved 51-assertion/five-marker RED and 13 production-composed assertion failures tagged SERIAL-01, GTT-03, TCQ-01..03, META-01/04..06, MAINT-01/08, BUILD-01; no structural/compile failure. Existing TC GREEN, targeted GREEN and RREQ GREEN remain passing.",
+          "status": "completed"
         },
         {
           "id": "step-5g-tc-metadata",
-          "title": "Complete TC event handling and bounded metadata",
-          "target": "TC subject/event dedupe, LEAVE behavior and per-frame metadata budgets",
-          "action": "Add remaining TC subject/event semantics and bounded metadata selection/injection/attribution using existing fixed capacities and exact wire slack. Preserve no-feedback and lower-mode isolation.",
-          "validation": "TC and metadata tests pass; no truncation, ambiguity, loop or unbounded queue; lower modes remain unchanged.",
-          "status": "draft"
+          "title": "Implement general metadata and confirmed TC JOIN/LEAVE",
+          "target": "single-owner TC flow; bounded exact origin/relay obligations; shared metadata pool with exact delayed ownership; atomic GTT subject merge; exact routed-control attachment; FULL runtime composition",
+          "action": "Implement general metadata from one shared four-candidate store with deterministic priority/fairness/cooldown and exact per-frame capacity, never truncating. Implement confirmed TC JOIN/LEAVE origination, admission and TTL relay with full-origin serial UUID and subject/event dedupe. Preserve mentorship bootstrap JOIN and prohibit LEAVE from BUSY, rejection, enqueue failure, ordinary link failure, or locally silent no-demand expiry. Integrate copied telemetry and update profile/deviation/matrix truth.",
+          "validation": "Accepted 2026-08-09 after final GO re-review ses_01c4b9d86ffe41vXyFpPrWjcoL. TC production GREEN passes; preserved RED exits exactly 1 with production composition green. Targeted, RREQ, maintenance/adaptive/expiry-host, Phase 4/incarnation/runtime, Phase 3, AODV, link-v2, build-profile/source-isolation, frozen-file, and diff gates pass. Fresh FAST/BALANCED ARM resource report `/tmp/opencode/tavrn-tc-metadata-completion-resource-acceptance.env` passes: fixed state 31376; immutable-baseline actual delta 4696; declared 4616; unexplained 80; free RAM 99696; no heap; rooted stack 2944 with 1152 headroom.",
+          "status": "completed"
         },
         {
           "id": "step-5h-maintenance-acceptance",
-          "title": "Run final Phase 5 maintenance acceptance",
-          "target": "complete maintenance host gates, attributable artifacts and available-board hardware",
-          "action": "Review the complete maintenance slice, add routed development/candidate publication support as appropriate, run the full regression matrix and timer-derived hardware acceptance with available boards. Publish exact implemented/deferred claims.",
-          "validation": "No blocker/major issue; manifests and artifacts are truthful; expected membership and control bounds hold without resets, storms or false departures.",
-          "status": "draft"
+          "title": "Freeze repair-off application baseline and publish attributable Phase 5 candidates",
+          "target": "complete repair-off application/protocol closure: authoritative profile headers, TC/GTT evidence, routed publisher/config support, host/build/resource matrix, UID/AdvA/fleet-bound artifacts, and available-board HIL",
+          "action": "Before any local-repair code: (1) correct intercepted TC outer-transmitter GTT evidence under GTT-03 without changing TC subject attribution; (2) close remaining Phase 3/5 review items, HELLO/wire guards, and real malformed/overflow coverage; (3) update stale profile and test-matrix status headers; (4) add routed candidate support and fail-closed positive/negative tests in build-tavrn-ble.sh, TronBleProfiles.cmake, manifest/generated configuration, and build-profile fixtures; (5) run the complete LEGACY_FLOOD, AODV_ONLY, and FULL_TAVRN repair-off host/build matrix across required profiles; (6) capture fresh FAST/BALANCED map, stack, fixed-state, reserve, and source-inventory evidence; (7) repeat the three-board phased custody-rejection, reboot, GTT-reconvergence, and delivery HIL; then, only with explicit commit authorization, create the clean immutable baseline commit and publish UID/AdvA/fleet-bound repair-off candidates with exact hashes. BLE radio and scheduler source remain frozen throughout this closure.",
+          "validation": "All normative repair-off host suites, routed publisher positive/negative tests, and firmware profiles pass; GTT-03 has a production-composed TC outer-transmitter regression; stale status labels and open Phase 3/5 acceptance mappings are reconciled; repair is disabled and emits zero repair traffic; dirty/runtime-FICR/identity-mismatched candidate publication fails closed; resource/stack gates pass from one recorded source inventory; fresh A/B/C HIL proves B retry exhaustion, A custody rejection without false retry, C reboot/rejoin and resumed peer-B delivery with no hard/local/router/scheduler/mesh fault or retry-mailbox drop; immutable candidate manifests bind clean commit/tree, source inventory, UID, AdvA, SIDs, fleet, profile, artifact hashes and repair=off.",
+          "status": "in_progress"
         }
       ]
     },
     {
       "id": "phase-6-local-repair",
       "title": "Add medium-correctness TAVRN local repair as a separable extension",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-6a-repair-red-tests",
-          "title": "Author and record failing local-repair tests",
-          "target": "repair FSM and deterministic four-node simulation",
-          "action": "Write red tests for RETRY_EXHAUSTED only trigger, failed transit DATA custody transfer, B as repairer, fixed repair buffer/concurrency, Smart-TTL RREQ, alternate route success/flush exactly once, timeout/RERR fallback, destination versus failed-neighbor state, rate limit and repair-disabled behavior.",
-          "validation": "Tests fail before repair; FULL_TAVRN without repair and all lower modes stay green.",
-          "status": "draft"
+          "title": "Freeze repair-owned failure semantics and author local-repair RED tests",
+          "target": "TAVRN-BLE profile/deviation/architecture/matrix revision plus atomic retry-exhausted disposition, repair FSM, candidate/link ownership, all-owner high-token/RREP arbitration, exact bench hooks, and deterministic four-node tests",
+          "action": "Freeze repair-on execution before production code. Replace the void H/D retry hook with a synchronous typed disposition over the complete tavrn_owned_data_event_t: DECLINED uses the byte-for-byte repair-off path; OWNED is legal only after repair has copied the failed DATA, successfully begun destination-specific deferred RERR, retained the failed-H MAINT-08 LEAVE obligation locally before enqueue, and reserved capacity for every same-D link custody slot already outstanding; INVALID fails closed. Router skips normal failure recording and transit-pin release only for OWNED. Repair success discards the held LEAVE, finishes deferred RERR as repaired, and retains each transit pin until its normal flushed terminal; repair failure releases deferred RERR, originates the held H LEAVE with bounded BUSY retention, and releases every pin/data exactly once. An active repair receives a pre-AODV candidate reservation opportunity for later inbound same-D DATA: reserve first then ACCEPT/pin; no slot returns BUSY without custody; different-D traffic remains normal. Existing same-D link slots remain link-owned against reserved repair capacity; their success/rejection releases the reservation, while RETRY_EXHAUSTED converts it into a buffered slot. Freeze one destination/four total actual-or-reserved DATA capacity, Smart-TTL then full-diameter scopes, one fresh ID per scope, no inner retries, 1700/5300 ms total timeout, and 1000 ms cooldown. Keep two token domains by defining one shared FULL high-token allocator/completion dispatcher across every current and new owner: targeted stage-0 initiator requests, targeted immediate/delayed response and request/response relay obligations, retained-hop/full-diameter RREQ verification, and repair. Require exact owner/context/purpose/attempt/token correlation, one composed repair→verification/targeted→ordinary RREP interceptor, normal metadata decoration/admission, late-RREP policy, and success only when D's installed next-hop AdvA differs from failed H. Freeze the stateful success hook here: after C accepts the configured B-origin trigger DATA it suppresses that HACK and ignores subsequent direct B-origin RREQs for the configured episode, while D-relayed RREQ/RREP and later D-origin DATA/HACK remain normal. Freeze a separate manifested timeout hook mode with the same trigger but no usable alternate path; hardware normally realizes this by keeping D reset-halted. Both modes record exact UIDs/AdvAs/transaction tuple and are bench-only.",
+          "validation": "The repair RED runner fails only on missing repair policy after exercising atomic OWNED/DECLINED/INVALID takeover and transit-pin state; repair-owned RERR+LEAVE hold/cancel/release; initial failed DATA, preexisting same-D link custody, later inbound same-D reservation, different-D traffic, full/fifth BUSY, and all terminal reservation releases; local/control/BUSY/REJECTED/radio/queue trigger negatives; H versus D separation; stage scopes/fresh IDs/rate/BUSY/nonattempt retention; concurrent repair with targeted initiator, immediate/delayed response, request/response relay, and RREQ-verification high-token owners, including allocation collision, wrap, eviction/fault retirement, and exactly-once completion dispatch; metadata-decorated completion; composed interceptor and late/wrong RREP; rejection of a route still using H; timeout/wrap/cooldown; exactly-once flush/drop; repair-off equivalence; and exact success/timeout hook activation/isolation. Authoritative documents map every assertion to AODV-08, MAINT-08, META-02, MAINT-07 and REPAIR-01..05 without contradiction.",
+          "status": "completed"
         },
         {
           "id": "step-6b-repair-implementation",
-          "title": "Implement local repair without replacing AODV",
-          "target": "optional FULL_TAVRN repair module around same router",
-          "action": "Code-writer implements LOCAL-REPAIR-SPEC-inspired FSM using link-v2 failed-DATA event, existing AODV RREQ/RERR/table and GTT hints. Build flag can disable repair while retaining full TAVRN.",
-          "validation": "No steady-state repair traffic; tests pass; no duplicate delivery or unbounded buffer; lower feature levels unchanged.",
-          "status": "draft"
+          "title": "Implement bounded local repair around the existing AODV core",
+          "target": "optional FULL_TAVRN tavrn_repair module, typed router ownership/candidate seams, bounded link-custody reservations, all-owner FULL token/RREP dispatch, exact bench hooks/telemetry, and existing AODV deferred-RERR/single-RREQ APIs",
+          "action": "Implement the frozen RED contract in architecture-named tavrn_repair.{h,c} with one fixed repair context, four actual-or-reserved copied transit DATA slots, and no heap. Reuse aodv_core_report_link_failure(DEFER_REPAIR_DESTINATION_RERR), aodv_core_create_single_rreq, normal metadata augmentation/RREQ limiter/RREP route installation, and aodv_core_finish_deferred_rerr. Add bounded read-only same-D link-custody enumeration and terminal observation so repair reserves potential adoption without stealing live link ownership. Add pre-AODV candidate admission for active same-D repair. Compose the one FULL high-token allocator/completion dispatcher across targeted initiator/response/relay work, RREQ verification, and repair, plus one RREP interceptor so no owner is replaced and no token domain is added. On matching alternate route, cancel held RERR/LEAVE and flush each retained DATA once through the normal router/link path; on timeout, invalid state, full-adoption failure, or unrecoverable enqueue failure, release repair-off obligations and terminate every retained ownership once. Implement repair state-transition/buffer/RREQ/RREP/RERR/LEAVE/per-DATA copied telemetry and both exact stateful hook modes defined in Step 6a. Add no message type, wire field, route table, discovery engine, periodic traffic, radio change, or scheduler change.",
+          "validation": "Phase 6 GREEN and production-composed binding pass; all available Phase 3/4/5/lower GREEN suites pass; expected Phase 6 RED reaches every scenario and exits nonzero; FULL_TAVRN repair OFF/ON FAST_TEST and BALANCED resource gates plus AODV_ONLY FAST_TEST build pass; frozen BLE radio/scheduler diff remains unchanged; final adversarial audit reports no blocker/major. Final5 fixed state is 31504 bytes off and 32184 bytes on (680-byte delta), post-reserve RAM 87280/86600, initial static frame 440/480 of 4096, and rooted mesh stack 2944 of 4096.",
+          "status": "completed"
         },
         {
           "id": "step-6c-repair-checker-candidate",
-          "title": "Check and commit local-repair candidate",
-          "target": "repair slice and profile matrix",
-          "action": "Checker reviews ownership, triggers, buffering, route invalidation, false departure, timeout/rate-limit and disabled path. Fix/re-review, commit candidate, build repair on/off artifacts.",
-          "validation": "No blocker/major; both artifacts attributable and lower profiles green.",
+          "title": "Review and publish repair-off/on candidates and exact fault bench",
+          "target": "reviewed complete repair slice, repair-off/on profile matrix, resource delta, routed publisher support, clean UID-bound unhooked candidates and preimplemented exact-hook bench artifacts",
+          "action": "Run one adversarial implementation/claims review after the complete GREEN slice, including the already RED-tested/implemented stateful fault hook; Step 6c adds no new protocol or hook code. Compare repair-off and repair-on host/build/resource behavior and exercise routed publisher positive/negative cases, then—only with explicit commit authorization—publish clean UID/AdvA/fleet-bound repair-off, repair-on, and hooked bench artifacts.",
+          "validation": "No blocker/critical/major review finding remains. Repair-off/on matrices and frozen-file checks pass; manifests record repair effective state, capacities, timeout/cooldown, shared token/interceptor ownership, hook trigger DATA tuple, direct B-origin RREQ suppression, direction/eligibility, source/tool/config/artifact hashes and fleet identity; dirty, runtime-FICR, mismatched, or hooked-as-unhooked publication fails closed. Resource evidence reports exact repair fixed-state and stack delta against the Step 5h baseline.",
           "status": "draft"
         },
         {
           "id": "step-6d-four-board-repair",
-          "title": "Prove transit local repair with four boards",
-          "target": "A(source)-B(repairer)-C(destination), B-D-C alternate",
-          "action": "Install primary A-B-C and begin A->C traffic so DATA is transit at B. Suppress B->C HACKs; verify B sees RETRY_EXHAUSTED, buffers, repairs through D and flushes. Compare repair-disabled artifact, then restore B-C.",
-          "validation": "Repair-on recovers through D within configured bound with one final delivery; repair-off sends RERR and A discovers; all four logs prove B executed transit repair; restoration reconverges.",
-          "status": "draft"
+          "title": "Prove source-transparent transit repair and bounded failure on four boards",
+          "target": "four simultaneously available, collision-free boards: A source, B repairer, C destination/failed immediate hop, and D alternate relay; forced-chain profiles plus deterministic stateful C hook force initial A-B-C and repair B-D-C",
+          "action": "Keep blocked until a fourth board is UID/AdvA-inventoried. Success sequence is fixed: reset-halt D; start B, A, then C with the existing manifested forced-chain A/C direct-traffic blocker; require A-B-C identity and C delivery from peer B; run D and require B-D-C membership/context while preserving the established B-C route; then send the configured trigger DATA. C's manifested success hook suppresses only its HACK to B and ignores direct B-origin RREQs for that episode, so D relays B's RREQ to C and C's RREP back through D. Prove B owns repair and installs B-D-C. Timeout sequence is separate: restore/reset all, keep D reset-halted through the trigger and repair window, use the manifested timeout hook mode, and require exact failure release. Repair-off sequence uses repair-off artifacts with D reset-halted and requires immediate baseline behavior. Harness events record every reset-halt/run transition and readiness gate; artifact manifests record forced-chain role and hook mode/tuple. Restore all boards to unhooked candidates afterward.",
+          "validation": "Before each trigger, evidence proves D's required halted/running state, forced-chain role, A-B-C baseline, C peer-B delivery, and—on success only—D context readiness without source route replacement. Success evidence contains parseable episode ID, H, D, every state transition, actual/reserved buffer keys/count, RREQ purpose/ID/scope/token/TX result, matched RREP outer transmitter, installed next hop, RERR/LEAVE disposition, and each DATA flush/drop result. It records one stage-1 and at most one stage-2 fresh-ID RREQ, next hop D not failed H=C, held RERR/LEAVE cancellation, exactly-once buffered delivery at C, unchanged A discovery/RREQ counters, and C dedupe keys. Timeout keeps D halted and records no alternate RREP, then exact RERR/LEAVE release and bounded terminations; repair-off records immediate baseline behavior. All runs have exact UID/AdvA/artifact/hook/harness-state provenance, zero duplicate final delivery/ownership leak/overflow, and no hard/local/router/scheduler/mesh fault.",
+          "status": "blocked"
         },
         {
           "id": "step-6e-adv-classifier-namespace",
-          "title": "Freeze the lab ADV namespace and add the final RX classifier",
-          "target": "Manufacturer Specific Data envelope, routed RX admission, application observation seam, and generated build manifest",
-          "action": "Keep the PoC envelope as BLE Manufacturer Specific Data AD type 0xFF with lab Company ID 0xFFFF. Classify the inner namespace before protocol dispatch: `54 52 02` (`TR`, routed wire v2) is TAVRN, `4d 49 01` (`MI`, schema v1) is reserved for a future patient/application protocol, and all other prefixes are foreign or malformed. Freeze the existing generated `TRON_NETWORK_ID=0x01` as the hardcoded PoC network selector; only matching TAVRN frames enter the router. Preserve AdvA, payload and RSSI for typed application observations, but do not implement patient semantics, attachment, bridging or TAVRN submission in this workplan. SID8/SID16 remain TAVRN-only routing identities. Explicitly document that the network ID is filtering, not a PSK or security mechanism.",
-          "validation": "Golden vectors prove exact TAVRN, reserved-application, foreign-network and malformed classification; only matching `TR/02/network=01` reaches the router; reserved `MI/01` reaches only the typed application seam; no application identity enters GTT/AODV/mentorship; manifests report AD type, lab Company ID, protocol prefixes and network ID; focused hardware capture shows clean coexistence without routing-state pollution.",
-          "status": "draft"
+          "title": "Deferred with patient bridge",
+          "target": "patient/application classifier work remains outside requested TAVRN completion scope",
+          "action": "Keep cancelled unless patient bridging is separately reopened.",
+          "validation": "N/A; conformance marks patient bridging out of scope.",
+          "status": "cancelled"
         }
       ]
     },
@@ -658,6 +739,61 @@
           "action": "Commit evidence/docs separately, verify granular history, generated artifact policy, no unrelated files/secrets, complete matrix at HEAD, update/validate workplan completion and provide deferred dynamic-k/production roadmap.",
           "validation": "Branch clean, workplan valid/completed, all modes build, handoff exact.",
           "status": "cancelled"
+        }
+      ]
+    },
+    {
+      "id": "phase-9-final-qualification",
+      "title": "Final qualification, conformance, and handoff",
+      "status": "draft",
+      "steps": [
+        {
+          "id": "step-9a-build-matrix",
+          "title": "Run complete routed and legacy regression matrix",
+          "target": "LEGACY_FLOOD, AODV_ONLY, FULL repair-off and FULL repair-on across required timer profiles",
+          "action": "Run the complete host/static/build/resource matrix with exact source and manifest isolation. Avoid duplicate runs already covered by immutable Phase 5/6 evidence unless source changed.",
+          "validation": "Every applicable matrix cell passes or has an explicit profile-owned N/A; artifacts and resource reports are attributable.",
+          "status": "draft"
+        },
+        {
+          "id": "step-9b-available-board-soak",
+          "title": "Run available-board controlled test and finite overnight soak",
+          "target": "every qualified micro:bit v2 board physically available at execution",
+          "action": "Run short SpaceX-style fault/rejoin loops before one approximately eight-hour SOAK-profile run. Record exact N, UIDs, AdvAs, topology, artifact hashes, duration, traffic denominators, route/verification/TC/repair outcomes, failures/rejoins and faults. Make no scale claim beyond observed N and require the four-board repair gate separately.",
+          "validation": "Finite soak completes with active-set convergence, bounded recovery, explicit delivery denominator and zero unexplained reset/stall/corruption; all claims state exact N. Patient events are not required.",
+          "status": "draft"
+        },
+        {
+          "id": "step-9c-conformance-report",
+          "title": "Publish TAVRN-BLE conformance and deviation report",
+          "target": "microbit/docs/tavrn_ble_conformance.md and evidence references",
+          "action": "Map every normative requirement to implemented behavior and host/hardware evidence; label accepted deviations, deferred upstream features, optional repair extension, patient N/A, exact fleet scale and PoC limitations. Do not claim upstream TAVRN, Bluetooth Mesh, production, security, clinical or scale compliance.",
+          "validation": "Requirement IDs match the profile/matrix exactly; every claim cites attributable evidence or an explicit N/A/deviation.",
+          "status": "draft"
+        },
+        {
+          "id": "step-9d-final-runbook",
+          "title": "Finalize reproducible build, flash and test runbook",
+          "target": "architecture/build/flash/hardware test documentation",
+          "action": "Document minimal commands for all four behavior cells, candidate publication, UID/AdvA preflight, exact hook use, three-stage verification, TC/metadata, repair, finite soak and evidence capture. Resolve the current pyOCD uv-tool path without installing system packages.",
+          "validation": "A clean reader can reproduce builds and preflight from pinned project inputs; dangerous or bench-only hooks are clearly separated.",
+          "status": "draft"
+        },
+        {
+          "id": "step-9e-final-review",
+          "title": "Run final adversarial implementation and claims audit",
+          "target": "entire branch diff, workplan, specs, manifests, evidence and conformance claims",
+          "action": "Review correctness, isolation, fixed resources, hardware provenance and claim truth after all documents/evidence exist. Fix blocker/major findings and rerun only affected gates plus final matrix summaries.",
+          "validation": "No open blocker/critical/major finding; workplan and requirement matrix validate; final artifacts/evidence agree.",
+          "status": "draft"
+        },
+        {
+          "id": "step-9f-clean-handoff",
+          "title": "Leave a clean reproducible handoff",
+          "target": "exp/tavrn-ble worktree, workplan and final evidence index",
+          "action": "Remove generated debris, verify status/diff/submodules, summarize exact completed/deferred scope, and prepare final evidence for a user-authorized commit. Do not create a Git commit without explicit approval.",
+          "validation": "Worktree contains only intentional reviewed changes, tests/evidence are reproducible, and final report states any external blocker exactly.",
+          "status": "draft"
         }
       ]
     }
@@ -1404,6 +1540,230 @@
       "detail": "Resolved: docs distinguish application GTT query/request/cancel from later verification, define BUSY versus INVALID mailbox transitions, and owner pre-tick results carry presence bits.",
       "source": "plan-checker ses_02289bd96ffejIKFVlI2prI62D; profile/architecture/RED contract",
       "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Fourth micro:bit required for transit-repair proof",
+      "detail": "Only three micro:bit v2 boards are currently connected. Software and three-board Phase 5 HIL may continue, but step-6d and final completion require a fourth simultaneously connected, UID/AdvA-inventoried, collision-free board; simulation or a three-board claim cannot substitute.",
+      "source": "plan-checker ses_01d58a988ffeuA0InaQ6agk72B 2026-08-09",
+      "status": "open"
+    },
+    {
+      "severity": "major",
+      "title": "Routed candidate publication and exact repair hook required",
+      "detail": "Phase 5 acceptance must add minimal UID/AdvA/fleet-bound routed candidate publication; repair must add an exact manifest-recorded B-to-C HACK-suppression bench hook while keeping unhooked candidates eligible.",
+      "source": "plan-checker ses_01d58a988ffeuA0InaQ6agk72B 2026-08-09",
+      "status": "open"
+    },
+    {
+      "severity": "blocker",
+      "title": "TC has duplicate maintenance and mentorship receive/relay owners",
+      "detail": "FULL control augmentation and mentorship both admit, apply and retain TC_UPDATE work from the same scheduler event. Consolidate bound TC cache/apply/relay ownership before Phase 5 acceptance.",
+      "source": "plan-checker ses_01cb19f4effeutEdgbbBe8utC4 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Confirmed TC origin and relay obligations can be lost",
+      "detail": "Single pending origin/relay slots can refuse or overwrite confirmed facts after irreversible departure/event consumption. Add bounded exact retention or pre-commit backpressure.",
+      "source": "plan-checker ses_01cb19f4effeutEdgbbBe8utC4 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "TC UUID sequence corrupts subject GTT serial domain",
+      "detail": "TC origin sequence is currently imported as subject freshness serial. Preserve subject serial presence/high-water across JOIN/LEAVE and keep TC UUID serial separate.",
+      "source": "plan-checker ses_01cb19f4effeutEdgbbBe8utC4 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Delayed targeted reservations lack exact context ownership",
+      "detail": "Same-subject delayed contexts can coalesce, overwrite one slot owner and release another context's live reservation. Require distinct owner-tagged reservations and harmless stale release.",
+      "source": "plan-checker ses_01cb19f4effeutEdgbbBe8utC4; explore ses_01cb19fbeffe8KCpa5tgWucgGE 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "General metadata is not connected to complete production semantics",
+      "detail": "Ordinary soft expiry does not materialize a request; admitted answers do not atomically merge the resolved subject into GTT; exact BUSY attachment/commit and cooldown/class behavior need production-composed proof.",
+      "source": "plan-checker ses_01cb19f4effeutEdgbbBe8utC4; explore ses_01cb19fbeffe8KCpa5tgWucgGE 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Ordinary confirmed direct timeout omits TC LEAVE",
+      "detail": "The expiry sweep can mark a no-demand direct peer departed but only targeted verification currently calls the direct-timeout TC hook.",
+      "source": "explore ses_01cb19fbeffe8KCpa5tgWucgGE 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "TC and mentorship control admission can drop evicted DATA ownership",
+      "detail": "Direct link control sends receive a synchronous evicted-DATA terminal event but TC owner and mentorship JOIN paths do not pass it through tavrn_router_handle_link_event. Consume every nonempty outcome exactly once before accepting Phase 5.",
+      "source": "plan-checker ses_01c4b9d86ffe41vXyFpPrWjcoL 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Metadata commits before physical scheduler completion",
+      "detail": "Current augmentation commits candidates on scheduler enqueue. META-01 requires exact retention on zero-channel TX_FAILED and one commit on nonzero completion; add bounded token-correlated completion/retry ownership.",
+      "source": "plan-checker ses_01c4b9d86ffe41vXyFpPrWjcoL 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Normal Phase 5 HIL lacks compact TC/metadata observability",
+      "detail": "Routed logger does not expose TC queue/admission/dedupe/relay or metadata attachment/commit/retry evidence needed for the planned short-loop proof.",
+      "source": "plan-checker ses_01c4b9d86ffe41vXyFpPrWjcoL 2026-08-09",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Departed final identity blocked valid custody rejection HACK",
+      "detail": "Resolved for development acceptance: HACK outer transmitter and immediate receiver remain live-context validated, while origin/final receive structural validation; the link mutates custody only after exact active-custody correlation. Host mismatch/fail-closed regressions pass, and three-board HIL observed B RETRY_EXHAUSTED to departed C followed by A hack_rejected/custody_rejected with no A RETRY_EXHAUSTED toward B.",
+      "source": "microbit/app/protocol/tavrn_wire_v2.c; microbit/tests/protocol/test_tavrn_wire_v2.c; microbit/tests/protocol/test_tavrn_link_v2.c; /tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-{A,B,events}.log",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Routed initial-task stack corrupted kernel allocator after fixed-state growth",
+      "detail": "Resolved for routed builds: the generic 1024-byte default remains unchanged, routed application and target-specific kernel use 4096 bytes, and resource acceptance reserves 12288 runtime bytes. Isolated B/C boot smokes and the final three-board HIL completed without hard, scheduler, router, mesh, or local faults.",
+      "source": "microbit/libs/mtkernel_3/include/sys/inittask.h; microbit/app/tavrn_routed_node/CMakeLists.txt; microbit/scripts/check_tavrn_expiry_resources.py; /tmp/opencode/tavrn-hack-custody-final-resource.env",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Intercepted TC outer transmitter does not refresh GTT evidence",
+      "detail": "Resolved for the gated repair-off baseline: the composed TC owner commits validated immediate outer-transmitter direct liveness before TC cache/subject mutation, preserves existing outer serial state, keeps the TC subject imported/non-direct with no TC-sequence freshness serial, and rejects malformed TC without GTT mutation. Focused and lower-profile suites, FAST/BALANCED resource gates, and the three-board custody/reboot HIL pass.",
+      "source": "microbit/app/protocol/tavrn_maintenance.c; microbit/tests/protocol/test_tavrn_phase5_tc_metadata.c; /tmp/opencode/tavrn-repair-off-baseline-20260810.env",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Repair takeover seam could not atomically precede RERR, LEAVE and custody release",
+      "detail": "Resolved in plan revision: Step 6a now freezes a synchronous complete-owned-event disposition. OWNED requires copied DATA, begun deferred RERR, locally held unqueued H LEAVE and same-destination capacity reservation before router suppresses repair-off processing and pin release; DECLINED remains exact repair-off behavior.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv; tavrn_router.c:1383-1407; tavrn_full_maintenance_binding.c:240-249",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Later same-destination DATA lacked executable repair admission ownership",
+      "detail": "Resolved in plan revision: Step 6a defines pre-AODV candidate reservation, BUSY without custody when full, normal different-destination traffic, reservation for preexisting same-D link slots, and terminal conversion/release rules within one destination/four total actual-or-reserved DATA.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv; tavrn_router.c candidate path; REPAIR-04",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Repair RREQ completion and RREP interception conflicted with verification ownership",
+      "detail": "Resolved in plan revision: Steps 6a/6b require one shared FULL high-token allocator/completion dispatcher with no third domain, one composed repair-to-verification-to-ordinary RREP interceptor, metadata-decorated tracked RREQ handling, exact attempt correlation, and alternate-next-hop validation.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv; MAINT-07; tavrn_router tracked-RREQ/interceptor seams",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Routed publication and bench hook were outside executable TDD sequencing",
+      "detail": "Resolved in plan revision: Step 5h explicitly adds routed publisher/config/manifest tests; Step 6a freezes and tests the exact hook, Step 6b implements it, and Step 6c is review/resource/publication only.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv; build-tavrn-ble.sh; TronBleProfiles.cmake",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "HACK suppression alone could reinstall the failed direct route instead of B-D-C",
+      "detail": "Topology mechanism resolved in plan: after suppressing the configured C-to-B HACK, C ignores direct B-origin repair-episode RREQs so D-relayed discovery wins; repair also rejects an installed route still using failed H. Hardware execution remains blocked on a fourth inventoried board.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv; step-6d-four-board-repair",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Shared repair token plan omitted targeted freshness owners",
+      "detail": "Resolved in plan revision: Steps 6a/6b now compose one high-domain allocator/completion dispatcher across targeted initiator requests, immediate/delayed responses, request/response relays, retained-hop/full RREQ verification, and repair, with concurrency/wrap/eviction/exact-dispatch tests.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv recheck; MAINT-07; tavrn_maintenance.c targeted ownership",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Four-board initial and timeout topologies were not deterministic",
+      "detail": "Resolved in plan revision: Step 6d now freezes D reset-halt/start sequencing, existing forced-chain blockers and readiness gates, distinct manifested success/timeout hook modes, D-halted timeout proof, repair-off comparison, and harness state-transition evidence. Hardware remains blocked only on fourth-board availability.",
+      "source": "plan-checker ses_015928171ffefvNtZsTMnlOMbv recheck; step-6d-four-board-repair",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Repair terminal ownership is not exhaustive",
+      "detail": "Resolved: production terminal composition releases exact reservations for every non-retry terminal, converts exact retry exhaustion to buffered ownership, and returns DECLINED for ignored or unrelated terminals; production-composed tests cover each disposition.",
+      "source": "microbit/app/protocol/tavrn_full_repair_binding.c",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Repair reforward bypasses older failure ordering",
+      "detail": "Resolved: exact transit reforward gates the oldest router failure before route lookup or link admission, and regression coverage proves a gated attempt creates no custody slot.",
+      "source": "microbit/app/protocol/tavrn_router.c",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Production repair composition lacks a host gate",
+      "detail": "Resolved: Phase 6 GREEN compiles and runs test_tavrn_full_repair_binding.c against the production router/link/AODV/maintenance/repair composition and exact ownership seams.",
+      "source": "microbit/tests/protocol/run_tavrn_phase6_repair_tests.sh",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Permanent reforward failures can strand repair ownership",
+      "detail": "Resolved: binding flush retains BUSY for retry, while NOT_FOUND/INVALID perform bounded drop cleanup, exact pin release, and action completion; composed regressions cover both terminal classes.",
+      "source": "microbit/app/protocol/tavrn_full_repair_binding.c",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Early repair decline can skip baseline LEAVE handling",
+      "detail": "Resolved: every pre-ownership decline returns to the unchanged retry-exhausted maintenance path exactly once, with production-composed regression coverage.",
+      "source": "microbit/app/protocol/tavrn_full_repair_binding.c",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Peer incarnation cleanup can strand repair ownership",
+      "detail": "Resolved: repair reconciles exact link reservations after quarantine, removes only absent custody records, and explicit external copied-data pins survive reset until exact clear-on-release.",
+      "source": "microbit/app/protocol/tavrn_link_v2.c:1909; microbit/app/protocol/tavrn_repair.c:798",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Reservation terminal matching omits next hop",
+      "detail": "Resolved: reservations and terminal snapshots carry the complete next hop and match exact {DATA,next hop}; mixed-peer terminals cannot consume another peer's reservation.",
+      "source": "microbit/app/protocol/tavrn_repair.c:801",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Faulted repair high token can remain queued",
+      "detail": "Resolved: radio/service fault completion cancels the exact queued external token before callback-driven release; created-but-not-enqueued repair attempts complete exact RREQ_TX_FAILED cleanup.",
+      "source": "microbit/app/protocol/tavrn_maintenance.c:3525",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Backpressured baseline LEAVE is not retained",
+      "detail": "Resolved: maintenance retains one exact retry-exhausted LEAVE overflow beyond the 16-entry FIFO, coalesces duplicates, fails closed on a distinct second overflow, and promotes it without reordering older facts.",
+      "source": "microbit/app/protocol/tavrn_full_repair_binding.c:362",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Incarnation clear-on-release must distinguish external and internal pins",
+      "detail": "Resolved: explicit external_custody_owner transfer occurs only after candidate commit or terminal OWNED; reset preserves only those external pins, while endpoint and transmitter/next-hop-only router/AODV internal pins are disposed exactly and idempotently.",
+      "source": "microbit/app/protocol/tavrn_link_v2.c:1984; microbit/app/protocol/tavrn_router.c:657",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Peer reset can orphan transmitter/next-hop-only internal custody pins",
+      "detail": "Resolved: exact idempotent internal-pin disposal now runs before router pending/retained DATA discard and through AODV queued-DATA purge callbacks; external and active link custody remain protected. Multihop Phase 4 and lower-level link/AODV regressions pass, and final adversarial reaudit reports no blocker/major.",
+      "source": "microbit/app/protocol/tavrn_link_v2.c:1514-1537; microbit/app/protocol/aodv_core.c:2634-2673; microbit/app/protocol/tavrn_router.c:629-789; reviewer ses_012f51a87ffejyZBTW2LrfNp6X",
+      "status": "resolved"
     }
   ],
   "notes": [
@@ -1541,9 +1901,38 @@
     "2026-08-08 production slice 1 READY (code-checker ses_0218929bbffeTI8N2jUBcz1Cik). Live FAST/BALANCED stack-baseline gates pass at 2736/3072 bytes; immutable maps unchanged; corrected RAM baseline is 26680 bytes allocated and 104392 bytes unallocated. Semantic edits may now begin.",
     "2026-08-08 local-expiry production complete. Structural stack fix changed FULL binding to caller-owned output and removed duplicate by-value frames; no optimization override was used. A due full-table sweep now requests a one-shot scheduler return before application/dispatch/link phases, which resume on the next cycle and kept the measured bound at 2 ms. Hardware evidence: `/tmp/opencode/tavrn-expiry-hw-final2/board-A-330s.log`, `board-A-330s.capture.json`, hooks-ON artifact/manifest in the same directory. Fresh final resource artifacts: `/tmp/tron-expiry-resource-acceptance.f8rY2t`. Final review READY: code-checker `ses_01f796e47ffeHhRMzfPBHcN6Ha`.",
     "2026-08-08 checkpoint preservation: copied the accepted local-expiry raw log, machine-derived capture, artifact manifest, generated build-config manifest, and selected-source inventory from `/tmp/opencode/tavrn-expiry-hw-final2` into `microbit/hardware-results/2026-08-08-tavrn-expiry-full-table/` before worktree cleanup.",
-    "2026-08-08 cleanup preservation: copied and byte-verified seven untracked BLE mesh qualification records from disposable detached worktree `ble-mesh-a098048` into the active checkpoint before removal."
+    "2026-08-08 cleanup preservation: copied and byte-verified seven untracked BLE mesh qualification records from disposable detached worktree `ble-mesh-a098048` into the active checkpoint before removal.",
+    "2026-08-08 targeted-freshness execution preflight: plan-checker ses_01e611063ffeCtQNXa70GZU40f returned NOT READY because retry/lifetime, sequence, target bucket, suppression, token retirement/cancellation, timeout handoff, TDD split, source closure, and resource acceptance were underspecified. The six authoritative protocol docs were clarified in a docs-only pass; a separate RED step was inserted before production. Revalidation and checker re-review are required before implementation.",
+    "2026-08-08 targeted-freshness final contract clarification: `obligation_started_ms` now has exact initiator/relay/target/intermediary anchors and bounds pre-enqueue BUSY; ordinary HELLO retains its accepted admission-time visible cursor while targeted contexts use a collision-free reservation frontier; low tracked tokens are link-owned across custody plus routed-common bootstrap, and high tokens are maintenance verification-only. Re-run plan-checker before RED authoring.",
+    "2026-08-08 final targeted plan edge resolved: a response relay may not have seen the request, so its bounded obligation anchors at its own post-dedupe normal 0xa8 RX admission; RED includes equality-deadline retry/drop for that response-only relay.",
+    "2026-08-08 targeted-freshness RED accepted. Exact RED exits 1 after all six scenario bodies execute; policy failures are reachable rather than init/wrapper failures. Lower adaptive/expiry-host/link suites and diff hygiene pass. Reviewer ses_01df13f4fffeUEZuSfbsV2f3gH returned READY after linked BALANCED traversal timing, targeted bucket-zero/bucket-one intermediary boundary, and padding-safe retained-control comparisons were corrected. Production GREEN remains intentionally unavailable; implementation step begins.",
+    "2026-08-09 user explicitly reopened completion items 1-7: retained-hop/full-diameter verification, general metadata, TC maintenance, Phase 5 acceptance, local repair with four-board proof, and final matrix/soak/conformance/runbook/audit. Keep patient bridging cancelled. Optimize for least ceremony and short SpaceX-style hardware-in-loop feedback while retaining safety, provenance, and acceptance gates.",
+    "Because cancelled lifecycle entries could not be reopened through targeted status transitions, a new Phase 9 supersedes cancelled Phase 8 for the user-reopened final qualification scope.",
+    "2026-08-09 targeted stage-0 final review/fix READY. Parent reran targeted GREEN; assertion-level RED exited exactly 1 with all 12 scenario markers and MAINT-06/07, META-01/03/04, SERIAL-01 failures; link/wire/radio-scheduler, Phase 5 fixed/adaptive/expiry-host, AODV, Phase 3, Phase 4 ESC/bootstrap/incarnation/runtime/RREQ and build-profile gates passed; git diff --check passed. Fresh FAST/BALANCED acceptance is indexed by /tmp/opencode/tavrn-targeted-review-resource-acceptance.env: rooted chain 2944 bytes, headroom 1152, data+bss 28080, free RAM 102992, no heap. Against the immutable 26680 baseline and declared 1044 delta, in-memory unexplained delta is 356 bytes (within 512); emitted pre-baseline manifests intentionally show current/current, while checker now rejects using the current map as before-map and acceptance logs identify baseline-of-record plus required rooted edges. No new hardware run was required.",
+    "2026-08-09 retained-hop/full-diameter RED accepted: `run_tavrn_phase5_rreq_verification_tests.sh --red` exits exactly 1, reaches four scenario bodies, reports six stable tags (MAINT-06, MAINT-07, GTT-06, SERIAL-01, AODV-02, AODV-04) and 37 missing-policy assertions with no structural/compile/crash failure. Contract freezes one retained context, one-core purpose-local RREQs, limiter-before-ID allocation, matching nonzero completion, path/verification windows, evidence cancellation, direct checked departure, capacity/due ordering and production-backed runtime boundaries. Docs state RED-frozen/production-deferred. Lower suites stayed green.",
+    "2026-08-09 retained-hop/full-diameter verification GREEN accepted after an end-to-end response-path fix. One generic AODV single-RREQ seam allocates after the shared limiter and creates no ordinary discovery/pending DATA; maintenance reuses the four Stage-0 contexts and high-token link path. Matching RREP admission bypasses only the absent ordinary discovery-slot prerequisite, reuses normal AODV route/dedupe/ACK and router GTT observation, then cancels the same-subject context; wrong ID/destination/origin and ambiguous/nonmatching responses do not mutate. FULL runtime intercepts before ordinary dispatch; unmatched RREP falls through; AODV_ONLY remains isolated. Parent reran RREQ GREEN and RED(exact exit 1), targeted GREEN, Phase 5 fixed/adaptive/expiry-host, link/wire/radio-scheduler, AODV, Phase 3, Phase 4 ESC/bootstrap/incarnation/runtime/scheduler, build-profile, frozen-file diff and diff-check: all pass. Fresh resource-only report `/tmp/opencode/tavrn-rreq-response-resource-acceptance.env`: FAST/BALANCED resource+stack gates pass, rooted chain 2944, headroom 1152, FULL fixed state 28680, baseline delta 2000, declared 1992, unexplained 8, free RAM 102392, no heap; AODV_ONLY evidence passes. Historical 300-second local-expiry capture is correctly not claimed because source inventory changed; Phase 5 current-source HIL remains step-5h.",
+    "2026-08-09 DEV-027 TC/general-metadata RED accepted after correcting initial semantic contradictions. Exact RED exits 1 with five markers, ten tags (MAINT-05/08, SERIAL-01, GTT-03/04, BUILD-01, META-01..04), 51 missing-policy assertions and no structural failure. Contract now freezes complete-validation-before-cache; UUID-before-subject/event suppression; same UUID mutation ignored; fresh JOIN/LEAVE distinction; one shared enqueue-committed TC sequence and preserved mentorship JOIN bytes; verified/direct-timeout/retry-exhausted positive LEAVE causes with all named negatives; real TTL relay/BUSY retention; one actual four-slot pool where targeted delayed work is capacity-only; distinct fifth BUSY plus duplicate coalescing; select/attach/commit cooldown semantics; real SID8 RREQ/RREP/RERR attachment/round-trip/receive and atomic attribution. DEV-027 supersedes earlier slice-local TC-silent wording only for confirmed terminal verification, confirmed direct timeout, and immediate failed-hop RETRY_EXHAUSTED; non-direct no-demand expiry remains silent. Lower RREQ/targeted/Phase4/Phase5/AODV gates and diff-check passed.",
+    "2026-08-09 execution correction: delivery remains Phase 5 software qualification followed immediately by short-loop three-board HIL. The corrective RED is a narrow repair of production composition, not a new feature phase.",
+    "2026-08-09 corrective RED evidence accepted: current production fails exactly 13 production-composed assertions after the legacy 51-assertion RED; existing TC isolated GREEN, targeted GREEN, and RREQ GREEN pass.",
+    "2026-08-09 initial TC/metadata resource attempt correctly failed undeclared fixed-state growth. Manifest/accounting was updated to the measured 4584-byte immutable-baseline delta; fresh FAST/BALANCED report `/tmp/opencode/tavrn-tc-metadata-resource-acceptance.env` passes with 31264 fixed bytes, 0 unexplained bytes, 99808 free RAM, no heap, and 2944-byte rooted stack/1152-byte headroom. Post-resource review still found one blocker and two majors before HIL.",
+    "2026-08-09 Phase 5g final GO: TC/metadata now has one composed owner, separate TC/GTT serial domains, bounded 16-entry origin/relay retention, exact delayed handles, atomic metadata/GTT transaction state, cooldown, ordinary expiry triggers, synchronous DATA-eviction outcome consumption, physical-completion-owned metadata retries, truthful manifests/resources, and compact logger telemetry. Proceed directly to short-loop available-board HIL.",
+    "2026-08-10 Step 5h dirty-source development HIL passed on the three inventoried boards using source inventory `684d0eacdffa8563510230d285331c697c7e6cea68d07be2f385233d4b29ea27`. A recovery target-80 HEX SHA-256 was `12544485fe0003b7ad31c556c37641871f62a1d6114ac55b8e7a4639a870412b`; B/C HEX SHA-256 remained `64d526772b0e5faf74577917b429cbef19379154bfa2b289fef450c29149f7fd` and `f410d5ebf55c96b7978e1e1998814d78199b111d1f696a3a7ef062bff49b7290`. Phased B-A-C startup reached fleet identity readiness, C received A-origin DATA from peer B, halted C caused exactly one B RETRY_EXHAUSTED for C, A consumed HACK(REJECTED) (`hack_rejected`/`custody_rejected`) with zero A RETRY_EXHAUSTED, C reboot changed nonce `47879->11078`, all three GTTs reconverged, and C resumed delivery from B through a 10-second stable window. No hard/local/router/scheduler/mesh fault or retry-mailbox drop was observed. Evidence: `/tmp/opencode/tavrn-phase5-hil-hackfix-recovery-20260810-{events,A,B,C}.log`. This is provenance-limited development evidence; Step 5h remains in progress for clean routed candidate publication and the remaining complete acceptance claims.",
+    "2026-08-10 retry telemetry was decoupled from fault diagnostics with a one-slot retain-oldest/drop-newest mailbox, and routed initial-task capacity was corrected to 4096 bytes after hardware isolated 1024-byte allocator corruption. Final FAST/BALANCED resource acceptance passed with fixed state 31452 bytes, runtime reserve 12288 bytes, post-reserve RAM 87332 bytes, initial-task static frame/headroom 440/3656 bytes, and rooted mesh stack/headroom 2944/1152 bytes. Report: `/tmp/opencode/tavrn-hack-custody-final-resource.env`.",
+    "2026-08-10 user accepted the pre-repair baseline gate and repair-owned failure decision. Step 5h must freeze a clean repair-off application/protocol baseline before Phase 6 starts. While repair-on owns a transit RETRY_EXHAUSTED context, both the destination RERR and MAINT-08 failed-hop LEAVE are deferred together; successful alternate-route repair cancels both, while timeout/failure releases the unchanged repair-off behavior. This decision requires an authoritative profile/deviation/matrix revision in Step 6a before production code.",
+    "2026-08-10 sequencing decision: finish and baseline the application/protocol layer, then implement and qualify local repair, before beginning a separately planned radio-layer investigation. BLE radio and scheduler files remain frozen during Step 5h and Phase 6; hardware-observed radio opportunities may be recorded as recommendations but are not folded into application-layer closure. This workplan update authorizes planning only, not implementation, configuration edits, commits, or candidate publication.",
+    "2026-08-10 plan-checker `ses_015928171ffefvNtZsTMnlOMbv` returned REVISE on the first repair plan. The workplan now resolves its atomic takeover, later-DATA ownership, shared token/interceptor, routed publication, hook sequencing, deterministic alternate-topology, and telemetry findings. Step 6d is explicitly blocked until a fourth qualified board is available; no Phase 6 implementation may begin before Step 5h baseline closure and a final READY plan review.",
+    "2026-08-10 second plan-checker pass narrowed remaining plan gaps to all-owner high-token arbitration and deterministic success/timeout topology. Steps 6a/6b now include every targeted-freshness, verification, and repair high-token owner; Step 6d freezes D reset-halt/run sequencing and separate success/timeout modes. The implementation module name is aligned to the architecture contract as `tavrn_repair.{h,c}`.",
+    "2026-08-10 final plan-checker pass `ses_015928171ffefvNtZsTMnlOMbv` returned READY with no remaining blocker/critical/major plan findings. Step 5h and Steps 6a-6c are execution-ready after their respective approval gates; Step 6d remains correctly blocked solely on a fourth inventoried board.",
+    "2026-08-10 gated repair-off baseline PASSED under the user's delivery-first scope. The TC production owner now records validated immediate outer-transmitter GTT direct evidence while preserving the existing serial, leaving the TC subject imported/non-direct, and rejecting malformed TC without mutation. TC metadata GREEN plus Phase 5 maintenance/adaptive/expiry-host/targeted/RREQ, Phase 4, Phase 3, AODV, wire/link/radio-scheduler gates pass. FULL FAST/BALANCED and AODV_ONLY FAST builds pass; fixed state remains 31452 bytes, runtime reserve 12288, post-reserve RAM 87332, initial-task static frame/headroom 440/3656, and rooted mesh stack/headroom 2944/1152. Source inventory is `da35df7d42ddb85dc7dbba7d0f5ceec3c70b1f995305db52a06c6798d992592a`. Report: `/tmp/opencode/tavrn-repair-off-baseline-20260810.env`.",
+    "2026-08-10 final repair-off HIL PASS: fresh post-reset B-A-C startup converged all six identity directions, C received A-origin DATA from B, halted C caused exactly one B RETRY_EXHAUSTED and A custody rejection with zero A RETRY_EXHAUSTED, C reboot nonce changed `49194->63310`, identities reconverged, delivery resumed from B, and the 10-second stable window had zero hard/local/router/scheduler/mesh faults or retry-mailbox drops. Evidence: `/tmp/opencode/tavrn-repair-off-baseline-hil-20260810-{events,A,B,C}.log`; A/B/C HEX SHA-256: `d92f6c9bbb64ae5b22283f65440f374dd571cc6e963864854a7d6ea60e5614f9`, `9206699a8379b55821f1ee44f13d72554f1723c3e4268aacc6b5ff3b0a78775f`, `8e306b6ba36233794ab894a77ed418020c6fd447a992ef2cb38efe692f87513d`. The harness was corrected to clear pre-reset readiness and boot B-A-C without waiting for one-shot JOIN replay; readiness and delivery gates remain fail-closed. Step 5h stays in progress because no clean immutable candidate was requested or created.",
+    "2026-08-10: User accepted the recorded dirty-source repair-off software/resource/three-board HIL baseline as the delivery gate and explicitly directed execution to continue without immutable-candidate ceremony. Phase 6 host implementation may proceed; clean candidate publication remains unrequested and four-board HIL remains blocked.",
+    "2026-08-10 Phase 6 RED gate: `./microbit/tests/protocol/run_tavrn_phase6_repair_tests.sh --red` exits exactly 1 with all nine scenario bodies reached and ordered missing-policy tags REPAIR-01, ACK-006, REPAIR-02, AODV-08, REPAIR-04, REPAIR-05, REPAIR-03, SERIAL-05, MAINT-08. The contract uses executable dependency callbacks for deferred RERR, one-shot RREQ creation, shared high-token reservation/release, and held failed-H LEAVE; exact copied link-custody records replace count-only reservations; one shared high token correlates creation, router enqueue, scheduler terminal, and release. Phase 5 RREQ verification GREEN remains passing.",
+    "2026-08-10 Phase 6 correction plan review: require exhaustive terminal disposition, older-failure gating before exact reforward, permanent flush-failure cleanup, unchanged baseline LEAVE on declines, and a production-composed host binding gate before Step 6b can enter review.",
+    "2026-08-10 final Phase 6 audit reopened Step 6b for four lifecycle corrections: exact next-hop reservation identity, peer-reset reconciliation/clear-on-release, fault-safe external token cancellation, and retained retry-LEAVE overflow. User approved implementation and full revalidation.",
+    "2026-08-10 lifecycle reaudit: three prior major findings resolved; peer-reset repair fix needs one explicit external-pin ownership discriminator so discarded router/AODV work cannot leave a marked pin without a releaser.",
+    "2026-08-11 Phase 6 Step 6b software implementation closed after final ownership audit. Repair terminal ownership, failure ordering, production composition, permanent failure cleanup, exact next-hop reservation identity, peer-reset reconciliation, external-vs-internal pin ownership, faulted high-token cancellation, retained LEAVE overflow, and transmitter/next-hop-only reset pin disposal are covered by production-composed/lower-level regressions. All available GREEN host suites pass; expected Phase 6 RED reaches every scenario and exits nonzero. Final5 FULL repair OFF/ON FAST/BALANCED resource gates and AODV_ONLY FAST build pass. Fixed state 31504/32184 bytes (680-byte repair delta), runtime reserve 12288, post-reserve RAM 87280/86600, initial static frame 440/480, rooted mesh stack 2944. No blocker/major remains in software review. Step 6c publication remains separate and requires explicit commit authorization; Step 6d remains blocked on a fourth inventoried board. Evidence: /tmp/opencode/phase6-final5-{off,on}-{fast,balanced}, /tmp/opencode/phase6-final5-aodv-fast; reviewer ses_012f51a87ffejyZBTW2LrfNp6X."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-04T15:59:31.160Z",
-  "updatedAt": "2026-08-08T13:29:26.766Z"
+  "updatedAt": "2026-08-10T19:38:15.020Z"
 }

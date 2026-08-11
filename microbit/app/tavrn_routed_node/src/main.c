@@ -27,6 +27,9 @@
 #include "tavrn_full.h"
 #include "tavrn_full_maintenance_binding.h"
 #include "tavrn_gtt.h"
+#if TRON_BUILD_LOCAL_REPAIR
+#include "tavrn_full_repair_binding.h"
+#endif
 #endif
 
 #define ROUTED_DELIVERY_CAPACITY 8u
@@ -123,16 +126,21 @@ typedef struct routed_snapshot {
     uint8_t mesh_fault_latched;
     uint8_t diagnostic_queue_count;
     uint8_t rreq_queue_count;
+    uint8_t retry_log_pending;
     uint32_t diagnostic_dropped;
     uint32_t diagnostic_evicted_healthy;
     uint32_t diagnostic_dropped_fault;
     uint32_t rreq_dropped;
+    uint32_t retry_log_dropped;
     uint32_t phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     tavrn_mentorship_state_snapshot_t mentorship;
     tavrn_mentorship_counters_t mentorship_counters;
     tavrn_maintenance_snapshot_t maintenance;
     tavrn_maintenance_counters_t maintenance_counters;
+    tavrn_tc_metadata_telemetry_t tc_metadata;
+    tavrn_targeted_freshness_status_t targeted_owner_status;
+    tavrn_targeted_freshness_action_t targeted_owner_action;
     tavrn_adva_t serving_mentee;
     uint16_t serving_boot_nonce;
     uint8_t pending_offer_valid;
@@ -149,6 +157,14 @@ typedef union routed_full_logger_storage {
 } routed_full_logger_storage_t;
 #endif
 
+/* Only the logger writes this scratch after each guarded pop and prints that
+ * copy before selecting another logger record.  It is never shared with mesh
+ * snapshots, which may be populated after their guard has been released. */
+typedef union routed_logger_record {
+    routed_cycle_trace_t diagnostic;
+    tavrn_link_event_t retry_event;
+} routed_logger_record_t;
+
 typedef char routed_delivery_capacity_must_be_eight[
     (ROUTED_DELIVERY_CAPACITY == 8u) ? 1 : -1];
 typedef char routed_logger_must_be_lower_priority[
@@ -163,13 +179,14 @@ static routed_cycle_operations_t routed_cycle_operations;
 static routed_cycle_run_result_t routed_cycle_result_storage;
 static routed_cycle_diagnostic_queue_t routed_diagnostic_queue;
 static routed_cycle_rreq_queue_t routed_rreq_queue;
-static routed_cycle_trace_t routed_logged_diagnostic;
+static routed_cycle_retry_log_mailbox_t routed_retry_log;
+static routed_logger_record_t routed_logger_record;
 static aodv_rreq_lifecycle_record_t routed_logged_rreq;
 static tavrn_router_phase_trace_t routed_scheduler_fault_trace;
 #if TRON_BUILD_ROUTED_FULL_TAVRN
 static routed_full_logger_storage_t routed_full_logger_storage;
 #else
-static routed_snapshot_t routed_snapshot_storage;
+static routed_snapshot_t routed_aodv_logger_summary;
 #endif
 static uint32_t routed_phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
 static uint32_t routed_next_submit_at;
@@ -183,6 +200,15 @@ static tavrn_full_application_mailbox_t routed_application_mailbox;
 static tavrn_full_maintenance_binding_input_t routed_binding_input_storage;
 static tavrn_full_maintenance_binding_result_t routed_binding_result_storage;
 static tavrn_gtt_application_command_t routed_binding_command_storage;
+static tavrn_targeted_freshness_rx_input_t routed_targeted_rx_input_storage;
+static tavrn_targeted_freshness_action_t routed_targeted_rx_action_storage;
+static tavrn_targeted_freshness_status_t routed_targeted_rx_status;
+static tavrn_maintenance_high_token_dispatch_result_t routed_high_token_dispatch;
+#if TRON_BUILD_LOCAL_REPAIR
+static tavrn_repair_t routed_repair;
+static tavrn_full_repair_binding_t routed_repair_binding;
+static tavrn_full_repair_binding_tick_result_t routed_repair_tick_result;
+#endif
 static uint32_t routed_gtt_snapshot_request_dropped;
 static uint32_t routed_gtt_snapshot_failed;
 static uint32_t routed_local_broadcast_generation_seen;
@@ -495,6 +521,7 @@ static void snapshot(routed_snapshot_t *out)
     const tavrn_link_counters_t *link_counters;
     const aodv_counters_t *aodv_counters;
     const tavrn_router_counters_t *router_counters;
+    routed_cycle_retry_log_snapshot_t retry_log_snapshot;
 
     if (out == NULL || !queue_guard_begin()) {
         return;
@@ -511,6 +538,11 @@ static void snapshot(routed_snapshot_t *out)
         routed_diagnostic_queue.evicted_healthy_count;
     out->diagnostic_dropped_fault = routed_diagnostic_queue.dropped_fault_count;
     out->rreq_dropped = routed_rreq_queue.dropped_count;
+    if (routed_cycle_retry_log_snapshot(&routed_retry_log, &retry_log_snapshot) ==
+        ROUTED_CYCLE_RETRY_LOG_OK) {
+        out->retry_log_pending = retry_log_snapshot.pending;
+        out->retry_log_dropped = retry_log_snapshot.dropped_count;
+    }
     memcpy(out->phase_max_elapsed_ms, routed_phase_max_elapsed_ms,
            sizeof(out->phase_max_elapsed_ms));
     out->router_fault_reason = tavrn_router_fault_reason(&routed_router);
@@ -543,6 +575,12 @@ static void snapshot(routed_snapshot_t *out)
         if (maintenance_counters != NULL) {
             out->maintenance_counters = *maintenance_counters;
         }
+        (void)tavrn_maintenance_tc_metadata_telemetry(&routed_maintenance,
+                                                       &out->tc_metadata);
+        out->targeted_owner_status =
+            routed_binding_result_storage.targeted_owner_status;
+        out->targeted_owner_action =
+            routed_binding_result_storage.targeted_owner_action;
         out->serving_mentee = routed_mentorship.serving_mentee;
         out->serving_boot_nonce = routed_mentorship.serving_boot_nonce;
         out->pending_offer_valid = routed_mentorship.pending_offer_valid;
@@ -612,7 +650,7 @@ static void log_summary(uint32_t now)
     routed_full_logger_summary_active = 1u;
     queue_guard_end();
 #else
-    routed_snapshot_t *state = &routed_snapshot_storage;
+    routed_snapshot_t *state = &routed_aodv_logger_summary;
 #endif
 
     snapshot(state);
@@ -637,9 +675,35 @@ static void log_summary(uint32_t now)
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_ROUTER_TICK],
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_APPLICATION_SUBMIT],
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_AODV_ACTION_DISPATCH],
-              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_LINK_SERVICE],
-               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_HEALTHY_YIELD],
-               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_FAULT_IDLE]);
+               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_LINK_SERVICE],
+                (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_HEALTHY_YIELD],
+                (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_FAULT_IDLE]);
+    tm_printf((UB *)"routed link_stats rx_candidate=%lu rx_accepted=%lu rx_committed_duplicate=%lu hack_accepted=%lu hack_duplicate=%lu hack_busy=%lu hack_rejected=%lu hack_unmatched=%lu hack_enqueue_failed=%lu tx_admitted=%lu tx_done=%lu tx_partial_done=%lu tx_failed=%lu retry_due=%lu retry_exhausted=%lu custody_promoted=%lu custody_dispatch_blocked=%lu custody_transferred=%lu local_not_attempted=%lu busy_expired=%lu custody_rejected=%lu radio_terminal=%lu service_terminal=%lu retry_log_pending=%u retry_log_dropped=%lu\n",
+              (UW)state->link.rx_candidate,
+              (UW)state->link.rx_candidate_accepted,
+              (UW)state->link.rx_committed_duplicate,
+              (UW)state->link.hack_accepted,
+              (UW)state->link.hack_duplicate,
+              (UW)state->link.hack_busy,
+              (UW)state->link.hack_rejected,
+              (UW)state->link.hack_unmatched,
+              (UW)state->link.hack_enqueue_failed,
+              (UW)state->link.tx_admitted,
+              (UW)state->link.tx_done,
+              (UW)state->link.tx_partial_done,
+              (UW)state->link.tx_failed,
+              (UW)state->link.retry_due,
+              (UW)state->link.retry_exhausted,
+              (UW)state->link.custody_promoted,
+              (UW)state->link.custody_dispatch_blocked,
+              (UW)state->link.custody_transferred,
+              (UW)state->link.local_tx_not_attempted,
+              (UW)state->link.custody_busy_expired,
+              (UW)state->link.custody_rejected,
+              (UW)state->link.radio_fault_terminal,
+              (UW)state->link.service_fault_terminal,
+              (UINT)state->retry_log_pending,
+              (UW)state->retry_log_dropped);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     tm_printf((UB *)"routed mentorship state=%s active_width=%s gated=%u offers_active=%u selected_present=%u selected=%02x:%02x:%02x:%02x:%02x:%02x selected_snapshot=%u frozen=%u sync_pages=%u pull_attempts=%u restarts=%u pending_offer=%u page_session=%u serving_session=%u serving_mentee=%02x:%02x:%02x:%02x:%02x:%02x serving_nonce=%u\n",
               mentorship_state_name(state->mentorship.state),
@@ -688,7 +752,7 @@ static void log_summary(uint32_t now)
               (UW)state->mentorship_counters.join_obligation_overflow,
                (UW)state->mentorship_counters.join_relayed,
                (UW)state->mentorship_counters.sync_dedupe_capacity_full);
-    tm_printf((UB *)"routed maintenance armed=%u pending=%u next_due_ms=%lu next_topology_sample_ms=%lu current_interval_ms=%lu liveness_floor_ms=%lu liveness_timeout_ms=%lu direct_one_hop_count=%u next_node_sequence=%u due=%lu enqueued=%lu busy=%lu rx_unique=%lu rx_duplicate=%lu rx_rejected=%lu dedupe_capacity=%lu interval_advanced=%lu interval_snapped=%lu local_broadcast_suppressed=%lu topology_reset=%lu topology_unchanged=%lu liveness_sample=%lu liveness_floor_decayed=%lu\n",
+    tm_printf((UB *)"routed maintenance armed=%u pending=%u next_due_ms=%lu next_topology_sample_ms=%lu current_interval_ms=%lu liveness_floor_ms=%lu liveness_timeout_ms=%lu direct_one_hop_count=%u next_node_sequence=%u due=%lu enqueued=%lu busy=%lu rx_unique=%lu rx_duplicate=%lu rx_rejected=%lu dedupe_capacity=%lu interval_advanced=%lu interval_snapped=%lu local_broadcast_suppressed=%lu topology_reset=%lu topology_unchanged=%lu liveness_sample=%lu liveness_floor_decayed=%lu targeted_owner_status=%u targeted_action_enqueued=%u targeted_action_token=%u targeted_action_context=%u targeted_owner_ticks=%lu targeted_owner_enqueued=%lu targeted_rx=%lu targeted_scheduler_events=%lu targeted_invalid=%lu\n",
                (UINT)state->maintenance.armed, (UINT)state->maintenance.pending,
                (UW)state->maintenance.next_hello_due_ms,
                (UW)state->maintenance.next_topology_sample_ms,
@@ -708,9 +772,40 @@ static void log_summary(uint32_t now)
                (UW)state->maintenance_counters.interval_snapped,
                (UW)state->maintenance_counters.local_broadcast_suppressed,
                (UW)state->maintenance_counters.topology_reset,
-               (UW)state->maintenance_counters.topology_unchanged,
-               (UW)state->maintenance_counters.liveness_sample,
-               (UW)state->maintenance_counters.liveness_floor_decayed);
+                (UW)state->maintenance_counters.topology_unchanged,
+                (UW)state->maintenance_counters.liveness_sample,
+                (UW)state->maintenance_counters.liveness_floor_decayed,
+                (UINT)state->targeted_owner_status,
+                (UINT)state->targeted_owner_action.enqueued,
+                (UINT)state->targeted_owner_action.token,
+                (UINT)state->targeted_owner_action.context_index,
+                (UW)state->maintenance_counters.targeted_owner_ticks,
+                (UW)state->maintenance_counters.targeted_owner_enqueued,
+                (UW)state->maintenance_counters.targeted_rx,
+                 (UW)state->maintenance_counters.targeted_scheduler_events,
+                 (UW)state->maintenance_counters.targeted_invalid);
+    tm_printf((UB *)"routed tc_metadata origin_q=%u relay_q=%u origin_busy=%lu relay_busy=%lu current_seq=%u current_event=%u current_sid8=%u last_seq=%u last_event=%u last_sid8=%u apply=%lu duplicate=%lu relay=%lu admitted=%lu metadata_base=%u metadata_count=%u metadata_pdu_len=%u metadata_active=%u completion_commit=%lu completion_retry=%lu completion_failure=%lu\n",
+              (UINT)state->tc_metadata.origin_queue_depth,
+              (UINT)state->tc_metadata.relay_queue_depth,
+              (UW)state->tc_metadata.tc_origin_busy_count,
+              (UW)state->tc_metadata.tc_relay_busy_count,
+              (UINT)state->tc_metadata.current_tc_sequence,
+              (UINT)state->tc_metadata.current_tc_event,
+              (UINT)state->tc_metadata.current_subject_sid8,
+              (UINT)state->tc_metadata.last_tc_sequence,
+              (UINT)state->tc_metadata.last_tc_event,
+              (UINT)state->tc_metadata.last_subject_sid8,
+              (UW)state->tc_metadata.tc_apply_count,
+              (UW)state->tc_metadata.tc_duplicate_count,
+              (UW)state->tc_metadata.tc_relay_count,
+              (UW)state->tc_metadata.tc_admission_count,
+              (UINT)state->tc_metadata.metadata_base_type,
+              (UINT)state->tc_metadata.metadata_emitted_count,
+              (UINT)state->tc_metadata.metadata_pdu_len,
+              (UINT)state->tc_metadata.metadata_transaction_active,
+              (UW)state->tc_metadata.metadata_completion_commit_count,
+              (UW)state->tc_metadata.metadata_completion_retry_count,
+              (UW)state->tc_metadata.metadata_completion_failure_count);
     if (queue_guard_begin()) {
         routed_full_logger_summary_active = 0u;
         queue_guard_end();
@@ -813,13 +908,27 @@ static int trace_needs_diagnostic(const routed_cycle_trace_t *trace)
 {
     return trace != NULL &&
         (trace->fault_latched == ROUTED_CYCLE_BOOLEAN_TRUE ||
-         trace->timing.over_budget == ROUTED_CYCLE_BOOLEAN_TRUE ||
-         trace_is_scheduler_fault(trace) || trace_has_router_terminal(trace));
+          trace->timing.over_budget == ROUTED_CYCLE_BOOLEAN_TRUE ||
+          trace_is_scheduler_fault(trace) || trace_has_router_terminal(trace));
+}
+
+static int trace_retry_exhausted_tick(const routed_cycle_trace_t *trace)
+{
+    return trace != NULL && trace->phase == ROUTED_CYCLE_PHASE_ROUTER_TICK &&
+        trace->detail.router.detail.tick.link_step_present ==
+            TAVRN_ROUTER_TRACE_PRESENT &&
+        trace->detail.router.detail.tick.link_step_status == TAVRN_LINK_STEP_EVENT &&
+        trace->detail.router.detail.tick.link_event_present ==
+            TAVRN_ROUTER_TRACE_PRESENT &&
+        trace->detail.router.detail.tick.link_event.type ==
+            TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
 }
 
 static void routed_cycle_trace_sink(void *context, const routed_cycle_trace_t *trace)
 {
     uint32_t *maximum;
+    int retry_tick;
+    int diagnostic;
 
     (void)context;
     if (trace == NULL) {
@@ -838,8 +947,16 @@ static void routed_cycle_trace_sink(void *context, const routed_cycle_trace_t *t
             *maximum = trace->timing.phase_elapsed_ms;
         }
     }
-    if (trace_needs_diagnostic(trace) && queue_guard_begin()) {
-        (void)routed_cycle_diagnostic_enqueue(&routed_diagnostic_queue, trace);
+    retry_tick = trace_retry_exhausted_tick(trace);
+    diagnostic = trace_needs_diagnostic(trace);
+    if ((retry_tick != 0 || diagnostic != 0) && queue_guard_begin()) {
+        if (retry_tick != 0) {
+            (void)routed_cycle_retry_log_offer(
+                &routed_retry_log, &trace->detail.router.detail.tick.link_event);
+        }
+        if (diagnostic != 0) {
+            (void)routed_cycle_diagnostic_enqueue(&routed_diagnostic_queue, trace);
+        }
         queue_guard_end();
     }
 }
@@ -862,12 +979,25 @@ static int routed_diagnostic_pop(void)
         return 0;
     }
     status = routed_cycle_diagnostic_dequeue(&routed_diagnostic_queue,
-                                             &routed_logged_diagnostic);
+                                              &routed_logger_record.diagnostic);
     if (status == ROUTED_CYCLE_RESULT_OK) {
         routed_logger_progress_epoch++;
     }
     queue_guard_end();
     return status == ROUTED_CYCLE_RESULT_OK;
+}
+
+static int routed_retry_log_pop(void)
+{
+    routed_cycle_retry_log_status_t status;
+
+    if (!queue_guard_begin()) {
+        return 0;
+    }
+    status = routed_cycle_retry_log_take(&routed_retry_log,
+                                         &routed_logger_record.retry_event);
+    queue_guard_end();
+    return status == ROUTED_CYCLE_RETRY_LOG_OK;
 }
 
 static int routed_diagnostic_pending(uint32_t *progress_epoch_out)
@@ -908,13 +1038,59 @@ static void latch_scheduler_fault(uint32_t now)
     mesh_fault_latched = 1u;
     routed_counters.scheduler_fault++;
     (void)tavrn_router_handle_scheduler_event_ex(&routed_router, &fault, now,
-                                                  &routed_scheduler_fault_trace);
+                                                   &routed_scheduler_fault_trace);
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+    if (tavrn_maintenance_high_token_scheduler_event(
+            &routed_maintenance, &routed_router, &routed_link, &fault, now,
+            &routed_high_token_dispatch) == TAVRN_MAINTENANCE_HIGH_TOKEN_INVALID) {
+        routed_scheduler_fault_trace.detail.scheduler_event.status =
+            TAVRN_ROUTER_EVENT_INVALID;
+    }
+#endif
     routed_scheduler_fault_trace.completed_at_ms = now_ms();
     record_router_status(routed_scheduler_fault_trace.detail.scheduler_event.status);
     record_router_terminal(&routed_scheduler_fault_trace);
 }
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN
+static tavrn_router_control_intercept_status_t routed_verification_rrep_receive(
+    void *context, const tavrn_rx_control_event_t *control_event, uint32_t now)
+{
+    tavrn_maintenance_t *maintenance = context;
+    tavrn_rreq_verification_status_t status;
+
+    if (maintenance == NULL || control_event == NULL) {
+        return TAVRN_ROUTER_CONTROL_INTERCEPT_INVALID;
+    }
+    if (control_event->control.type != TAVRN_WIRE_E_RREP) {
+        return TAVRN_ROUTER_CONTROL_INTERCEPT_IGNORED;
+    }
+#if TRON_BUILD_LOCAL_REPAIR
+    {
+        tavrn_router_control_intercept_status_t repair_status =
+            tavrn_full_repair_binding_receive_rrep(&routed_repair_binding,
+                                                   control_event, now);
+
+        if (repair_status != TAVRN_ROUTER_CONTROL_INTERCEPT_IGNORED) {
+            return repair_status;
+        }
+    }
+#endif
+    status = tavrn_maintenance_verification_receive_rrep(
+        maintenance, &routed_router, &routed_link, &routed_gtt, control_event, now);
+    if (status == TAVRN_RREQ_VERIFICATION_CANCELED ||
+        status == TAVRN_RREQ_VERIFICATION_OK) {
+        return TAVRN_ROUTER_CONTROL_INTERCEPT_CONSUMED;
+    }
+    if (status == TAVRN_RREQ_VERIFICATION_BUSY) {
+        return TAVRN_ROUTER_CONTROL_INTERCEPT_BUSY;
+    }
+    if (status == TAVRN_RREQ_VERIFICATION_INVALID) {
+        return TAVRN_ROUTER_CONTROL_INTERCEPT_INVALID;
+    }
+    return TAVRN_ROUTER_CONTROL_INTERCEPT_IGNORED;
+}
+
 static int routed_expiry_sweep_enqueue(
     uint32_t now, const tavrn_maintenance_expiry_sweep_snapshot_t *sweep)
 {
@@ -1262,14 +1438,47 @@ static tavrn_router_phase_trace_t routed_cycle_router_scheduler_event(
                     TAVRN_ROUTER_TRACE_PRESENT;
             }
             if (mentorship_trace.rx_control_present != 0u &&
-                mentorship_status != TAVRN_MENTORSHIP_INVALID &&
-                tavrn_maintenance_handle_rx_control(
-                        &routed_maintenance, &mentorship_trace.rx_control,
-                        now) == TAVRN_MAINTENANCE_INVALID) {
-                trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_INVALID;
+                mentorship_status != TAVRN_MENTORSHIP_INVALID) {
+                const tavrn_rx_control_event_t *rx_control =
+                    &mentorship_trace.rx_control;
+
+                if (tavrn_maintenance_is_targeted_control(
+                        rx_control)) {
+                    memset(&routed_targeted_rx_input_storage, 0,
+                           sizeof(routed_targeted_rx_input_storage));
+                    memset(&routed_targeted_rx_action_storage, 0,
+                           sizeof(routed_targeted_rx_action_storage));
+                    routed_targeted_rx_input_storage.control_event =
+                        *rx_control;
+                    routed_targeted_rx_status = tavrn_maintenance_targeted_receive(
+                        &routed_maintenance, &routed_router, &routed_link,
+                        &routed_gtt, &routed_targeted_rx_input_storage, now,
+                        &routed_targeted_rx_action_storage);
+                    if (routed_targeted_rx_status ==
+                        TAVRN_TARGETED_FRESHNESS_INVALID) {
+                        trace.detail.scheduler_event.status =
+                            TAVRN_ROUTER_EVENT_INVALID;
+                    }
+                } else if (mentorship_trace.rx_control.control.type ==
+                                TAVRN_WIRE_HELLO &&
+                            mentorship_trace.rx_control.control.pdu_len >= 6u &&
+                            (mentorship_trace.rx_control.control.pdu[5] == 0x80u ||
+                             (mentorship_trace.rx_control.control.pdu[5] & 0x40u) != 0u)) {
+                    if (tavrn_maintenance_handle_rx_control(
+                            &routed_maintenance, rx_control,
+                            now) == TAVRN_MAINTENANCE_INVALID) {
+                        trace.detail.scheduler_event.status =
+                            TAVRN_ROUTER_EVENT_INVALID;
+                    }
+                }
             }
         }
         if (mentorship_status == TAVRN_MENTORSHIP_INVALID) {
+            trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_INVALID;
+        }
+        if (tavrn_maintenance_high_token_scheduler_event(
+                &routed_maintenance, &routed_router, &routed_link, event, now,
+                &routed_high_token_dispatch) == TAVRN_MAINTENANCE_HIGH_TOKEN_INVALID) {
             trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_INVALID;
         }
     }
@@ -1330,6 +1539,15 @@ static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
             } else {
                 status = AODV_STATUS_INVALID;
             }
+#if TRON_BUILD_LOCAL_REPAIR
+            if (status != AODV_STATUS_INVALID &&
+                tavrn_full_repair_binding_tick(&routed_repair_binding, now,
+                                               &routed_repair_tick_result) ==
+                    TAVRN_FULL_REPAIR_BINDING_INVALID) {
+                status = AODV_STATUS_INVALID;
+                trace->detail.tick.status = AODV_STATUS_INVALID;
+            }
+#endif
             if (routed_binding_result_storage.post_tick.sweep_status ==
                     TAVRN_MAINTENANCE_EXPIRY_SWEEP_OK &&
                 routed_binding_result_storage.post_tick.sweep.pass_performed != 0u) {
@@ -1593,7 +1811,58 @@ LOCAL void routed_mesh_task(INT stacd, void *exinf)
     (void)stacd;
     (void)exinf;
     (void)routed_cycle_run_task(&routed_cycle_state, &routed_cycle_operations,
-                                0u, &routed_cycle_result_storage);
+                                 0u, &routed_cycle_result_storage);
+}
+
+static void log_retry_exhausted_event(const tavrn_link_event_t *event)
+{
+    const tavrn_owned_data_event_t *owned;
+
+    if (event == NULL || event->type != TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
+        return;
+    }
+    owned = &event->detail.owned_data;
+    tm_printf((UB *)"routed retry_exhausted event_type=%u next_hop_adva=%02x:%02x:%02x:%02x:%02x:%02x next_hop_width=%u next_hop_value=0x%04x origin_width=%u origin_value=0x%04x final_destination_width=%u final_destination_value=0x%04x data_seq=%u ttl=%u hops=%u urgent=%u app_kind=0x%02x app_source=0x%02x app_len=%u app_bytes=%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x ownership=%u attempts=%u busy_responses=%u requested_mask=0x%02x completed_mask=0x%02x first_tx_ms=%lu last_tx_ms=%lu final_deadline_ms=%lu local_reason=%u mesh_fault_reason=%u\n",
+              (UINT)event->type,
+              (UINT)owned->next_hop.adva.bytes[0],
+              (UINT)owned->next_hop.adva.bytes[1],
+              (UINT)owned->next_hop.adva.bytes[2],
+              (UINT)owned->next_hop.adva.bytes[3],
+              (UINT)owned->next_hop.adva.bytes[4],
+              (UINT)owned->next_hop.adva.bytes[5],
+              (UINT)owned->next_hop.logical_id.width,
+              (UINT)owned->next_hop.logical_id.value,
+              (UINT)owned->data.origin.width,
+              (UINT)owned->data.origin.value,
+              (UINT)owned->data.final_destination.width,
+              (UINT)owned->data.final_destination.value,
+              (UINT)owned->data.data_seq,
+              (UINT)owned->data.ttl,
+              (UINT)owned->data.hops,
+              (UINT)owned->data.urgent,
+              (UINT)owned->data.app_kind,
+              (UINT)owned->data.app_source,
+              (UINT)owned->data.app_len,
+              (UINT)owned->data.app_bytes[0],
+              (UINT)owned->data.app_bytes[1],
+              (UINT)owned->data.app_bytes[2],
+              (UINT)owned->data.app_bytes[3],
+              (UINT)owned->data.app_bytes[4],
+              (UINT)owned->data.app_bytes[5],
+              (UINT)owned->data.app_bytes[6],
+              (UINT)owned->data.app_bytes[7],
+              (UINT)owned->data.app_bytes[8],
+              (UINT)owned->data.app_bytes[9],
+              (UINT)owned->data.ownership,
+              (UINT)owned->attempt_count,
+              (UINT)owned->busy_response_count,
+              (UINT)owned->requested_channel_mask,
+              (UINT)owned->completed_channel_mask,
+              (UW)owned->first_tx_ms,
+              (UW)owned->last_tx_ms,
+              (UW)owned->final_deadline_ms,
+              (UINT)owned->local_reason,
+              (UINT)owned->mesh_fault_reason);
 }
 
 static void log_cycle_diagnostic(const routed_cycle_trace_t *trace)
@@ -1844,7 +2113,9 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
         } else
 #endif
         if (routed_diagnostic_pop()) {
-            log_cycle_diagnostic(&routed_logged_diagnostic);
+            log_cycle_diagnostic(&routed_logger_record.diagnostic);
+        } else if (routed_retry_log_pop()) {
+            log_retry_exhausted_event(&routed_logger_record.retry_event);
         } else if (routed_rreq_pop()) {
             log_rreq_lifecycle(&routed_logged_rreq);
         } else if (local_event_pop(&local_event)) {
@@ -2037,6 +2308,10 @@ EXPORT INT usermain(void)
     {
         tavrn_mentorship_config_t mentorship_config;
         tavrn_maintenance_config_t maintenance_config;
+        tavrn_router_control_interceptor_t rrep_interceptor;
+#if TRON_BUILD_LOCAL_REPAIR
+        tavrn_full_repair_binding_config_t repair_config;
+#endif
 
         memset(&mentorship_config, 0, sizeof(mentorship_config));
         mentorship_config.offer_window_ms = tron_timer_config.mentor_offer_window_ms;
@@ -2075,12 +2350,51 @@ EXPORT INT usermain(void)
         maintenance_config.topology_sample_ms = tron_timer_config.gtt_maintenance_ms;
         maintenance_config.hello_dedupe_ms = tron_timer_config.hello_dedupe_ms;
         maintenance_config.initial_node_sequence = 1u;
+        maintenance_config.aodv_net_traversal_ms =
+            tron_timer_config.aodv_net_traversal_ms;
+        maintenance_config.freshness_response_min_ms =
+            tron_timer_config.freshness_response_min_ms;
+        maintenance_config.freshness_response_max_ms =
+            tron_timer_config.freshness_response_max_ms;
+        maintenance_config.metadata_cooldown_ms = tron_timer_config.metadata_cooldown_ms;
+        maintenance_config.tc_uuid_ms = tron_timer_config.tc_uuid_ms;
+        maintenance_config.tc_subject_ms = tron_timer_config.tc_subject_ms;
         if (tavrn_maintenance_init(&routed_maintenance, &routed_router,
-                                     &routed_gtt, &maintenance_config) !=
+                                      &routed_gtt, &maintenance_config) !=
                 TAVRN_MAINTENANCE_OK ||
             tavrn_full_application_mailbox_init(&routed_application_mailbox) !=
-                TAVRN_FULL_APPLICATION_MAILBOX_EMPTY) {
+                TAVRN_FULL_APPLICATION_MAILBOX_EMPTY ||
+            tavrn_full_maintenance_binding_install(
+                &routed_router, &routed_mentorship, &routed_maintenance) !=
+                TAVRN_FULL_MAINTENANCE_BINDING_OK) {
             tm_printf((UB *)"routed FULL_TAVRN maintenance initialization rejected\n");
+            return 1;
+        }
+#if TRON_BUILD_LOCAL_REPAIR
+        memset(&repair_config, 0, sizeof(repair_config));
+        repair_config.repair = &routed_repair;
+        repair_config.router = &routed_router;
+        repair_config.link = &routed_link;
+        repair_config.aodv = &routed_aodv;
+        repair_config.maintenance = &routed_maintenance;
+        repair_config.gtt = &routed_gtt;
+        repair_config.net_diameter = (uint8_t)tron_timer_config.aodv_net_diameter;
+        repair_config.path_discovery_ms = tron_timer_config.aodv_path_discovery_ms;
+        repair_config.repair_timeout_ms = tron_timer_config.repair_timeout_ms;
+        repair_config.repair_cooldown_ms = tron_timer_config.repair_cooldown_ms;
+        if (tavrn_full_repair_binding_init(&routed_repair_binding, &repair_config) !=
+            TAVRN_FULL_REPAIR_BINDING_OK) {
+            tm_printf((UB *)"routed FULL_TAVRN repair initialization rejected\n");
+            return 1;
+        }
+#endif
+        memset(&rrep_interceptor, 0, sizeof(rrep_interceptor));
+        rrep_interceptor.context = &routed_maintenance;
+        rrep_interceptor.receive = routed_verification_rrep_receive;
+        if (tavrn_router_set_control_interceptor(&routed_router,
+                                                 &rrep_interceptor) !=
+            TAVRN_ROUTER_EVENT_OK) {
+            tm_printf((UB *)"routed FULL_TAVRN RREP verification binding rejected\n");
             return 1;
         }
 #if TRON_BUILD_TEST_EXPIRY_FULL_TABLE
@@ -2102,6 +2416,7 @@ EXPORT INT usermain(void)
     }
 #endif
     routed_cycle_diagnostic_queue_init(&routed_diagnostic_queue);
+    routed_cycle_retry_log_init(&routed_retry_log);
     routed_cycle_rreq_queue_init(&routed_rreq_queue);
     memset(&routed_cycle_operations, 0, sizeof(routed_cycle_operations));
     routed_cycle_operations.context = NULL;

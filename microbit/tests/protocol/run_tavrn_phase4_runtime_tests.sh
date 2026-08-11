@@ -473,6 +473,324 @@ if errors:
 PY
 }
 
+diagnostic_source_check() {
+    local main_source="$1"
+    local router_source="$2"
+    local router_header="$3"
+
+    python3 - "${main_source}" "${router_source}" "${router_header}" <<'PY'
+import pathlib
+import re
+import sys
+
+main_path, router_path, header_path = map(pathlib.Path, sys.argv[1:])
+try:
+    main = main_path.read_text(encoding="utf-8")
+    router = router_path.read_text(encoding="utf-8")
+    header = header_path.read_text(encoding="utf-8")
+except OSError as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+
+def strip_comments_and_strings(text):
+    out = []
+    index = 0
+    state = "code"
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if state == "code" and char == "/" and next_char == "/":
+            out.extend("  ")
+            index += 2
+            state = "line"
+        elif state == "code" and char == "/" and next_char == "*":
+            out.extend("  ")
+            index += 2
+            state = "block"
+        elif state == "code" and char in "\"'":
+            out.append(" ")
+            quote = char
+            index += 1
+            state = "string:" + quote
+        elif state == "code":
+            out.append(char)
+            index += 1
+        elif state == "line":
+            out.append("\n" if char == "\n" else " ")
+            index += 1
+            if char == "\n":
+                state = "code"
+        elif state == "block":
+            if char == "*" and next_char == "/":
+                out.extend("  ")
+                index += 2
+                state = "code"
+            else:
+                out.append("\n" if char == "\n" else " ")
+                index += 1
+        elif state.startswith("string:"):
+            quote = state[-1]
+            out.append("\n" if char == "\n" else " ")
+            if char == "\\" and index + 1 < len(text):
+                out.append("\n" if text[index + 1] == "\n" else " ")
+                index += 2
+            else:
+                index += 1
+                if char == quote:
+                    state = "code"
+    return "".join(out)
+
+def function_body(text, name):
+    clean = strip_comments_and_strings(text)
+    pattern = re.compile(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{")
+    match = pattern.search(clean)
+    if match is None:
+        return ""
+    start = match.end() - 1
+    depth = 0
+    for index in range(start, len(clean)):
+        if clean[index] == "{":
+            depth += 1
+        elif clean[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return clean[start + 1:index]
+    return ""
+
+def raw_function_body(text, name):
+    pattern = re.compile(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{")
+    match = pattern.search(text)
+    if match is None:
+        return ""
+    start = match.end() - 1
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:index]
+    return ""
+
+clean = strip_comments_and_strings(main)
+errors = []
+tick_trace = re.search(
+    r"typedef\s+struct\s+tavrn_router_tick_trace\s*\{(?P<body>.*?)\}"
+    r"\s*tavrn_router_tick_trace_t\s*;", header, re.S)
+if tick_trace is None:
+    errors.append("missing tavrn_router_tick_trace_t")
+else:
+    tick_body = strip_comments_and_strings(tick_trace.group("body"))
+    for field in (
+        r"\btavrn_link_step_status_t\s+link_step_status\s*;",
+        r"\btavrn_link_event_t\s+link_event\s*;",
+        r"\btavrn_router_trace_presence_t\s+link_step_present\s*;",
+        r"\btavrn_router_trace_presence_t\s+link_event_present\s*;",
+    ):
+        if not re.search(field, tick_body):
+            errors.append("tick trace lacks copied link diagnostics")
+            break
+
+router_tick = function_body(router, "router_tick")
+router_tick_ex = function_body(router, "tavrn_router_tick_ex")
+for pattern, message in (
+    (r"\btavrn_link_v2_tick\s*\([^;]+&output\s*\)",
+     "router tick no longer observes link tick output"),
+    (r"link_step_status\s*=\s*link_status\s*;",
+     "router tick does not copy link step status"),
+    (r"link_step_present\s*=\s*TAVRN_ROUTER_TRACE_PRESENT\s*;",
+     "router tick does not mark copied link step present"),
+    (r"link_event\s*=\s*output\s*;",
+     "router tick does not copy full link event"),
+    (r"link_event_present\s*=\s*TAVRN_ROUTER_TRACE_PRESENT\s*;",
+     "router tick does not mark copied link event present"),
+):
+    if not re.search(pattern, router_tick):
+        errors.append(message)
+copy_index = router_tick.find("trace->link_event = output")
+consume_index = router_tick.find("consume_link_output")
+if copy_index < 0 or consume_index < 0 or copy_index >= consume_index:
+    errors.append("router tick does not copy link event before consumption")
+if not re.search(r"\brouter_tick\s*\([^;]+trace_out\s*!=\s*NULL\s*\?\s*"
+                 r"&trace_out->detail\.tick\s*:\s*NULL\s*\)",
+                 router_tick_ex):
+    errors.append("router tick trace is not passed to the tick implementation")
+
+trace_needs = function_body(main, "trace_needs_diagnostic")
+if "TAVRN_LINK_EVENT_RETRY_EXHAUSTED" in trace_needs:
+    errors.append("fault diagnostic predicate still retains healthy retry events")
+if ("trace->fault_latched" not in trace_needs or
+        "trace->timing.over_budget" not in trace_needs or
+        "trace_has_router_terminal" not in trace_needs):
+    errors.append("ordinary fault diagnostics no longer retain their liveness predicate")
+retry_tick = function_body(main, "trace_retry_exhausted_tick")
+if not re.search(
+        r"trace->phase\s*==\s*ROUTED_CYCLE_PHASE_ROUTER_TICK.*?"
+        r"link_step_present\s*==\s*TAVRN_ROUTER_TRACE_PRESENT.*?"
+        r"link_step_status\s*==\s*TAVRN_LINK_STEP_EVENT.*?"
+        r"link_event_present\s*==\s*TAVRN_ROUTER_TRACE_PRESENT.*?"
+        r"link_event\.type\s*==\s*TAVRN_LINK_EVENT_RETRY_EXHAUSTED", retry_tick,
+        re.S):
+    errors.append("retry mailbox intake lacks a coherent retry tick predicate")
+if re.search(r"trace->phase\s*==\s*ROUTED_CYCLE_PHASE_ROUTER_TICK\s*\)",
+             retry_tick):
+    errors.append("ordinary healthy tick is a retry mailbox candidate")
+trace_sink = function_body(main, "routed_cycle_trace_sink")
+diagnostic_index = trace_sink.find("trace_needs_diagnostic(trace)")
+enqueue_index = trace_sink.find("routed_cycle_diagnostic_enqueue")
+if diagnostic_index < 0 or enqueue_index < 0 or diagnostic_index >= enqueue_index:
+    errors.append("trace sink does not gate diagnostic enqueue through trace_needs_diagnostic")
+offer_index = trace_sink.find("routed_cycle_retry_log_offer")
+guard_index = trace_sink.find("queue_guard_begin")
+if offer_index < 0 or guard_index < 0 or guard_index >= offer_index:
+    errors.append("retry mailbox event copy is not queue guarded")
+if "routed_retry_log" not in trace_sink:
+    errors.append("retry mailbox is not fed from the trace sink")
+if not re.search(
+        r"if\s*\(\s*retry_tick\s*!=\s*0\s*\)\s*\{.*?"
+        r"routed_cycle_retry_log_offer.*?"
+        r"if\s*\(\s*diagnostic\s*!=\s*0\s*\)\s*\{.*?"
+        r"routed_cycle_diagnostic_enqueue", trace_sink, re.S):
+    errors.append("healthy retry mailbox and independent fault diagnostic paths are not separate")
+for name in ("routed_diagnostic_pending", "routed_wait_for_release",
+             "routed_diagnostic_pop"):
+    if "routed_retry_log" in function_body(main, name):
+        errors.append("retry mailbox leaks into fault diagnostic liveness via " + name)
+        break
+retry_pop = function_body(main, "routed_retry_log_pop")
+take_index = retry_pop.find("routed_cycle_retry_log_take")
+take_guard_index = retry_pop.find("queue_guard_begin")
+take_release_index = retry_pop.find("queue_guard_end")
+if (take_index < 0 or take_guard_index < 0 or take_release_index < 0 or
+        not (take_guard_index < take_index < take_release_index)):
+    errors.append("retry mailbox take is not copied under and released after guard")
+if "routed_logger_progress_epoch" in retry_pop:
+    errors.append("retry mailbox drain publishes fault diagnostic progress")
+diagnostic_pop = function_body(main, "routed_diagnostic_pop")
+if "&routed_logger_record.diagnostic" not in diagnostic_pop:
+    errors.append("diagnostic pop does not use logger-only overlay scratch")
+if "&routed_logger_record.retry_event" not in retry_pop:
+    errors.append("retry pop does not use logger-only overlay scratch")
+if not re.search(r"\bstatic\s+void\s+snapshot\b.*?queue_guard_begin.*?"
+                 r"routed_cycle_retry_log_snapshot", main, re.S):
+    errors.append("retry mailbox snapshot is not queue guarded")
+
+retry_logger = function_body(main, "log_retry_exhausted_event")
+for field in (
+    "type", "next_hop.adva.bytes", "next_hop.logical_id.width",
+    "next_hop.logical_id.value", "data.origin.width", "data.origin.value",
+    "data.final_destination.width", "data.final_destination.value", "data.data_seq",
+    "data.app_kind", "data.app_source", "attempt_count", "busy_response_count",
+    "requested_channel_mask", "completed_channel_mask", "first_tx_ms", "last_tx_ms",
+    "final_deadline_ms", "data.ttl", "data.hops", "data.urgent", "data.app_len",
+    "data.ownership", "local_reason", "mesh_fault_reason",
+):
+    if field not in retry_logger:
+        errors.append("retry diagnostic omits " + field)
+        break
+for index in range(10):
+    if "owned->data.app_bytes[" + str(index) + "]" not in retry_logger:
+        errors.append("retry diagnostic omits application byte " + str(index))
+        break
+for argument in (
+    r"\(UINT\)\s*owned->data\.ttl",
+    r"\(UINT\)\s*owned->data\.hops",
+    r"\(UINT\)\s*owned->data\.urgent",
+    r"\(UINT\)\s*owned->data\.app_len",
+    r"\(UINT\)\s*owned->data\.ownership",
+    r"\(UINT\)\s*owned->local_reason",
+    r"\(UINT\)\s*owned->mesh_fault_reason",
+):
+    if not re.search(argument, retry_logger):
+        errors.append("retry diagnostic lacks logger argument " + argument)
+        break
+for index in range(10):
+    if not re.search(r"\(UINT\)\s*owned->data\.app_bytes\[" + str(index) +
+                     r"\]", retry_logger):
+        errors.append("retry diagnostic lacks application logger argument " + str(index))
+        break
+retry_logger_raw = raw_function_body(main, "log_retry_exhausted_event")
+for label in (
+    "ttl=", "hops=", "urgent=", "app_len=", "app_bytes=", "ownership=",
+    "local_reason=", "mesh_fault_reason=",
+):
+    if label not in retry_logger_raw:
+        errors.append("retry diagnostic lacks logger field " + label)
+        break
+cycle_logger = function_body(main, "log_cycle_diagnostic")
+if "log_retry_exhausted_event" in cycle_logger:
+    errors.append("fault diagnostic logger still owns retry output")
+router_tick_case = re.search(
+    r"case\s+ROUTED_CYCLE_PHASE_ROUTER_TICK\s*:"
+    r"(?P<body>.*?)\bbreak\s*;", cycle_logger, re.S)
+if router_tick_case is None or "link_event" in router_tick_case.group("body"):
+    errors.append("fault diagnostic logger still prints retry tuples")
+logger_task = function_body(main, "routed_logger_task")
+diagnostic_pop_index = logger_task.find("routed_diagnostic_pop")
+diagnostic_print_index = logger_task.find("log_cycle_diagnostic")
+retry_pop_index = logger_task.find("routed_retry_log_pop")
+retry_print_index = logger_task.find("log_retry_exhausted_event")
+if (diagnostic_pop_index < 0 or diagnostic_print_index < diagnostic_pop_index or
+        retry_pop_index < diagnostic_print_index or retry_print_index < retry_pop_index):
+    errors.append("logger does not pop and print diagnostics before retry telemetry")
+if not re.search(
+        r"if\s*\(\s*routed_diagnostic_pop\s*\(\s*\)\s*\)\s*\{.*?"
+        r"log_cycle_diagnostic\s*\(\s*&routed_logger_record\.diagnostic\s*\)\s*;"
+        r"\s*\}\s*else\s+if\s*\(\s*routed_retry_log_pop\s*\(\s*\)\s*\)\s*\{.*?"
+        r"log_retry_exhausted_event\s*\(\s*&routed_logger_record\.retry_event\s*\)\s*;",
+        logger_task, re.S):
+    errors.append("logger record priority or post-guard print ownership is wrong")
+
+summary = function_body(main, "log_summary")
+if "routed link_stats" not in main:
+    errors.append("missing routed link_stats logger line")
+for field in (
+    "rx_candidate", "rx_candidate_accepted", "rx_committed_duplicate",
+    "hack_accepted", "hack_duplicate", "hack_busy", "hack_rejected", "hack_unmatched",
+    "hack_enqueue_failed", "tx_admitted", "tx_done", "tx_partial_done", "tx_failed",
+    "retry_due", "retry_exhausted", "custody_promoted", "custody_dispatch_blocked",
+    "custody_transferred", "local_tx_not_attempted", "custody_busy_expired",
+    "custody_rejected", "radio_fault_terminal", "service_fault_terminal",
+):
+    if "state->link." + field not in summary:
+        errors.append("routed link_stats does not access " + field)
+        break
+for field in ("retry_log_pending", "retry_log_dropped"):
+    if "state->" + field not in summary:
+        errors.append("routed link_stats does not access " + field)
+        break
+logger_record = re.search(
+    r"typedef\s+union\s+routed_logger_record\s*\{(?P<body>.*?)\}"
+    r"\s*routed_logger_record_t\s*;", clean, re.S)
+if (logger_record is None or
+        not re.search(r"\brouted_cycle_trace_t\s+diagnostic\s*;",
+                      logger_record.group("body")) or
+        not re.search(r"\btavrn_link_event_t\s+retry_event\s*;",
+                      logger_record.group("body")) or
+        not re.search(r"\bstatic\s+routed_logger_record_t\s+"
+                      r"routed_logger_record\s*;", clean)):
+    errors.append("diagnostic and retry scratch are not one logger-only union")
+full_storage = re.search(
+    r"typedef\s+union\s+routed_full_logger_storage\s*\{(?P<body>.*?)\}"
+    r"\s*routed_full_logger_storage_t\s*;", clean, re.S)
+if full_storage is None or "retry_event" in full_storage.group("body"):
+    errors.append("FULL summary/GTT storage retains retry-event scratch")
+if "routed_aodv_logger_storage" in clean:
+    errors.append("AODV summary storage retains retry-event scratch")
+for name in ("snapshot", "log_summary", "routed_cycle_trace_sink",
+             "routed_mesh_task", "routed_full_snapshot_request",
+             "routed_full_snapshot_clear_ready"):
+    if "routed_logger_record" in function_body(main, name):
+        errors.append("mesh or snapshot path writes logger record scratch via " + name)
+        break
+
+if errors:
+    print("; ".join(errors))
+    sys.exit(1)
+PY
+}
+
 if [[ "${MODE}" == "red" ]]; then
     BINDING_SOURCE="${RED_BINDING_SOURCE}"
     CYCLE_SOURCE="${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_phase4_cycle_red_backend.c"
@@ -539,6 +857,21 @@ if [[ ${binding_status} -gt 1 ]]; then
     exit 2
 fi
 
+diagnostic_message=""
+diagnostic_status=0
+if [[ "${MODE}" == "green" ]]; then
+    set +e
+    diagnostic_message="$(diagnostic_source_check "${MAIN_SOURCE}" "${ROUTER_PRODUCTION_SOURCE}" \
+        "${MICROBIT_ROOT}/app/protocol/tavrn_router.h" 2>&1)"
+    diagnostic_status=$?
+    set -e
+    if [[ ${diagnostic_status} -gt 1 ]]; then
+        printf 'Phase 4 telemetry GREEN diagnostic source check setup failed: %s\n' \
+            "${diagnostic_message}" >&2
+        exit 2
+    fi
+fi
+
 if [[ "${MODE}" == "green" ]]; then
     set +e
     "${BUILD_DIR}/test_tavrn_phase4_runtime"
@@ -550,8 +883,11 @@ if [[ "${MODE}" == "green" ]]; then
         printf 'Phase 4 telemetry GREEN test crash/runtime failure\n' >&2
         exit 2
     fi
-    if [[ ${binding_status} -ne 0 || ${runtime_status} -ne 0 || ${rreq_status} -ne 0 ]]; then
+    if [[ ${binding_status} -ne 0 || ${diagnostic_status} -ne 0 ||
+          ${runtime_status} -ne 0 || ${rreq_status} -ne 0 ]]; then
         [[ ${binding_status} -eq 0 ]] || printf 'FAIL BIND-01: %s\n' "${binding_message}"
+        [[ ${diagnostic_status} -eq 0 ]] || \
+            printf 'FAIL DIAG-01: %s\n' "${diagnostic_message}"
         exit 1
     fi
     exit 0

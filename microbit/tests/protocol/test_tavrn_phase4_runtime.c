@@ -1271,7 +1271,225 @@ static void test_build_01_queue_policy_and_discriminants(void)
     record.link_enqueue_at_ms = 1u;
     record.enqueue_outcome = AODV_RREQ_ENQUEUE_ADMITTED;
     CHECK("BUILD-01", routed_cycle_rreq_enqueue(&rreq_queue, &record) ==
-                           ROUTED_CYCLE_RESULT_INVALID);
+                            ROUTED_CYCLE_RESULT_INVALID);
+}
+
+static routed_cycle_trace_t make_retry_exhausted_tick_trace(uint32_t marker)
+{
+    routed_cycle_trace_t trace = make_pre_poll_trace(marker);
+    tavrn_router_tick_trace_t *tick;
+
+    trace.phase = ROUTED_CYCLE_PHASE_ROUTER_TICK;
+    trace.timing.phase = ROUTED_CYCLE_PHASE_ROUTER_TICK;
+    trace.detail.router = make_router_trace(TAVRN_ROUTER_TRACE_TICK, marker);
+    tick = &trace.detail.router.detail.tick;
+    tick->status = AODV_STATUS_OK;
+    tick->link_step_status = TAVRN_LINK_STEP_EVENT;
+    tick->link_step_present = TAVRN_ROUTER_TRACE_PRESENT;
+    tick->link_event_present = TAVRN_ROUTER_TRACE_PRESENT;
+    tick->link_event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    return trace;
+}
+
+static tavrn_link_event_t make_retry_exhausted_event(uint16_t sequence)
+{
+    tavrn_link_event_t event;
+
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    event.detail.owned_data.next_hop.logical_id = sid16(0x4bdcu);
+    event.detail.owned_data.next_hop.adva = random_static_adva(0x71u);
+    event.detail.owned_data.data.origin = sid16(0x4218u);
+    event.detail.owned_data.data.final_destination = sid16(0x4bdcu);
+    event.detail.owned_data.data.data_seq = sequence;
+    event.detail.owned_data.data.app_kind = 0x31u;
+    event.detail.owned_data.data.app_source = 0x42u;
+    event.detail.owned_data.attempt_count = 3u;
+    return event;
+}
+
+typedef union logger_record_scratch {
+    routed_cycle_trace_t diagnostic;
+    tavrn_link_event_t retry_event;
+} logger_record_scratch_t;
+
+static void test_build_01_retry_log_mailbox_contract(void)
+{
+    routed_cycle_retry_log_mailbox_t mailbox;
+    routed_cycle_retry_log_snapshot_t snapshot;
+    routed_cycle_retry_log_mailbox_t before;
+    tavrn_link_event_t first = make_retry_exhausted_event(0x8101u);
+    tavrn_link_event_t expected_first = first;
+    tavrn_link_event_t second = make_retry_exhausted_event(0x8102u);
+    tavrn_link_event_t third = make_retry_exhausted_event(0x8103u);
+    tavrn_link_event_t invalid = make_retry_exhausted_event(0x8104u);
+    tavrn_link_event_t taken;
+    tavrn_link_event_t logger_copy;
+
+    routed_cycle_retry_log_init(&mailbox);
+    memset(&snapshot, 0xa5, sizeof(snapshot));
+    CHECK("BUILD-01", routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        snapshot.pending == 0u && snapshot.dropped_count == 0u &&
+                        routed_cycle_retry_log_take(&mailbox, &taken) ==
+                            ROUTED_CYCLE_RETRY_LOG_EMPTY);
+
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(&mailbox, &first) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK);
+    first.detail.owned_data.data.data_seq ^= 0xffffu;
+    first.detail.owned_data.attempt_count = 1u;
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(&mailbox, &second) ==
+                            ROUTED_CYCLE_RETRY_LOG_DROPPED &&
+                        routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        snapshot.pending == 1u && snapshot.dropped_count == 1u &&
+                        routed_cycle_retry_log_take(&mailbox, &taken) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        memcmp(&taken, &expected_first, sizeof(taken)) == 0 &&
+                        routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        snapshot.pending == 0u && snapshot.dropped_count == 1u);
+
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(&mailbox, &second) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK);
+    before = mailbox;
+    invalid.type = TAVRN_LINK_EVENT_CUSTODY_REJECTED;
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(&mailbox, &invalid) ==
+                            ROUTED_CYCLE_RETRY_LOG_INVALID &&
+                        memcmp(&mailbox, &before, sizeof(mailbox)) == 0 &&
+                        routed_cycle_retry_log_take(&mailbox, &logger_copy) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        routed_cycle_retry_log_offer(&mailbox, &third) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        logger_copy.detail.owned_data.data.data_seq == 0x8102u &&
+                        logger_copy.detail.owned_data.attempt_count == 3u &&
+                        routed_cycle_retry_log_take(&mailbox, &taken) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        taken.detail.owned_data.data.data_seq == 0x8103u &&
+                        routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        snapshot.pending == 0u && snapshot.dropped_count == 1u);
+
+    routed_cycle_retry_log_init(&mailbox);
+    mailbox.dropped_count = UINT32_MAX;
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(&mailbox, &first) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        routed_cycle_retry_log_offer(&mailbox, &second) ==
+                            ROUTED_CYCLE_RETRY_LOG_DROPPED &&
+                        routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                            ROUTED_CYCLE_RETRY_LOG_OK &&
+                        snapshot.pending == 1u && snapshot.dropped_count == UINT32_MAX);
+}
+
+static void test_build_01_retry_exhausted_tick_mailbox_contract(void)
+{
+    routed_cycle_diagnostic_queue_t queue;
+    routed_cycle_retry_log_mailbox_t mailbox;
+    routed_cycle_retry_log_snapshot_t snapshot;
+    routed_cycle_trace_t retry_trace;
+    tavrn_link_event_t taken;
+
+    routed_cycle_diagnostic_queue_init(&queue);
+    routed_cycle_retry_log_init(&mailbox);
+    retry_trace = make_retry_exhausted_tick_trace(40u);
+    retry_trace.detail.router.detail.tick.link_event =
+        make_retry_exhausted_event(0x8128u);
+    CHECK("BUILD-01", retry_trace.fault_latched == ROUTED_CYCLE_BOOLEAN_FALSE &&
+                            retry_trace.detail.router.terminal_fault_present ==
+                                TAVRN_ROUTER_TRACE_NOT_PRESENT &&
+                            retry_trace.detail.router.detail.tick.link_event.type ==
+                                TAVRN_LINK_EVENT_RETRY_EXHAUSTED &&
+                            routed_cycle_retry_log_offer(
+                                &mailbox,
+                                &retry_trace.detail.router.detail.tick.link_event) ==
+                                ROUTED_CYCLE_RETRY_LOG_OK &&
+                            queue.count == 0u &&
+                            routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                                ROUTED_CYCLE_RETRY_LOG_OK &&
+                            snapshot.pending == 1u && snapshot.dropped_count == 0u &&
+                            routed_cycle_retry_log_take(&mailbox, &taken) ==
+                                ROUTED_CYCLE_RETRY_LOG_OK &&
+                            memcmp(&taken,
+                                   &retry_trace.detail.router.detail.tick.link_event,
+                                   sizeof(taken)) == 0 &&
+                            queue.count == 0u);
+
+    routed_cycle_diagnostic_queue_init(&queue);
+    routed_cycle_retry_log_init(&mailbox);
+    retry_trace = make_retry_exhausted_tick_trace(41u);
+    retry_trace.detail.router.detail.tick.link_event =
+        make_retry_exhausted_event(0x8129u);
+    retry_trace.fault_latched = ROUTED_CYCLE_BOOLEAN_TRUE;
+    CHECK("BUILD-01", routed_cycle_retry_log_offer(
+                            &mailbox,
+                            &retry_trace.detail.router.detail.tick.link_event) ==
+                                ROUTED_CYCLE_RETRY_LOG_OK &&
+                            routed_cycle_diagnostic_enqueue(&queue, &retry_trace) ==
+                                ROUTED_CYCLE_RESULT_OK &&
+                            queue.count == 1u &&
+                            queue.records[0].fault_latched ==
+                                ROUTED_CYCLE_BOOLEAN_TRUE &&
+                            queue.records[0].detail.router.detail.tick.link_event.type ==
+                                TAVRN_LINK_EVENT_RETRY_EXHAUSTED &&
+                            routed_cycle_retry_log_snapshot(&mailbox, &snapshot) ==
+                                ROUTED_CYCLE_RETRY_LOG_OK &&
+                            snapshot.pending == 1u && snapshot.dropped_count == 0u);
+
+    routed_cycle_diagnostic_queue_init(&queue);
+    retry_trace = make_retry_exhausted_tick_trace(42u);
+    retry_trace.detail.router.detail.tick.link_step_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    expect_invalid_trace(&queue, &retry_trace);
+    retry_trace = make_retry_exhausted_tick_trace(43u);
+    retry_trace.detail.router.detail.tick.link_step_status = TAVRN_LINK_STEP_NO_EVENT;
+    expect_invalid_trace(&queue, &retry_trace);
+    retry_trace = make_retry_exhausted_tick_trace(44u);
+    retry_trace.detail.router.detail.tick.link_event_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    expect_invalid_trace(&queue, &retry_trace);
+    retry_trace = make_retry_exhausted_tick_trace(45u);
+    retry_trace.detail.router.detail.tick.link_step_status = TAVRN_LINK_STEP_INVALID;
+    expect_invalid_trace(&queue, &retry_trace);
+    retry_trace = make_retry_exhausted_tick_trace(46u);
+    retry_trace.detail.router.detail.tick.link_step_status =
+        TAVRN_LINK_STEP_CANDIDATE_TIMEOUT_BUSY;
+    expect_invalid_trace(&queue, &retry_trace);
+}
+
+static void test_build_01_logger_record_overlay_order(void)
+{
+    routed_cycle_diagnostic_queue_t queue;
+    routed_cycle_retry_log_mailbox_t mailbox;
+    logger_record_scratch_t record;
+    routed_cycle_trace_t diagnostic = make_fault_trace(0x812au);
+    routed_cycle_trace_t diagnostic_copy;
+    tavrn_link_event_t retry = make_retry_exhausted_event(0x812bu);
+    tavrn_link_event_t retry_copy;
+    routed_cycle_result_t diagnostic_status;
+    routed_cycle_retry_log_status_t retry_status;
+
+    routed_cycle_diagnostic_queue_init(&queue);
+    routed_cycle_retry_log_init(&mailbox);
+    memset(&record, 0xa5, sizeof(record));
+    memset(&diagnostic_copy, 0, sizeof(diagnostic_copy));
+    memset(&retry_copy, 0, sizeof(retry_copy));
+    (void)routed_cycle_diagnostic_enqueue(&queue, &diagnostic);
+    (void)routed_cycle_retry_log_offer(&mailbox, &retry);
+
+    diagnostic_status = routed_cycle_diagnostic_dequeue(&queue, &record.diagnostic);
+    if (diagnostic_status == ROUTED_CYCLE_RESULT_OK) {
+        diagnostic_copy = record.diagnostic;
+    }
+    retry_status = routed_cycle_retry_log_take(&mailbox, &record.retry_event);
+    if (retry_status == ROUTED_CYCLE_RETRY_LOG_OK) {
+        retry_copy = record.retry_event;
+    }
+    CHECK("BUILD-01", diagnostic_status == ROUTED_CYCLE_RESULT_OK &&
+                            retry_status == ROUTED_CYCLE_RETRY_LOG_OK &&
+                            memcmp(&diagnostic_copy, &diagnostic,
+                                   sizeof(diagnostic_copy)) == 0 &&
+                            memcmp(&retry_copy, &retry, sizeof(retry_copy)) == 0 &&
+                            queue.count == 0u);
 }
 
 static tavrn_gtt_config_t make_gtt_config(tavrn_adva_t local)
@@ -1534,6 +1752,9 @@ int main(void)
     test_bearer_03_same_time_due_sweep_and_terminal_request();
     test_bearer_03_fault_and_overrun_matrices();
     test_build_01_queue_policy_and_discriminants();
+    test_build_01_retry_log_mailbox_contract();
+    test_build_01_retry_exhausted_tick_mailbox_contract();
+    test_build_01_logger_record_overlay_order();
     test_gtt_02_gtt_05_snapshot_and_immutability();
     test_gtt_02_invalid_and_capacity_boundaries();
     test_serial_04_rejoining_and_busy_cycle_statuses();
