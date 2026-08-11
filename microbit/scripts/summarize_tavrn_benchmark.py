@@ -602,14 +602,15 @@ class ObservationState:
             "incomplete": provisional,
         }
 
-    def feed(self, role: str, chunk: str, source: str | None = None, final: bool = False) -> list[ObservationRecord]:
+    def feed(self, role: str, chunk: str, source: str | None = None, final: bool = False,
+             allow_terminal_partial: bool = False) -> list[ObservationRecord]:
         if role not in ROLES:
             raise CaptureError("incremental feed has invalid role")
         if self.finalized_host_ms is not None:
             raise CaptureError("cannot feed observations after finalize")
         source = source or role
         complete = self.buffers[role] + chunk
-        if final and complete and not complete.endswith("\n"):
+        if final and complete and not complete.endswith("\n") and not allow_terminal_partial:
             raise _error(source, self.line_numbers[role] + complete.count("\n") + 1,
                          "ends with partial UART line")
         parts = complete.split("\n")
@@ -622,8 +623,12 @@ class ObservationState:
             parsed = parse_observation_line(line.rstrip("\r"), source, self.line_numbers[role], role)
             if parsed is not None:
                 emitted.append(self._ingest(*parsed, source, self.line_numbers[role]))
-        if final and any(open_role == role for open_role, _ in self.gtt_open):
-            raise _error(source, self.line_numbers[role] + 1, "ends with partial GTT snapshot")
+        open_keys = [key for key in self.gtt_open if key[0] == role]
+        if final and open_keys:
+            if not allow_terminal_partial:
+                raise _error(source, self.line_numbers[role] + 1, "ends with partial GTT snapshot")
+            for key in open_keys:
+                self.gtt_open.pop(key)
         return emitted
 
     def finalize(self, host_ms: float) -> None:
@@ -644,9 +649,11 @@ class ObservationState:
             raise CaptureError("capture end is already finalized")
         self.finalized_host_ms = endpoint
 
-    def feed_file(self, role: str, path: Path) -> list[ObservationRecord]:
+    def feed_file(self, role: str, path: Path,
+                  allow_terminal_partial: bool = False) -> list[ObservationRecord]:
         try:
-            return self.feed(role, path.read_text(encoding="utf-8"), str(path), final=True)
+            return self.feed(role, path.read_text(encoding="utf-8"), str(path), final=True,
+                             allow_terminal_partial=allow_terminal_partial)
         except (OSError, UnicodeDecodeError) as error:
             raise CaptureError(f"cannot read serial log {path}: {error}") from error
 
@@ -1690,8 +1697,11 @@ def replay(metadata: dict[str, Any], paths: dict[str, Path]) -> ObservationState
         raise CaptureError("offline replay requires exactly six ROLE=PATH logs")
     _verify_log_hashes(metadata, paths)
     state = ObservationState(metadata)
+    boards = _boards_by_role(metadata)
     for role, path in sorted(paths.items()):
-        state.feed_file(role, path)
+        log = boards[role].get("log")
+        allow_terminal_partial = bool(isinstance(log, dict) and log.get("terminal_censored"))
+        state.feed_file(role, path, allow_terminal_partial=allow_terminal_partial)
     state.finalize(_metadata_end_host_ms(metadata))
     return state
 

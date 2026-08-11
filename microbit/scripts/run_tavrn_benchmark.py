@@ -756,13 +756,31 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
     finally:
         try:
             _terminate(children, events, killpg=killpg)
+            controlled_boundary = status in {
+                "completed_by_user", "completed_by_duration", "test_stopped"}
             for child in children:
                 _tail(child, state)
-                state.feed(child.board["role"], "", str(child.log_path), final=True)
+                role = child.board["role"]
+                terminal_partial_bytes = len(state.buffers[role].encode("utf-8"))
+                terminal_open_gtt = any(open_role == role for open_role, _ in state.gtt_open)
+                state.feed(role, "", str(child.log_path), final=True,
+                           allow_terminal_partial=controlled_boundary)
+                terminal_censored = controlled_boundary and (
+                    terminal_partial_bytes > 0 or terminal_open_gtt)
+                child.board["log"] = {
+                    "path": str(child.log_path),
+                    "sha256": sha256_file(child.log_path),
+                    "terminal_censored": terminal_censored,
+                    "terminal_partial_bytes": terminal_partial_bytes,
+                    "terminal_open_gtt": terminal_open_gtt,
+                }
+                if terminal_censored:
+                    events.append({"at": utc_now(), "event": f"terminal_censor_{role}",
+                                   "status": "recorded",
+                                   "partial_bytes": terminal_partial_bytes,
+                                   "open_gtt": terminal_open_gtt})
             end = capture_end_instant()
             state.finalize(end.host_ms)
-            for child in children:
-                child.board["log"] = {"path": str(child.log_path), "sha256": sha256_file(child.log_path)}
         except (RunError, analysis.CaptureError) as teardown_error:
             setattr(teardown_error, "observation_state", state)
             if failure is None:

@@ -235,6 +235,18 @@ class ObservationTests(unittest.TestCase):
                                        health_fields(record_id=1))) + "\n", final=True)
         self.assertEqual(state.health_events[0]["record_seq"], 1)
 
+    def test_only_controlled_terminal_partial_is_right_censored(self) -> None:
+        payload = (line(0, wire_record("boot", 0, "1", 1, 1, "started_at_ms=0")) +
+                   "\nobs_clock schema=observer-v2")
+        strict = MODULE.ObservationState(metadata())
+        with self.assertRaisesRegex(MODULE.CaptureError, "partial UART line"):
+            strict.feed("A", payload, "A.log", final=True)
+        controlled = MODULE.ObservationState(metadata())
+        emitted = controlled.feed("A", payload, "A.log", final=True,
+                                  allow_terminal_partial=True)
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0].kind, "boot")
+
     def test_source_attempt_contract_allows_full_not_ready_but_not_aodv_not_ready(self) -> None:
         data = MODULE.snapshot(self.state(not_ready=("heartbeat", 0)))
         self.assertEqual(data["proving_status"], "VALID")
