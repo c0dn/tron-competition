@@ -142,6 +142,11 @@ for token in ("ROUTED_BENCHMARK_APP_PAYLOAD_BYTES", "routed_benchmark_decode_pay
         errors.append(f"benchmark payload/attempt contract lacks {token}")
 if "routed_full_telemetry_copy_gtt_entry" in main:
     errors.append("benchmark GTT emission still scans live physical slots")
+if not re.search(
+        r"snapshot_now\s*=\s*now_ms\(\);.*?"
+        r"routed_full_telemetry_snapshot_gtt\(\s*&routed_gtt,\s*snapshot_now,",
+        main, re.S):
+    errors.append("benchmark GTT query time is not taken at the guarded snapshot")
 if "configured_rx_block_adva" not in main:
     errors.append("benchmark source lacks the reciprocal direct-RX block seam")
 if "tm_printf" in prepare or "tm_printf" in submit:

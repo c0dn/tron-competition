@@ -1382,16 +1382,18 @@ static void log_benchmark_gtt_next(void)
                (UINT)routed_benchmark_gtt_snapshot.nondeparted_count);
 }
 
-static void start_benchmark_gtt_emission(uint32_t now)
+static void start_benchmark_gtt_emission(void)
 {
     routed_full_telemetry_status_t status = ROUTED_FULL_TELEMETRY_INVALID;
+    uint32_t snapshot_now;
 
     if (routed_benchmark_gtt_emission.active != 0u) {
         return;
     }
     memset(&routed_benchmark_gtt_emission, 0,
            sizeof(routed_benchmark_gtt_emission));
-    routed_benchmark_gtt_emission.query_at_ms = now;
+    snapshot_now = now_ms();
+    routed_benchmark_gtt_emission.query_at_ms = snapshot_now;
     if (!queue_guard_begin()) {
         routed_benchmark_record_guard_fault();
         routed_benchmark_record_snapshot_fault();
@@ -1400,7 +1402,7 @@ static void start_benchmark_gtt_emission(uint32_t now)
         return;
     }
     status = routed_full_telemetry_snapshot_gtt(
-        &routed_gtt, now, &routed_benchmark_gtt_snapshot);
+        &routed_gtt, snapshot_now, &routed_benchmark_gtt_snapshot);
     queue_guard_end();
     routed_benchmark_gtt_emission.active = 1u;
     if (status != ROUTED_FULL_TELEMETRY_OK) {
@@ -2983,7 +2985,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             log_benchmark_control();
             log_benchmark_health();
 #if TRON_BUILD_ROUTED_FULL_TAVRN
-            start_benchmark_gtt_emission(now);
+            start_benchmark_gtt_emission();
 #else
             log_benchmark_gtt_not_implemented(now);
 #endif
