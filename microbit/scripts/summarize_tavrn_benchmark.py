@@ -1084,9 +1084,19 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
             continue
         apps_by_offer_id[key] = app
     accepted: dict[tuple[str, str, str, int], ObservationRecord] = {}
+    censored_offer_ids: set[tuple[str, int]] = set()
+    source_log = boards[source_role].get("log")
+    source_terminal_censored = bool(
+        isinstance(source_log, dict) and source_log.get("terminal_censored"))
     for record in offers:
-        app = apps_by_offer_id.get((record.session, _record_id(record.fields, record.source, record.line_number)))
+        record_key = (record.session, _record_id(record.fields, record.source, record.line_number))
+        app = apps_by_offer_id.get(record_key)
         if app is None:
+            boundary_delta = ((state.finalized_host_ms - record.host_ms)
+                              if state.finalized_host_ms is not None else float("inf"))
+            if source_terminal_censored and record is offers[-1] and 0.0 <= boundary_delta <= 1000.0:
+                censored_offer_ids.add(record_key)
+                continue
             invalidate(record, "missing_source_app")
             continue
         if _bool_field(app, "accepted") == 1:
@@ -1130,6 +1140,8 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
         delivered[key] = final
     packets: list[dict[str, Any]] = []
     for offer in offers:
+        if (offer.session, _record_id(offer.fields, offer.source, offer.line_number)) in censored_offer_ids:
+            continue
         key = _event_key(offer)
         final = delivered.get(key)
         app = apps_by_offer_id.get((offer.session, _record_id(offer.fields, offer.source, offer.line_number)))

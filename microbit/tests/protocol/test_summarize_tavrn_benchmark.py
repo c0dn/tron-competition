@@ -247,6 +247,26 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0].kind, "boot")
 
+    def test_terminal_censored_source_offer_pair_is_not_corruption(self) -> None:
+        run_metadata = metadata()
+        next(board for board in run_metadata["boards"] if board["role"] == "A")["log"] = {
+            "terminal_censored": True}
+        state = MODULE.ObservationState(run_metadata)
+        for role in MODULE.ROLES:
+            payload = stream(role)
+            if role == "A":
+                lines = payload.splitlines()
+                last_app = max(index for index, item in enumerate(lines) if " obs_app " in item)
+                payload = "\n".join(lines[:last_app]) + "\n" + lines[last_app][:40]
+                state.feed(role, payload, f"{role}.log", final=True,
+                           allow_terminal_partial=True)
+            else:
+                state.feed(role, payload, f"{role}.log", final=True)
+        state.finalize((BASE + dt.timedelta(milliseconds=CAPTURE_END_MS)).timestamp() * 1000.0)
+        data = MODULE.snapshot(state)
+        self.assertFalse(any(item["reason"] == "missing_source_app"
+                             for item in data["invalid_intervals"]))
+
     def test_source_attempt_contract_allows_full_not_ready_but_not_aodv_not_ready(self) -> None:
         data = MODULE.snapshot(self.state(not_ready=("heartbeat", 0)))
         self.assertEqual(data["proving_status"], "VALID")
