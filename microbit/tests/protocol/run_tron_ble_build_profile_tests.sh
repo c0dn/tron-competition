@@ -1293,7 +1293,7 @@ for expected in \
     'build.routed_logger_task_stack_bytes=1840' \
     'capacity.routed_logger_task_stack_bytes=1840' \
     'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' \
-    'capacity.benchmark_attempt_queue=32' \
+    'capacity.benchmark_attempt_queue=1024' \
     'capacity.benchmark_attempt_queue.policy=RETAIN_OLDEST_DROP_NEWEST' \
     'capacity.benchmark_attempt_queue.dropped_telemetry=SATURATING_COUNTER' \
     'capacity.benchmark_attempt_queue.state=IMPLEMENTED'; do
@@ -1306,9 +1306,19 @@ require_selected_source_count "$benchmark_aodv_manifest" \
 require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 if ! grep -Fqx '#define TRON_BUILD_BENCHMARK_MODE 1' "$benchmark_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u' "$benchmark_aodv_config" ||
     ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$benchmark_aodv_config" ||
-   grep -Fq 'TRON_BUILD_BENCH_WARMUP_MS' "$benchmark_aodv_config"; then
+    grep -Fq 'TRON_BUILD_BENCH_WARMUP_MS' "$benchmark_aodv_config"; then
     printf '%s\n' 'AODV benchmark generated config lacks benchmark fields' >&2
+    exit 1
+fi
+if ! grep -Fqx '#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
+   ! grep -Fq 'ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY == 1024u' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
+   ! grep -Fq 'TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY ==' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c"; then
+    printf '%s\n' 'benchmark source/config capacity binding is absent' >&2
     exit 1
 fi
 build_target routed-benchmark-aodv tavrn_routed_node
@@ -2484,6 +2494,46 @@ for expected in 'bench.mode=ON' 'bench.control_observability=COMPILE_TIME_OPTION
                 'bench.identify_display=OFF'; do
     require_line "$expected" "${benchmark_published_manifest[0]}"
 done
+benchmark_resource_publisher_out="$WORK_DIR/benchmark-resource-published"
+bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
+    --feature FULL_TAVRN --timer BALANCED --enable-hooks ON --benchmark ON \
+    --role-number 6 --peer-adva 1e:33:a7:2f:8e:d8 --stack-usage \
+    --out "$benchmark_resource_publisher_out" >/dev/null
+benchmark_resource_published_manifest="$(expiry_manifest_path "$benchmark_resource_publisher_out")"
+benchmark_resource_name="$(manifest_value artifact.name "$benchmark_resource_published_manifest")"
+benchmark_resource_document="$(expiry_manifest_field_path "$benchmark_resource_publisher_out" \
+    "$benchmark_resource_published_manifest" resource.manifest.name)"
+benchmark_resource_config="$(expiry_manifest_field_path "$benchmark_resource_publisher_out" \
+    "$benchmark_resource_published_manifest" evidence.target_config_header.name)"
+python3 - "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" \
+    "$benchmark_resource_config" "$benchmark_resource_published_manifest" \
+    "$benchmark_resource_document" "$benchmark_resource_name" <<'PY'
+import json
+import pathlib
+import sys
+
+source, config, manifest_path, resource_path, artifact_name = map(pathlib.Path, sys.argv[1:])
+if "#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u\n" not in \
+        source.read_text(encoding="utf-8"):
+    raise SystemExit("benchmark source capacity is not 1024")
+if "#define TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u\n" not in \
+        config.read_text(encoding="utf-8"):
+    raise SystemExit("generated benchmark capacity is not 1024")
+manifest = dict(line.split("=", 1) for line in
+                manifest_path.read_text(encoding="utf-8").splitlines() if line)
+if manifest.get("artifact.name") != artifact_name.name or \
+        manifest.get("capacity.benchmark_attempt_queue") != "1024" or \
+        manifest.get("resource.fixed_state.declared_delta_bytes") != "42712":
+    raise SystemExit("benchmark manifest capacity/fixed-state binding differs")
+resource = json.loads(resource_path.read_text(encoding="utf-8"))
+if resource["fixed_state"] != {
+        "after_bytes": 69396,
+        "before_bytes": 69396,
+        "declared_delta_bytes": 42712,
+        "unexplained_delta_bytes": 0,
+}:
+    raise SystemExit("benchmark resource fixed-state binding differs")
+PY
 publisher_fail_with benchmark-wrapper-invalid-state \
     '--benchmark must be ON or OFF' --target tavrn_routed_node --benchmark MAYBE
 publisher_fail_with benchmark-wrapper-warmup-obsolete \

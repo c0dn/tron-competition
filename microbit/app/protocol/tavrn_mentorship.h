@@ -21,6 +21,11 @@ typedef char tavrn_mentorship_join_obligation_capacity_guard[
 typedef char tavrn_mentorship_sync_dedupe_capacity_guard[
     (TAVRN_MENTORSHIP_SYNC_DEDUPE_CAPACITY == 8u) ? 1 : -1];
 
+/* Chosen from the existing TC UUID retention: 5/30/60 s across the profiles,
+ * which is longer than the fixed 1 s subject suppression and leaves several
+ * full-identity refreshes before the 15/150/300 s remote soft expiry. */
+#define TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS(config) ((config)->join_dedupe_ms)
+
 typedef struct tavrn_mentorship_record {
     tavrn_adva_t identity;
     uint16_t serial;
@@ -201,6 +206,7 @@ typedef struct tavrn_mentorship {
     uint32_t serving_deadline_ms;
     uint32_t offer_suppressed_until_ms;
     uint32_t pending_offer_due_ms;
+    uint32_t join_reannounce_deadline_ms;
     uint16_t active_page_snapshot_id;
     uint16_t serving_boot_nonce;
     struct tavrn_tc_metadata_state *tc_metadata;
@@ -212,6 +218,7 @@ typedef struct tavrn_mentorship {
     uint8_t serving_session_valid;
     uint8_t sync_complete_authorized;
     uint8_t identity_conflict_pending;
+    uint8_t join_reannounce_valid;
     uint8_t last_now_valid;
     uint32_t last_now_ms;
 } tavrn_mentorship_t;

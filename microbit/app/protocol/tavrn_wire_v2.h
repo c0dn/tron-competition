@@ -6,12 +6,15 @@
 
 #define TAVRN_ADVA_LEN             6u
 #define TAVRN_LINK_APP_BYTES       10u
+#define TAVRN_LINK_SID16_APP_BYTES 7u
 #define TAVRN_LINK_CONTROL_PDU_MAX 24u
 
 typedef char tavrn_wire_v2_pdu_budget_guard[
     (TAVRN_LINK_CONTROL_PDU_MAX == 24u) ? 1 : -1];
 typedef char tavrn_wire_v2_app_budget_guard[
     (TAVRN_LINK_APP_BYTES == 10u) ? 1 : -1];
+typedef char tavrn_wire_v2_sid16_app_budget_guard[
+    (TAVRN_LINK_SID16_APP_BYTES == 7u) ? 1 : -1];
 
 typedef struct tavrn_adva {
     uint8_t bytes[TAVRN_ADVA_LEN];

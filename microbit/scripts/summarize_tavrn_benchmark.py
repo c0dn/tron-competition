@@ -58,7 +58,7 @@ TIMESTAMP_RE = re.compile(
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]*=[^\s=]+")
 UINT_RE = re.compile(r"(?:0|[1-9][0-9]*)")
 WORD_RE = re.compile(r"[A-Za-z0-9_.:@+-]+")
-IDENTITY_RE = re.compile(r"0x[0-9a-f]{8}")
+IDENTITY_RE = re.compile(r"0x[0-9a-f]{6}")
 ADVA_RE = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}")
 
 CONTROL_COUNTER_FIELDS = {
@@ -364,11 +364,11 @@ def _record_id(fields: dict[str, str], source: str, line_number: int) -> int:
 
 
 def _validate_event_identity(fields: dict[str, str], source: str, line_number: int) -> None:
-    """Validate the firmware's exact 32-bit benchmark identity layout."""
+    """Validate the firmware's exact compact 24-bit benchmark identity layout."""
     burst = _uint(fields["burst"], "burst", source, line_number)
     sequence = _uint(fields["sequence"], "sequence", source, line_number)
     payload_id = _uint(fields["payload_id"], "payload_id", source, line_number)
-    if burst >= (1 << 21):
+    if burst >= (1 << 13):
         raise _error(source, line_number, "has out-of-range burst")
     if sequence >= (1 << 10) or payload_id >= (1 << 10):
         raise _error(source, line_number, "has out-of-range sequence/payload_id")
@@ -378,7 +378,7 @@ def _validate_event_identity(fields: dict[str, str], source: str, line_number: i
     if IDENTITY_RE.fullmatch(identity_text) is None:
         raise _error(source, line_number, "has malformed identity")
     workload = fields["workload"]
-    expected = ((1 if workload == "throughput" else 0) << 31) | (burst << 10) | payload_id
+    expected = ((1 if workload == "throughput" else 0) << 23) | (burst << 10) | payload_id
     if int(identity_text[2:], 16) != expected:
         raise _error(source, line_number, "has identity/workload/burst/sequence mismatch")
 
@@ -1131,7 +1131,7 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
             invalidate(final, "invalid_final_identity")
             continue
         if _uint(final.fields["app_kind"], "app_kind", final.source, final.line_number) != 127 or \
-                _uint(final.fields["app_len"], "app_len", final.source, final.line_number) != 8:
+                _uint(final.fields["app_len"], "app_len", final.source, final.line_number) != 7:
             invalidate(final, "invalid_final_app_contract")
             continue
         assert expected_origin is not None and expected_destination is not None

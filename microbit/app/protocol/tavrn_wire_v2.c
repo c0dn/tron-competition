@@ -16,7 +16,6 @@
 #define TAVRN_WIRE_SID16_LEN 2u
 #define TAVRN_WIRE_META_HEADER_LEN 1u
 #define TAVRN_WIRE_META_ENTRY_LEN  2u
-#define TAVRN_WIRE_PATIENT_APP_LEN 7u
 
 #define TAVRN_WIRE_DATA_BASE_LEN(width_len) (11u + 3u * (width_len))
 #define TAVRN_WIRE_DATA16_BASE_LEN \
@@ -94,13 +93,13 @@ typedef char tavrn_wire_v2_adv_max_guard[
     (TAVRN_ADV_WRAPPER_LEN + TAVRN_LINK_CONTROL_PDU_MAX == TAVRN_ADV_MAX_LEN) ?
         1 : -1];
 typedef char tavrn_wire_v2_data16_patient_guard[
-    (TAVRN_WIRE_DATA16_BASE_LEN + TAVRN_WIRE_PATIENT_APP_LEN ==
+    (TAVRN_WIRE_DATA16_BASE_LEN + TAVRN_LINK_SID16_APP_BYTES ==
      TAVRN_LINK_CONTROL_PDU_MAX) ? 1 : -1];
 typedef char tavrn_wire_v2_data8_capacity_guard[
     (TAVRN_WIRE_DATA8_BASE_LEN + TAVRN_LINK_APP_BYTES ==
      TAVRN_LINK_CONTROL_PDU_MAX) ? 1 : -1];
 typedef char tavrn_wire_v2_data8_patient_guard[
-    (TAVRN_WIRE_DATA8_BASE_LEN + TAVRN_WIRE_PATIENT_APP_LEN == 21u) ? 1 : -1];
+    (TAVRN_WIRE_DATA8_BASE_LEN + TAVRN_LINK_SID16_APP_BYTES == 21u) ? 1 : -1];
 typedef char tavrn_wire_v2_flood_capacity_guard[
     (TAVRN_WIRE_FLOOD16_BASE_LEN + TAVRN_WIRE_FLOOD16_BODY_MAX ==
      TAVRN_LINK_CONTROL_PDU_MAX &&
@@ -369,14 +368,14 @@ static tavrn_codec_result_t validate_data_pdu(const uint8_t *pdu, size_t pdu_len
         return TAVRN_CODEC_MALFORMED_FIELD;
     }
     if (pdu_len > app_offset +
-         (width == TAVRN_IDENTITY_SID8 ? TAVRN_LINK_APP_BYTES :
-          TAVRN_WIRE_PATIENT_APP_LEN)) {
+          (width == TAVRN_IDENTITY_SID8 ? TAVRN_LINK_APP_BYTES :
+           TAVRN_LINK_SID16_APP_BYTES)) {
         return TAVRN_CODEC_MALFORMED_EXACT_LENGTH;
     }
     app_len = pdu_len - app_offset;
     app_kind = pdu[9u + (size_t)3u * width_len];
     app_source = pdu[10u + (size_t)3u * width_len];
-    if (app_kind == 0x01u && (app_len != TAVRN_WIRE_PATIENT_APP_LEN || app_source == 0u ||
+    if (app_kind == 0x01u && (app_len != TAVRN_LINK_SID16_APP_BYTES || app_source == 0u ||
                               app_source == 0xffu)) {
         return TAVRN_CODEC_MALFORMED_FIELD;
     }
@@ -1106,11 +1105,11 @@ static tavrn_codec_result_t build_data_pdu(const tavrn_decoded_frame_t *frame,
     app_offset = TAVRN_WIRE_DATA_BASE_LEN(width_len);
     if (data->data.app_len > TAVRN_LINK_APP_BYTES ||
         data->data.app_len > (width == TAVRN_IDENTITY_SID8 ?
-                              TAVRN_LINK_APP_BYTES : TAVRN_WIRE_PATIENT_APP_LEN)) {
+                               TAVRN_LINK_APP_BYTES : TAVRN_LINK_SID16_APP_BYTES)) {
         return TAVRN_CODEC_MALFORMED_EXACT_LENGTH;
     }
     if ((data->data.app_kind == 0x01u &&
-          (data->data.app_len != TAVRN_WIRE_PATIENT_APP_LEN ||
+          (data->data.app_len != TAVRN_LINK_SID16_APP_BYTES ||
            data->data.app_source == 0u ||
           data->data.app_source == 0xffu)) ||
         (data->data.app_kind == 0x7fu && data->data.app_source != 0u)) {

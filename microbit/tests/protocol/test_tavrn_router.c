@@ -1106,6 +1106,35 @@ static void test_router_transit_pin_requires_exact_data(void)
                              TAVRN_ROUTER_FAULT_TRANSIT_CUSTODY_RELEASE_INVALID);
 }
 
+static void test_router_sid16_application_width_rejected_before_aodv(void)
+{
+    tavrn_router_t router;
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    aodv_core_t core;
+    tron_application_data_t application;
+    aodv_core_t core_before;
+    tavrn_link_v2_t link_before;
+
+    if (!setup_live_router(&router, &link, &scheduler, &core)) {
+        CHECK("GTT-01", 0);
+        return;
+    }
+    memset(&application, 0, sizeof(application));
+    application.final_destination = make_peer(adva_c).logical_id;
+    application.app_kind = 0x7fu;
+    application.app_len = 8u;
+    core_before = core;
+    link_before = link;
+    CHECK("GTT-01", tavrn_router_submit_application(&router, &application, 0u) ==
+                         AODV_STATUS_INVALID &&
+                         memcmp(&core, &core_before, sizeof(core)) == 0 &&
+                         memcmp(&link, &link_before, sizeof(link)) == 0 &&
+                         scheduler.routed_tx_queue.count == 0u &&
+                         aodv_core_poll_action(&core, &(aodv_action_t){0}) ==
+                             AODV_ACTION_POLL_EMPTY);
+}
+
 int main(void)
 {
     test_gtt_01_generic_hook_isolation();
@@ -1116,6 +1145,7 @@ int main(void)
     test_router_reforward_transit_data();
     test_router_reforward_gates_oldest_failure();
     test_router_transit_pin_requires_exact_data();
+    test_router_sid16_application_width_rejected_before_aodv();
     if (failures != 0u) {
         printf("tavrn_router RED tests failed: %u assertion(s)\n", failures);
         return 1;

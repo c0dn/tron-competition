@@ -72,7 +72,7 @@ static void test_continuous_absolute_deadlines(void)
                                 ROUTED_BENCHMARK_SCHEDULE_DUE &&
                                 slot.workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
                                 slot.deadline_ms == 60000u && slot.burst == 0u &&
-                                slot.sequence == 0u && slot.identity == 0x80000000u &&
+                                slot.sequence == 0u && slot.identity == 0x00800000u &&
                                 routed_benchmark_identity_decode(slot.identity, &workload,
                                                                  &burst, &sequence) &&
                                 workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT &&
@@ -98,6 +98,18 @@ static void test_continuous_absolute_deadlines(void)
                                 routed_benchmark_schedule_due(&state,
                                                              UINT32_MAX - 100u, &slot) !=
                                     ROUTED_BENCHMARK_SCHEDULE_INVALID);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_init(&state, 0u, 74u) &&
+                                routed_benchmark_schedule_due(&state, 3600000u, &slot) ==
+                                    ROUTED_BENCHMARK_SCHEDULE_DUE &&
+                                slot.workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT &&
+                                slot.burst == 3u && slot.sequence == 528u &&
+                                slot.identity == 3600u);
+    CHECK("BENCH-SCHEDULE", routed_benchmark_identity_encode(
+                                ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT, 0x1fffu,
+                                0x03ffu) == 0x007fffffu &&
+                                routed_benchmark_identity_encode(
+                                    ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT, 0x1fffu,
+                                    0x03ffu) == ROUTED_BENCHMARK_IDENTITY_MAX);
 }
 
 static void test_newest_due_slot_selection(void)
@@ -163,47 +175,92 @@ static void test_queue_and_identity_decode(void)
     routed_benchmark_attempt_t attempt;
     routed_benchmark_attempt_t observed;
     uint8_t bytes[ROUTED_BENCHMARK_APP_PAYLOAD_BYTES] = {
-        0x44u, 0x33u, 0x22u, 0x11u, 0x78u, 0x56u, 0x34u, 0x92u,
+        0x44u, 0x33u, 0x22u, 0x11u, 0x78u, 0x56u, 0xb4u,
     };
     uint32_t origin_session = UINT32_MAX;
     uint32_t identity = UINT32_MAX;
     uint16_t index;
+    uint16_t expected_sequence;
 
     routed_benchmark_attempt_queue_init(&queue);
     memset(&attempt, 0, sizeof(attempt));
+    CHECK("BENCH-QUEUE", ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY == 1024u &&
+                             sizeof(queue.head) == sizeof(uint16_t) &&
+                             sizeof(queue.tail) == sizeof(uint16_t) &&
+                             sizeof(queue.count) == sizeof(uint16_t));
     for (index = 0u; index < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY; index++) {
         attempt.sequence = index;
         attempt.attempted = (uint8_t)(index & 1u);
         CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK);
     }
-    CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
-                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_DROPPED &&
-                             routed_benchmark_attempt_queue_snapshot(&queue, &snapshot) ==
+    attempt.sequence = ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY;
+    CHECK("BENCH-QUEUE", queue.head == 0u && queue.tail == 0u &&
+                              routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
+                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_DROPPED &&
+                              routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
+                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_DROPPED &&
+                              routed_benchmark_attempt_queue_snapshot(&queue, &snapshot) ==
+                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
+                              snapshot.count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
+                              snapshot.high_water == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
+                              snapshot.dropped_count == 2u);
+    for (index = 0u; index < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u;
+         index++) {
+        CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
-                             snapshot.count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
-                             snapshot.high_water == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
-                             snapshot.dropped_count == 1u);
-    CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
-                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK && observed.sequence == 0u &&
-                              observed.attempted == 0u);
+                                 observed.sequence == index &&
+                                 observed.attempted == (uint8_t)(index & 1u));
+    }
+    CHECK("BENCH-QUEUE", queue.head == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u &&
+                              queue.tail == 0u &&
+                              queue.count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u);
+    for (index = 0u; index < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u;
+         index++) {
+        attempt.sequence = (uint16_t)(ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY + index);
+        attempt.attempted = (uint8_t)(attempt.sequence & 1u);
+        CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_offer(&queue, &attempt) ==
+                                 ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK);
+    }
+    CHECK("BENCH-QUEUE", queue.head == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u &&
+                              queue.tail == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u &&
+                              queue.count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
+                              routed_benchmark_attempt_queue_snapshot(&queue, &snapshot) ==
+                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
+                              snapshot.high_water == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
+                              snapshot.dropped_count == 2u);
+    for (expected_sequence = ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u;
+         expected_sequence < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY +
+             ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u;
+         expected_sequence++) {
+        CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
+                                 ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK &&
+                                 observed.sequence == expected_sequence &&
+                                 observed.attempted ==
+                                     (uint8_t)(expected_sequence & 1u));
+    }
+    CHECK("BENCH-QUEUE", queue.head == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u &&
+                              queue.tail == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY / 2u &&
+                              queue.count == 0u &&
+                              routed_benchmark_attempt_queue_take(&queue, &observed) ==
+                                  ROUTED_BENCHMARK_ATTEMPT_QUEUE_EMPTY);
     queue.count = ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY + 1u;
     CHECK("BENCH-QUEUE", routed_benchmark_attempt_queue_take(&queue, &observed) ==
                              ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID);
 
     CHECK("BENCH-DECODE", routed_benchmark_decode_payload(
                                ROUTED_BENCHMARK_APP_KIND,
-                               ROUTED_BENCHMARK_APP_PAYLOAD_BYTES, bytes,
-                               &origin_session, &identity) &&
-                               origin_session == 0x11223344u &&
-                               identity == 0x92345678u);
+                                ROUTED_BENCHMARK_APP_PAYLOAD_BYTES, bytes,
+                                &origin_session, &identity) &&
+                                origin_session == 0x11223344u &&
+                                identity == 0x00b45678u);
     identity = UINT32_MAX;
     origin_session = UINT32_MAX;
     CHECK("BENCH-DECODE", !routed_benchmark_decode_payload(
-                               ROUTED_BENCHMARK_APP_KIND, 7u, bytes,
-                               &origin_session, &identity) && identity == 0u &&
-                               origin_session == 0u &&
-                               !routed_benchmark_decode_payload(
+                                ROUTED_BENCHMARK_APP_KIND, 6u, bytes,
+                                &origin_session, &identity) && identity == 0u &&
+                                origin_session == 0u &&
+                                !routed_benchmark_decode_payload(
                                    0x01u, ROUTED_BENCHMARK_APP_PAYLOAD_BYTES,
                                    bytes, &origin_session, &identity));
     memset(bytes, 0, 4u);
@@ -212,8 +269,11 @@ static void test_queue_and_identity_decode(void)
     CHECK("BENCH-DECODE", !routed_benchmark_decode_payload(
                                ROUTED_BENCHMARK_APP_KIND,
                                ROUTED_BENCHMARK_APP_PAYLOAD_BYTES, bytes,
-                               &origin_session, &identity) &&
-                               origin_session == 0u && identity == 0u);
+                                &origin_session, &identity) &&
+                                origin_session == 0u && identity == 0u);
+    CHECK("BENCH-DECODE", !routed_benchmark_identity_decode(
+                               0x01000000u, &(routed_benchmark_workload_t){0},
+                               &(uint32_t){0}, &(uint16_t){0}));
 }
 
 static void test_full_destination_readiness_is_fail_closed(void)

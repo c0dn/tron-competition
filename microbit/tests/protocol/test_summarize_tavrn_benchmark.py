@@ -62,8 +62,8 @@ def metadata(profile: str = "FULL_TAVRN", ended_ms: int = CAPTURE_END_MS) -> dic
 
 
 def identity(workload: str, burst: int, sequence: int) -> str:
-    value = ((1 if workload == "throughput" else 0) << 31) | (burst << 10) | sequence
-    return f"0x{value:08x}"
+    value = ((1 if workload == "throughput" else 0) << 23) | (burst << 10) | sequence
+    return f"0x{value:06x}"
 
 
 def wire_record(kind: str, now: int, role: str, session: int, record_id: int,
@@ -176,7 +176,7 @@ def stream(
                 f"event_at_ms={deadline + 100} origin_session=1 origin=0x{origin:04x} "
                 f"destination=0x{destination:04x} identity_valid=1 workload={workload} burst={burst} "
                 f"sequence={sequence} payload_id={sequence} identity={identity(workload, burst, sequence)} "
-                "app_kind=127 app_len=8")
+                "app_kind=127 app_len=7")
     events.sort(key=lambda event: (event[0], event[1]))
     tags = {tag: record_id for record_id, (_, _, _, tag, _) in enumerate(events, 1) if tag}
     return "\n".join(
@@ -221,14 +221,18 @@ class ObservationTests(unittest.TestCase):
         offer = line(0, wire_record(
             "offer", 0, "1", 1, 2,
             "event_at_ms=0 deadline_ms=0 workload=heartbeat burst=0 sequence=0 payload_id=0 "
-            "identity=0x00000000 offer=2 attempted=1 accepted=0 status=0 destination=0x0003 width=1"))
+            "identity=0x000000 offer=2 attempted=1 accepted=0 status=0 destination=0x0003 width=1"))
         self.assertIsNotNone(MODULE.parse_observation_line(offer))
+        self.assertEqual(identity("throughput", (1 << 13) - 1, (1 << 10) - 1),
+                         "0xffffff")
         for malformed, expected in (
                 (offer.replace(" deadline_ms=0", ""), "missing required fields"),
                 (offer.replace(" destination=0x0003", ""), "missing required fields"),
                 (offer.replace(" width=1", ""), "missing required fields"),
                 (offer.replace(" attempted=1", ""), "missing required fields"),
-                (offer.replace("identity=0x00000000", "identity=0x00000001"), "identity/workload")):
+                (offer.replace("identity=0x000000", "identity=0x000001"), "identity/workload"),
+                (offer.replace("burst=0", "burst=8192").replace(
+                    "identity=0x000000", "identity=0x200000"), "out-of-range burst")):
             with self.subTest(malformed=malformed), self.assertRaisesRegex(MODULE.CaptureError, expected):
                 MODULE.parse_observation_line(malformed)
         boot = line(0, wire_record("boot", 0, "1", 1, 1, "started_at_ms=0"))

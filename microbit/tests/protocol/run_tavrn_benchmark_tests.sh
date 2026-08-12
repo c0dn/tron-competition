@@ -135,7 +135,7 @@ for record, event_source in (("obs_offer", "(UW)attempt->event_at_ms"),
 if re.search(r'obs_[a-z_]+\s+now_ms=', main):
     errors.append("observer record still uses now_ms instead of now")
 for token in ("ROUTED_BENCHMARK_APP_PAYLOAD_BYTES", "routed_benchmark_decode_payload",
-              "app_bytes[7]", "origin_session=%lu", "attempted = 0u",
+              "app_bytes[6]", "origin_session=%lu", "attempted = 0u",
               "attempted = 1u", "benchmark_session_high",
               "routed_full_telemetry_snapshot_gtt"):
     if token not in main:

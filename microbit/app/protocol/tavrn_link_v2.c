@@ -190,7 +190,8 @@ static int data_valid(const tavrn_link_data_t *data)
         !logical_id_valid(&data->final_destination, 0) ||
         data->origin.width != data->final_destination.width || data->ttl > 15u ||
         data->hops > 15u || data->urgent > 1u ||
-        data->app_len > TAVRN_LINK_APP_BYTES ||
+        data->app_len > (data->origin.width == TAVRN_IDENTITY_SID16 ?
+                         TAVRN_LINK_SID16_APP_BYTES : TAVRN_LINK_APP_BYTES) ||
         (data->ownership != TAVRN_DATA_ORIGINATED &&
          data->ownership != TAVRN_DATA_TRANSIT)) {
         return 0;

@@ -246,7 +246,8 @@ int routed_benchmark_next_record_id(routed_benchmark_state_t *state,
 uint32_t routed_benchmark_identity_encode(routed_benchmark_workload_t workload,
                                           uint32_t burst, uint16_t sequence)
 {
-    return ((uint32_t)workload << 31) |
+    return (((uint32_t)workload & 1u) <<
+            ROUTED_BENCHMARK_IDENTITY_WORKLOAD_BIT) |
         ((burst & ROUTED_BENCHMARK_IDENTITY_BURST_MASK) <<
          ROUTED_BENCHMARK_IDENTITY_SEQUENCE_BITS) |
         ((uint32_t)sequence & ROUTED_BENCHMARK_IDENTITY_SEQUENCE_MASK);
@@ -260,7 +261,13 @@ int routed_benchmark_identity_decode(uint32_t identity,
     if (workload_out == NULL || burst_out == NULL || sequence_out == NULL) {
         return 0;
     }
-    *workload_out = (identity >> 31) != 0u ?
+    *workload_out = ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT;
+    *burst_out = 0u;
+    *sequence_out = 0u;
+    if (identity > ROUTED_BENCHMARK_IDENTITY_MAX) {
+        return 0;
+    }
+    *workload_out = (identity >> ROUTED_BENCHMARK_IDENTITY_WORKLOAD_BIT) != 0u ?
         ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT :
         ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT;
     *burst_out = (identity >> ROUTED_BENCHMARK_IDENTITY_SEQUENCE_BITS) &
@@ -357,8 +364,7 @@ int routed_benchmark_decode_payload(uint8_t app_kind, uint8_t app_len,
         ((uint32_t)app_bytes[3] << 24);
     *identity_out = (uint32_t)app_bytes[4] |
         ((uint32_t)app_bytes[5] << 8) |
-        ((uint32_t)app_bytes[6] << 16) |
-        ((uint32_t)app_bytes[7] << 24);
+        ((uint32_t)app_bytes[6] << 16);
     if (*origin_session_out == 0u) {
         *identity_out = 0u;
         return 0;

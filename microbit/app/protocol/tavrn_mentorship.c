@@ -312,6 +312,8 @@ static tavrn_mentorship_status_t enter_identity_conflict(
     mentorship->state.full_bootstrap_admission_enabled = 1u;
     mentorship->started_at_ms = now_ms;
     mentorship->identity_conflict_pending = 0u;
+    mentorship->join_reannounce_deadline_ms = 0u;
+    mentorship->join_reannounce_valid = 0u;
     mentorship->counters.transition_cleared++;
     return TAVRN_MENTORSHIP_COLLISION;
 }
@@ -647,6 +649,16 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
             }
             mentorship->state.join_originated = 1u;
             mentorship->counters.join_originated++;
+            /* Queue admission is the existing JOIN transaction commit point.
+             * Rebase from that point, rather than the stale due time, so a
+             * delayed/busy JOIN can never produce catch-up reannouncements. */
+            if (mentorship->state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+                mentorship->tc_metadata != NULL) {
+                mentorship->join_reannounce_deadline_ms =
+                    now_ms + TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS(
+                        &mentorship->config);
+                mentorship->join_reannounce_valid = 1u;
+            }
         } else if (pending->purpose == TAVRN_MENTORSHIP_PENDING_JOIN_RELAY) {
             join_origin = pending->join_origin;
             join_sequence = pending->join_sequence;
@@ -674,7 +686,7 @@ static void originate_join(tavrn_mentorship_t *mentorship)
     tavrn_validated_control_t join;
     uint16_t sequence = 1u;
 
-    if (mentorship == NULL || mentorship->state.join_originated != 0u) {
+    if (mentorship == NULL || mentorship->router == NULL || mentorship->gtt == NULL) {
         return;
     }
     if (mentorship->tc_metadata != NULL) {
@@ -683,7 +695,7 @@ static void originate_join(tavrn_mentorship_t *mentorship)
             mentorship->tc_metadata, TAVRN_TC_EVENT_JOIN, &ticket);
 
         if ((status != TAVRN_TC_METADATA_PREPARED &&
-             status != TAVRN_TC_METADATA_RETAINED) || ticket.valid == 0u) {
+              status != TAVRN_TC_METADATA_RETAINED) || ticket.valid == 0u) {
             return;
         }
         sequence = ticket.sequence;
@@ -692,9 +704,9 @@ static void originate_join(tavrn_mentorship_t *mentorship)
         return;
     }
     (void)retain_join_obligation(mentorship, &join,
-                                 TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN,
-                                 &mentorship->gtt->config.local_identity,
-                                 sequence);
+                                  TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN,
+                                  &mentorship->gtt->config.local_identity,
+                                  sequence);
 }
 
 tavrn_mentorship_status_t tavrn_mentorship_init(
@@ -1810,6 +1822,8 @@ tavrn_mentorship_status_t tavrn_mentorship_recover_sid16(
     mentorship->state.active_width = TAVRN_IDENTITY_SID16;
     mentorship->state.ordinary_traffic_gated = 1u;
     mentorship->started_at_ms = now_ms;
+    mentorship->join_reannounce_deadline_ms = 0u;
+    mentorship->join_reannounce_valid = 0u;
     clear_receiving_session(mentorship);
     clear_serving_session(mentorship);
     memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
@@ -1905,6 +1919,18 @@ tavrn_mentorship_status_t tavrn_mentorship_tick(
             return activation;
         }
         return TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED;
+    }
+    /* Full maintenance owns the one shared TC sequence stream.  An unbound
+     * legacy bootstrap fixture retains its one initial JOIN only; it cannot
+     * safely mint fresh periodic TC UUIDs.  A pending JOIN is flushed above,
+     * before this branch, so it always retains exact bytes/sequence across
+     * busy backpressure.  The existing UUID retention is longer than TC
+     * subject suppression and well below remote soft expiry in every profile. */
+    if (mentorship->state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+        mentorship->tc_metadata != NULL &&
+        mentorship->join_reannounce_valid != 0u &&
+        time_due(now_ms, mentorship->join_reannounce_deadline_ms)) {
+        originate_join(mentorship);
     }
     return TAVRN_MENTORSHIP_OK;
 }

@@ -966,6 +966,46 @@ static void test_link_01_only_data_is_hackable(void)
     CHECK("LINK-01", link.custody[0].phase == TAVRN_CUSTODY_FREE);
 }
 
+static void test_link_sid16_application_width_limit(void)
+{
+    tavrn_link_v2_t sid16_link;
+    tavrn_link_v2_t sid8_link;
+    ble_mesh_scheduler_t sid16_scheduler;
+    ble_mesh_scheduler_t sid8_scheduler;
+    sid8_departed_probe_t probe;
+    tavrn_link_event_t output;
+    tavrn_direct_peer_t sid16_peer = make_peer(adva_b);
+    tavrn_direct_peer_t sid8_peer = make_peer_with_width(adva_b, TAVRN_IDENTITY_SID8);
+    tavrn_link_data_t sid16_data = make_data(0x7180u);
+    tavrn_link_data_t sid8_data = make_data(0x7181u);
+
+    if (!setup_link(&sid16_link, &sid16_scheduler, 0u)) {
+        return;
+    }
+    sid16_data.app_len = 8u;
+    memset(sid16_data.app_bytes, 0xa5, sizeof(sid16_data.app_bytes));
+    CHECK("LINK-01", tavrn_link_v2_send_unicast(&sid16_link, &sid16_peer,
+                                                   &sid16_data, 0u, &output) ==
+                         TAVRN_LINK_SEND_INVALID &&
+                         sid16_link.custody[0].phase == TAVRN_CUSTODY_FREE &&
+                         sid16_scheduler.routed_tx_queue.count == 0u);
+
+    memset(&probe, 0, sizeof(probe));
+    if (!setup_sid8_link_for(&sid8_link, &sid8_scheduler, adva_a, 0u, &probe)) {
+        return;
+    }
+    sid8_data.origin = make_peer_with_width(adva_a, TAVRN_IDENTITY_SID8).logical_id;
+    sid8_data.final_destination = make_peer_with_width(adva_d, TAVRN_IDENTITY_SID8).logical_id;
+    sid8_data.app_kind = 0x7fu;
+    sid8_data.app_source = 0u;
+    sid8_data.app_len = TAVRN_LINK_APP_BYTES;
+    memset(sid8_data.app_bytes, 0x5au, sizeof(sid8_data.app_bytes));
+    CHECK("LINK-01", tavrn_link_v2_send_unicast(&sid8_link, &sid8_peer,
+                                                   &sid8_data, 0u, &output) ==
+                         TAVRN_LINK_SEND_OK &&
+                         sid8_link.custody[0].phase != TAVRN_CUSTODY_FREE);
+}
+
 static void test_link_02_candidate_resolution_and_containment(void)
 {
     tavrn_link_v2_t link;
@@ -2569,6 +2609,7 @@ int main(void)
 {
     test_bearer_04_outer_adva_before_mutation();
     test_link_01_only_data_is_hackable();
+    test_link_sid16_application_width_limit();
     test_link_02_candidate_resolution_and_containment();
     test_link_02_candidate_match_seam();
     test_link_03_busy_rejected_and_exact_correlation();

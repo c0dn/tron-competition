@@ -148,6 +148,13 @@ static int link_data_is_valid(const tavrn_link_data_t *data)
          data->ownership == TAVRN_DATA_TRANSIT);
 }
 
+static int application_data_fits_identity_width(const tron_application_data_t *data)
+{
+    return data != NULL && data->app_len <=
+        (data->final_destination.width == TAVRN_IDENTITY_SID16 ?
+         TAVRN_LINK_SID16_APP_BYTES : TAVRN_LINK_APP_BYTES);
+}
+
 static int link_data_equal(const tavrn_link_data_t *left,
                            const tavrn_link_data_t *right)
 {
@@ -2751,7 +2758,7 @@ static aodv_status_t router_submit_application(
     tavrn_router_event_status_t failure_status;
     uint8_t full_scope;
 
-    if (!router_is_usable(router) || data == NULL) {
+    if (!router_is_usable(router) || !application_data_fits_identity_width(data)) {
         return AODV_STATUS_INVALID;
     }
     if (router_is_rejoining(router)) {

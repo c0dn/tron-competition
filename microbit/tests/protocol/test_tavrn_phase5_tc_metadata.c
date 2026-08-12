@@ -492,9 +492,9 @@ static void test_tc_receive_relay_and_atomicity(void)
                                                106u) == TAVRN_TC_METADATA_RETAINED &&
                        retained.valid != 0u && retained.tc_sequence == 2u &&
                        retained.ttl == 14u && retained.hops == 1u &&
-                       phase5_tc_metadata_snapshot(&state, &after) ==
-                           TAVRN_TC_METADATA_OK &&
-                       memcmp(&before, &after, sizeof(before)) == 0);
+                        phase5_tc_metadata_snapshot(&state, &after) ==
+                            TAVRN_TC_METADATA_OK &&
+                        memcmp(&before, &after, sizeof(before)) == 0);
 
     /* TTL one is relayed as TTL zero for a different non-suppressed subject. */
     make_tc(pdu, adva_b, adva_d, 3u, 1u, 0u, TAVRN_TC_EVENT_JOIN);
@@ -1293,6 +1293,40 @@ static int corrective_queued_tc_sequence(const corrective_fixture_t *fixture,
     return 0;
 }
 
+static unsigned int corrective_queued_local_join_count(
+    const corrective_fixture_t *fixture, uint16_t *latest_sequence_out)
+{
+    unsigned int count = 0u;
+    uint8_t index;
+
+    if (latest_sequence_out != NULL) {
+        *latest_sequence_out = 0u;
+    }
+    if (fixture == NULL) {
+        return 0u;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &fixture->scheduler.routed_tx_queue.entries[index];
+        const uint8_t *pdu;
+
+        if (entry->occupied == 0u || entry->item.adv_len != 31u) {
+            continue;
+        }
+        pdu = &entry->item.adv_data[7];
+        if (pdu[4] == TAVRN_WIRE_TC_UPDATE && pdu[21] == TAVRN_TC_EVENT_JOIN &&
+            memcmp(&pdu[7], adva_a, TAVRN_ADVA_LEN) == 0 &&
+            memcmp(&pdu[15], adva_a, TAVRN_ADVA_LEN) == 0) {
+            count++;
+            if (latest_sequence_out != NULL) {
+                *latest_sequence_out = (uint16_t)pdu[13] |
+                    ((uint16_t)pdu[14] << 8);
+            }
+        }
+    }
+    return count;
+}
+
 static int corrective_busy_retains_soft_request(corrective_fixture_t *fixture,
                                                  const tavrn_validated_control_t *base,
                                                  uint32_t now_ms)
@@ -1679,7 +1713,104 @@ static void test_corrective_join_leave_sequence_arbitration(void)
                        tavrn_maintenance_tc_owner_tick(&fixture.maintenance, 22u) ==
                            TAVRN_TC_METADATA_OK &&
                        corrective_queued_tc_sequence(&fixture, adva_c, &leave_sequence) &&
-                       leave_sequence == 2u);
+                        leave_sequence == 2u);
+}
+
+static void test_corrective_periodic_self_join_liveness(void)
+{
+    corrective_fixture_t fixture;
+    uint16_t initial_sequence = 0u;
+    uint16_t periodic_sequence = 0u;
+    uint16_t deferred_sequence = 0u;
+    uint16_t wrap_sequence = 0u;
+    uint32_t interval = 100u;
+    uint32_t initial_admitted_at = 21u;
+    uint32_t periodic_due = initial_admitted_at + interval;
+
+    STRUCTURAL("corrective-periodic-self-join-fixture",
+               corrective_fixture_init_with_join_binding(&fixture, 1u));
+    if (structural_failures != 0u) return;
+    CHECK("SERIAL-01",
+          fixture.mentorship.state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+              fixture.mentorship.join_reannounce_valid == 0u &&
+              tavrn_mentorship_tick(&fixture.mentorship, initial_admitted_at) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, &initial_sequence) == 1u &&
+              initial_sequence == 1u &&
+              fixture.mentorship.join_reannounce_valid != 0u &&
+              fixture.mentorship.join_reannounce_deadline_ms == periodic_due &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due - 1u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, NULL) == 1u &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due) ==
+                  TAVRN_MENTORSHIP_OK &&
+              fixture.mentorship.join_obligations[0].valid != 0u &&
+              fixture.mentorship.join_obligations[0].join_sequence == 2u &&
+              corrective_queued_local_join_count(&fixture, NULL) == 1u &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + 1u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, &periodic_sequence) == 2u &&
+              periodic_sequence == 2u && periodic_sequence != initial_sequence &&
+              fixture.mentorship.join_reannounce_deadline_ms == periodic_due + 1u + interval &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + 1u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, NULL) == 2u);
+
+    corrective_clear_queue(&fixture);
+    fixture.mentorship.join_reannounce_deadline_ms = periodic_due + interval;
+    fixture.mentorship.join_reannounce_valid = 1u;
+    CHECK("SERIAL-01",
+          corrective_fill_control_queue(&fixture, periodic_due + interval) &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval) ==
+                  TAVRN_MENTORSHIP_OK &&
+              fixture.mentorship.join_obligations[0].valid != 0u &&
+              fixture.mentorship.join_obligations[0].join_sequence == 3u &&
+              fixture.mentorship.join_reannounce_deadline_ms == periodic_due + interval &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 1u) ==
+                  TAVRN_MENTORSHIP_BUSY &&
+              fixture.mentorship.join_obligations[0].valid != 0u &&
+              fixture.mentorship.join_obligations[0].join_sequence == 3u &&
+              ble_mesh_tx_queue_remove(&fixture.scheduler.routed_tx_queue, 0u, NULL) &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 5u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, &deferred_sequence) == 1u &&
+              deferred_sequence == 3u &&
+              fixture.mentorship.join_reannounce_deadline_ms ==
+                  periodic_due + interval + 5u + interval &&
+              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 5u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, NULL) == 1u);
+
+    corrective_clear_queue(&fixture);
+    fixture.mentorship.tc_metadata->next_tc_sequence = 0xffffu;
+    fixture.mentorship.join_reannounce_deadline_ms = UINT32_MAX - 5u;
+    fixture.mentorship.join_reannounce_valid = 1u;
+    CHECK("SERIAL-01",
+          tavrn_mentorship_tick(&fixture.mentorship, UINT32_MAX - 6u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, NULL) == 0u &&
+              tavrn_mentorship_tick(&fixture.mentorship, UINT32_MAX - 5u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              fixture.mentorship.join_obligations[0].valid != 0u &&
+              fixture.mentorship.join_obligations[0].join_sequence == 0xffffu &&
+              tavrn_mentorship_tick(&fixture.mentorship, 0u) == TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, &wrap_sequence) == 1u &&
+              wrap_sequence == 0xffffu &&
+              fixture.mentorship.tc_metadata->next_tc_sequence == 1u &&
+              fixture.mentorship.join_reannounce_deadline_ms == 100u &&
+              tavrn_mentorship_tick(&fixture.mentorship, 1u) == TAVRN_MENTORSHIP_OK &&
+              corrective_queued_local_join_count(&fixture, NULL) == 1u);
+
+    corrective_clear_queue(&fixture);
+    CHECK("SERIAL-01",
+          tavrn_mentorship_recover_sid16(&fixture.mentorship, 2u) ==
+                  TAVRN_MENTORSHIP_OK &&
+              fixture.mentorship.join_reannounce_valid == 0u &&
+              (fixture.mentorship.join_reannounce_deadline_ms = 2u, 1) &&
+              (fixture.mentorship.join_reannounce_valid = 1u, 1) &&
+              tavrn_mentorship_tick(&fixture.mentorship, 2u) == TAVRN_MENTORSHIP_OK &&
+              fixture.mentorship.join_obligations[0].valid == 0u &&
+              corrective_queued_local_join_count(&fixture, NULL) == 0u);
 }
 
 static void test_corrective_metadata_answer_merge(void)
@@ -2216,6 +2347,7 @@ static void test_corrective_production_composition(void)
     if (structural_failures == 0u) test_corrective_obligation_capacity_and_hop_boundary();
     if (structural_failures == 0u) test_corrective_retry_exhausted_leave_overflow();
     if (structural_failures == 0u) test_corrective_join_leave_sequence_arbitration();
+    if (structural_failures == 0u) test_corrective_periodic_self_join_liveness();
     if (structural_failures == 0u) test_corrective_metadata_answer_merge();
     if (structural_failures == 0u) test_corrective_metadata_transaction_retention();
     if (structural_failures == 0u) test_corrective_decorated_control_pass_through();

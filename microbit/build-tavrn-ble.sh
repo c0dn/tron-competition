@@ -436,13 +436,17 @@ if [[ "$stack_usage" == "ON" ]]; then
             resource_declared_fixed_state_delta=5304
         fi
         if [[ "$benchmark" == "ON" ]]; then
-            # Continuous benchmark observability is hook-only and adds 21572
-            # bytes of aligned fixed state: its scheduler/counters, the
-            # 512-entry copied-attempt queue, the 760-byte static logger-copy
-            # store (plus map alignment), the FULL GTT cursor, and the
-            # control/scheduler proxy observer.
-            resource_declared_fixed_state_delta=$((
-                resource_declared_fixed_state_delta + 21572))
+            # The 1024-entry queue adds 18432 bytes over the 512-entry queue
+            # (512 * 36-byte copied records). Fresh ARM map evidence against
+            # the immutable 26680-byte baseline fixes the aligned total
+            # benchmark declaration at 42712 bytes without local repair and
+            # 43396 bytes with it; retain those measured totals rather than a
+            # stale arithmetic-only allowance.
+            if [[ "$repair" == "ON" ]]; then
+                resource_declared_fixed_state_delta=43396
+            else
+                resource_declared_fixed_state_delta=42712
+            fi
         fi
     fi
 fi

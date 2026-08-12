@@ -223,6 +223,11 @@ typedef char routed_delivery_capacity_must_be_eight[
     (ROUTED_DELIVERY_CAPACITY == 8u) ? 1 : -1];
 typedef char routed_logger_must_be_lower_priority[
     (ROUTED_MESH_TASK_PRIORITY < ROUTED_LOGGER_TASK_PRIORITY) ? 1 : -1];
+#if TRON_BUILD_BENCHMARK_MODE
+typedef char routed_benchmark_build_capacity_guard[
+    (TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY ==
+     ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY) ? 1 : -1];
+#endif
 
 static ble_mesh_scheduler_t routed_scheduler;
 static tavrn_link_v2_t routed_link;
@@ -1105,7 +1110,7 @@ static void log_benchmark_attempt(const routed_benchmark_attempt_t *attempt)
         routed_benchmark_logged_offer_identity = attempt->identity;
         routed_benchmark_logged_offer_valid = 1u;
         emission_now = now_ms();
-        tm_printf((UB *)"obs_offer schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx offer=%lu attempted=%u accepted=0 destination=0x%04x width=%u status=%lu\n",
+        tm_printf((UB *)"obs_offer schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%06lx offer=%lu attempted=%u accepted=0 destination=0x%04x width=%u status=%lu\n",
                    (UW)emission_now, (UW)attempt->event_at_ms,
                    (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                    (UW)session, (UW)(record_id >> 32), (UW)record_id,
@@ -1119,7 +1124,7 @@ static void log_benchmark_attempt(const routed_benchmark_attempt_t *attempt)
     } else if (routed_benchmark_logged_offer_valid != 0u &&
                routed_benchmark_logged_offer_identity == attempt->identity) {
         emission_now = now_ms();
-        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=%lu offer_record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
+        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=%lu offer_record_id_lo=%lu deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%06lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
                    (UW)emission_now, (UW)attempt->event_at_ms,
                    (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                    (UW)session, (UW)(record_id >> 32), (UW)record_id,
@@ -1135,7 +1140,7 @@ static void log_benchmark_attempt(const routed_benchmark_attempt_t *attempt)
         routed_benchmark_logged_offer_valid = 0u;
     } else {
         emission_now = now_ms();
-        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=0 offer_record_id_lo=0 deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%08lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
+        tm_printf((UB *)"obs_app schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offer_record_id_hi=0 offer_record_id_lo=0 deadline_ms=%lu workload=%u burst=%lu sequence=%u payload_id=%u identity=0x%06lx attempted=%u accepted=%u status=%lu destination=0x%04x width=%u\n",
                    (UW)emission_now, (UW)attempt->event_at_ms,
                    (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                    (UW)session, (UW)(record_id >> 32), (UW)record_id,
@@ -2357,7 +2362,6 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
         request.data.app_bytes[4] = (uint8_t)(slot.identity & 0xffu);
         request.data.app_bytes[5] = (uint8_t)((slot.identity >> 8) & 0xffu);
         request.data.app_bytes[6] = (uint8_t)((slot.identity >> 16) & 0xffu);
-        request.data.app_bytes[7] = (uint8_t)((slot.identity >> 24) & 0xffu);
         routed_benchmark_pending_attempt_valid = 1u;
         request.status = ROUTED_CYCLE_APPLICATION_READY;
         request.prepared_at_ms = now_ms();
@@ -2917,7 +2921,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
                 if (identity_valid != 0) {
                     emission_now = now_ms();
-                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=1 origin_session=%lu identity=0x%08lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=1 origin_session=%lu identity=0x%06lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
                                 (UW)emission_now, (UW)delivery->delivered_at_ms,
                                (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
                               (UW)(record_id >> 32), (UW)record_id,
@@ -2936,7 +2940,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                                 (UINT)delivery->transmitter.adva.bytes[5]);
                 } else {
                     emission_now = now_ms();
-                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=0 origin_session=0 identity=0x%08lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                    tm_printf((UB *)"obs_final schema=observer-v2 now=%lu event_at_ms=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu origin=0x%04x destination=0x%04x identity_valid=0 origin_session=0 identity=0x%06lx workload=%u burst=%lu sequence=%u payload_id=%u app_kind=%u app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
                                 (UW)emission_now, (UW)delivery->delivered_at_ms,
                                (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
                               (UW)(record_id >> 32), (UW)record_id,

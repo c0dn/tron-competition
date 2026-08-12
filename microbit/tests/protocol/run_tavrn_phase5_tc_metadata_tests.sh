@@ -116,6 +116,15 @@ require("tavrn_maintenance_tc_sequence_prepare(" in join_origin,
         "mentorship JOIN origin does not reserve the generic TC sequence")
 require("tavrn_maintenance_tc_sequence_commit(" in join_flush,
         "mentorship JOIN enqueue does not commit the generic TC sequence")
+mentorship_tick = function_body(mentorship, "tavrn_mentorship_status_t tavrn_mentorship_tick(")
+require("join_reannounce_deadline_ms" in mentorship_tick and
+        "originate_join(mentorship)" in mentorship_tick,
+        "mentorship tick does not schedule bounded periodic self-JOIN")
+require("join_reannounce_deadline_ms" in join_flush and
+        "join_reannounce_valid" in join_flush,
+        "periodic self-JOIN cadence is not rebased at admission")
+require("TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS" in mentorship,
+        "periodic self-JOIN has no documented bounded cadence")
 require("next_join_sequence" not in mentorship,
         "mentorship still owns an independent JOIN sequence stream")
 verified_departure = function_body(
