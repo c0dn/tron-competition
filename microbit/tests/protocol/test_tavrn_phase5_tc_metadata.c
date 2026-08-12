@@ -949,7 +949,8 @@ static int corrective_set_hard_deadline(corrective_fixture_t *fixture,
 }
 
 static int corrective_fixture_init_with_join_binding(corrective_fixture_t *fixture,
-                                                      uint8_t bind_before_activation)
+                                                       uint8_t bind_before_activation,
+                                                       uint8_t install_binding)
 {
     tavrn_gtt_config_t gtt_config;
     tavrn_router_incarnation_config_t incarnation;
@@ -1018,7 +1019,7 @@ static int corrective_fixture_init_with_join_binding(corrective_fixture_t *fixtu
                             TAVRN_GTT_PROVENANCE_IMPORTED_HOP_ONE, 1u)) {
         return 0;
     }
-    if (bind_before_activation != 0u &&
+    if (install_binding != 0u && bind_before_activation != 0u &&
         tavrn_full_maintenance_binding_install(&fixture->router, &fixture->mentorship,
                                                &fixture->maintenance) !=
             TAVRN_FULL_MAINTENANCE_BINDING_OK) {
@@ -1032,7 +1033,7 @@ static int corrective_fixture_init_with_join_binding(corrective_fixture_t *fixtu
         tavrn_maintenance_activate(&fixture->maintenance, 20u) != TAVRN_MAINTENANCE_OK) {
         return 0;
     }
-    if (bind_before_activation == 0u &&
+    if (install_binding != 0u && bind_before_activation == 0u &&
         tavrn_full_maintenance_binding_install(&fixture->router, &fixture->mentorship,
                                                &fixture->maintenance) !=
             TAVRN_FULL_MAINTENANCE_BINDING_OK) {
@@ -1048,7 +1049,12 @@ static int corrective_fixture_init_with_join_binding(corrective_fixture_t *fixtu
 
 static int corrective_fixture_init(corrective_fixture_t *fixture)
 {
-    return corrective_fixture_init_with_join_binding(fixture, 0u);
+    return corrective_fixture_init_with_join_binding(fixture, 0u, 1u);
+}
+
+static int corrective_fixture_init_unbound(corrective_fixture_t *fixture)
+{
+    return corrective_fixture_init_with_join_binding(fixture, 0u, 0u);
 }
 
 static int corrective_dispatch_decorated_control(
@@ -1293,38 +1299,20 @@ static int corrective_queued_tc_sequence(const corrective_fixture_t *fixture,
     return 0;
 }
 
-static unsigned int corrective_queued_local_join_count(
-    const corrective_fixture_t *fixture, uint16_t *latest_sequence_out)
+static int corrective_begin_active_rfi(corrective_fixture_t *fixture,
+                                       uint32_t now_ms)
 {
-    unsigned int count = 0u;
-    uint8_t index;
+    tavrn_adva_t mentor = adva(adva_b);
 
-    if (latest_sequence_out != NULL) {
-        *latest_sequence_out = 0u;
-    }
-    if (fixture == NULL) {
-        return 0u;
-    }
-    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
-        const ble_mesh_tx_queue_entry_t *entry =
-            &fixture->scheduler.routed_tx_queue.entries[index];
-        const uint8_t *pdu;
-
-        if (entry->occupied == 0u || entry->item.adv_len != 31u) {
-            continue;
-        }
-        pdu = &entry->item.adv_data[7];
-        if (pdu[4] == TAVRN_WIRE_TC_UPDATE && pdu[21] == TAVRN_TC_EVENT_JOIN &&
-            memcmp(&pdu[7], adva_a, TAVRN_ADVA_LEN) == 0 &&
-            memcmp(&pdu[15], adva_a, TAVRN_ADVA_LEN) == 0) {
-            count++;
-            if (latest_sequence_out != NULL) {
-                *latest_sequence_out = (uint16_t)pdu[13] |
-                    ((uint16_t)pdu[14] << 8);
-            }
-        }
-    }
-    return count;
+    return fixture != NULL &&
+        tavrn_mentorship_begin_active_sync(&fixture->mentorship, &mentor, 2u,
+                                           now_ms) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&fixture->mentorship, now_ms + 1u) ==
+            TAVRN_MENTORSHIP_OK &&
+        fixture->mentorship.active_sync.valid != 0u &&
+        fixture->mentorship.active_sync.queued_pull_valid != 0u &&
+        corrective_queue_contains_control(
+            fixture, &fixture->mentorship.active_sync.queued_pull);
 }
 
 static int corrective_busy_retains_soft_request(corrective_fixture_t *fixture,
@@ -1701,7 +1689,7 @@ static void test_corrective_join_leave_sequence_arbitration(void)
     uint16_t leave_sequence = 0u;
 
     STRUCTURAL("corrective-join-leave-sequence-fixture",
-               corrective_fixture_init_with_join_binding(&fixture, 1u));
+                corrective_fixture_init_with_join_binding(&fixture, 1u, 1u));
     if (structural_failures != 0u) return;
     leave = tavrn_maintenance_tc_on_retry_exhausted(&fixture.maintenance, &failed_hop,
                                                     NULL, 21u);
@@ -1716,101 +1704,202 @@ static void test_corrective_join_leave_sequence_arbitration(void)
                         leave_sequence == 2u);
 }
 
-static void test_corrective_periodic_self_join_liveness(void)
+static void test_corrective_local_tc_preempts_rfi(void)
+{
+    corrective_fixture_t requester;
+    corrective_fixture_t responder;
+    corrective_fixture_t overflow;
+    tavrn_validated_control_t unrelated_pull;
+    tavrn_validated_control_t requester_pull;
+    tavrn_validated_control_t responder_pull;
+    tavrn_validated_control_t responder_data;
+    tavrn_validated_control_t overflow_pull;
+    tavrn_link_event_t outcome;
+    ble_mesh_sched_event_t event;
+    tavrn_adva_t first = adva(adva_c);
+    tavrn_adva_t second = adva(adva_d);
+    tavrn_adva_t overflow_subject = generated_adva(0x92u);
+    uint8_t index;
+
+    STRUCTURAL("corrective-local-tc-rfi-requester-fixture",
+               corrective_fixture_init(&requester));
+    if (structural_failures != 0u) return;
+    STRUCTURAL("corrective-local-tc-rfi-requester-start",
+               corrective_begin_active_rfi(&requester, 30u));
+    if (structural_failures != 0u) return;
+    requester_pull = requester.mentorship.active_sync.queued_pull;
+    unrelated_pull = requester_pull;
+    unrelated_pull.pdu[5] = 0u;
+    unrelated_pull.pdu[18] ^= 0x5au;
+    memset(&outcome, 0, sizeof(outcome));
+    STRUCTURAL("corrective-local-tc-rfi-unrelated-pull",
+               tavrn_link_v2_send_control(&requester.link, &unrelated_pull, NULL, 0u,
+                                           32u, &outcome) == TAVRN_LINK_SEND_OK &&
+               corrective_queue_contains_control(
+                   &requester, &requester_pull) &&
+               corrective_queue_contains_control(&requester, &unrelated_pull));
+    if (structural_failures != 0u) return;
+    CHECK("TCQ-06", tavrn_maintenance_tc_on_verified_departure(
+                        &requester.maintenance, &first, 33u) ==
+                            TAVRN_TC_METADATA_PREPARED &&
+                        requester.maintenance.tc_metadata.origin_fact_count == 1u &&
+                        requester.mentorship.active_sync.valid == 0u &&
+                        !corrective_queue_contains_control(&requester, &requester_pull) &&
+                        corrective_queue_contains_control(&requester, &unrelated_pull) &&
+                        tavrn_maintenance_tc_on_verified_departure(
+                            &requester.maintenance, &second, 34u) ==
+                            TAVRN_TC_METADATA_RETAINED &&
+                        (corrective_clear_queue(&requester), 1) &&
+                        corrective_fill_control_queue(&requester, 131u) &&
+                        tavrn_mentorship_begin_active_sync(
+                            &requester.mentorship, &(tavrn_adva_t){
+                                { adva_b[0], adva_b[1], adva_b[2], adva_b[3],
+                                  adva_b[4], adva_b[5] }
+                            }, 2u, 131u) == TAVRN_MENTORSHIP_BUSY &&
+                        tavrn_maintenance_tc_owner_tick(&requester.maintenance, 132u) ==
+                            TAVRN_TC_METADATA_RETAINED &&
+                        requester.maintenance.tc_metadata.origin_fact_count == 2u &&
+                        (corrective_clear_queue(&requester), 1) &&
+                        tavrn_maintenance_tc_owner_tick(&requester.maintenance, 133u) ==
+                            TAVRN_TC_METADATA_OK &&
+                        requester.maintenance.tc_metadata.origin_fact_count == 1u &&
+                        tavrn_mentorship_begin_active_sync(
+                            &requester.mentorship, &(tavrn_adva_t){
+                                { adva_b[0], adva_b[1], adva_b[2], adva_b[3],
+                                  adva_b[4], adva_b[5] }
+                            }, 2u, 134u) == TAVRN_MENTORSHIP_BUSY);
+
+    STRUCTURAL("corrective-local-tc-rfi-responder-fixture",
+               corrective_fixture_init(&responder));
+    if (structural_failures != 0u) return;
+    STRUCTURAL("corrective-local-tc-rfi-responder-pull",
+               tavrn_mentorship_build_sync_pull(&(tavrn_adva_t){
+                                                   { adva_c[0], adva_c[1], adva_c[2],
+                                                     adva_c[3], adva_c[4], adva_c[5] }
+                                               },
+                                               &responder.gtt.config.local_identity,
+                                               0x9123u, 0u, &responder_pull) ==
+                   TAVRN_MENTORSHIP_OK &&
+               ((responder_pull.pdu[5] = 0x01u), 1) &&
+               corrective_wrap_control_event(&responder_pull, adva_c, &event) &&
+               tavrn_mentorship_handle_scheduler_event(&responder.mentorship, &event,
+                                                       40u, NULL) == TAVRN_MENTORSHIP_OK &&
+               tavrn_mentorship_tick(&responder.mentorship, 41u) ==
+                   TAVRN_MENTORSHIP_OK &&
+               responder.mentorship.serving_active_rfi != 0u &&
+               responder.mentorship.serving_rfi_data_valid != 0u);
+    if (structural_failures != 0u) return;
+    responder_data = responder.mentorship.serving_rfi_data;
+    CHECK("TCQ-06", corrective_queue_contains_control(&responder, &responder_data) &&
+                        tavrn_maintenance_tc_on_direct_timeout_departure(
+                            &responder.maintenance, &first, 42u) ==
+                            TAVRN_TC_METADATA_PREPARED &&
+                        responder.mentorship.serving_session_valid == 0u &&
+                        responder.mentorship.serving_active_rfi == 0u &&
+                        !corrective_queue_contains_control(&responder, &responder_data));
+
+    STRUCTURAL("corrective-local-tc-rfi-overflow-fixture",
+               corrective_fixture_init(&overflow));
+    STRUCTURAL("corrective-local-tc-rfi-overflow-start",
+               corrective_begin_active_rfi(&overflow, 50u));
+    if (structural_failures != 0u) return;
+    overflow_pull = overflow.mentorship.active_sync.queued_pull;
+    for (index = 0u; index < TAVRN_TC_METADATA_ORIGIN_CAPACITY; index++) {
+        tavrn_tc_metadata_origin_fact_t *fact =
+            &overflow.maintenance.tc_metadata.origin_facts[index];
+
+        memset(fact, 0, sizeof(*fact));
+        fact->subject = generated_adva((uint8_t)(0x60u + index));
+        fact->event = TAVRN_TC_EVENT_LEAVE;
+        fact->valid = 1u;
+    }
+    overflow.maintenance.tc_metadata.origin_fact_count =
+        TAVRN_TC_METADATA_ORIGIN_CAPACITY;
+    CHECK("TCQ-06", tavrn_maintenance_tc_on_retry_exhausted(
+                        &overflow.maintenance, &overflow_subject, NULL, 52u) ==
+                            TAVRN_TC_METADATA_RETAINED &&
+                        overflow.maintenance.tc_metadata.retry_exhausted_leave_overflow
+                            .valid != 0u &&
+                        overflow.mentorship.active_sync.valid == 0u &&
+                        !corrective_queue_contains_control(&overflow, &overflow_pull));
+}
+
+static void test_corrective_local_tc_port_is_optional(void)
+{
+    corrective_fixture_t bound;
+    corrective_fixture_t unbound;
+    tavrn_adva_t subject = adva(adva_c);
+    tavrn_tc_metadata_status_t bound_status;
+    tavrn_tc_metadata_status_t unbound_status;
+    tavrn_tc_metadata_snapshot_t bound_snapshot;
+    tavrn_tc_metadata_snapshot_t unbound_snapshot;
+
+    STRUCTURAL("corrective-local-tc-port-bound-fixture",
+               corrective_fixture_init(&bound));
+    STRUCTURAL("corrective-local-tc-port-unbound-fixture",
+               corrective_fixture_init_unbound(&unbound));
+    if (structural_failures != 0u) return;
+    bound_status = tavrn_maintenance_tc_on_verified_departure(
+        &bound.maintenance, &subject, 70u);
+    unbound_status = tavrn_maintenance_tc_on_verified_departure(
+        &unbound.maintenance, &subject, 70u);
+    CHECK("TCQ-06", bound.maintenance.local_tc_retained.callback != NULL &&
+                        unbound.maintenance.local_tc_retained.callback == NULL &&
+                        bound_status == TAVRN_TC_METADATA_PREPARED &&
+                        unbound_status == bound_status &&
+                        tavrn_maintenance_tc_metadata_snapshot(
+                            &bound.maintenance.tc_metadata, &bound_snapshot) ==
+                            TAVRN_TC_METADATA_OK &&
+                        tavrn_maintenance_tc_metadata_snapshot(
+                            &unbound.maintenance.tc_metadata, &unbound_snapshot) ==
+                            TAVRN_TC_METADATA_OK &&
+                        memcmp(&unbound_snapshot, &bound_snapshot,
+                               sizeof(bound_snapshot)) == 0);
+}
+
+static void test_corrective_received_tc_preemption_filter(void)
 {
     corrective_fixture_t fixture;
-    uint16_t initial_sequence = 0u;
-    uint16_t periodic_sequence = 0u;
-    uint16_t deferred_sequence = 0u;
-    uint16_t wrap_sequence = 0u;
-    uint32_t interval = 100u;
-    uint32_t initial_admitted_at = 21u;
-    uint32_t periodic_due = initial_admitted_at + interval;
+    ble_mesh_sched_event_t event;
+    uint8_t pdu[24];
 
-    STRUCTURAL("corrective-periodic-self-join-fixture",
-               corrective_fixture_init_with_join_binding(&fixture, 1u));
+    STRUCTURAL("corrective-rx-tc-rfi-fixture", corrective_fixture_init(&fixture));
+    STRUCTURAL("corrective-rx-tc-rfi-start", corrective_begin_active_rfi(&fixture, 60u));
     if (structural_failures != 0u) return;
-    CHECK("SERIAL-01",
-          fixture.mentorship.state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
-              fixture.mentorship.join_reannounce_valid == 0u &&
-              tavrn_mentorship_tick(&fixture.mentorship, initial_admitted_at) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, &initial_sequence) == 1u &&
-              initial_sequence == 1u &&
-              fixture.mentorship.join_reannounce_valid != 0u &&
-              fixture.mentorship.join_reannounce_deadline_ms == periodic_due &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due - 1u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, NULL) == 1u &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due) ==
-                  TAVRN_MENTORSHIP_OK &&
-              fixture.mentorship.join_obligations[0].valid != 0u &&
-              fixture.mentorship.join_obligations[0].join_sequence == 2u &&
-              corrective_queued_local_join_count(&fixture, NULL) == 1u &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + 1u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, &periodic_sequence) == 2u &&
-              periodic_sequence == 2u && periodic_sequence != initial_sequence &&
-              fixture.mentorship.join_reannounce_deadline_ms == periodic_due + 1u + interval &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + 1u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, NULL) == 2u);
-
-    corrective_clear_queue(&fixture);
-    fixture.mentorship.join_reannounce_deadline_ms = periodic_due + interval;
-    fixture.mentorship.join_reannounce_valid = 1u;
-    CHECK("SERIAL-01",
-          corrective_fill_control_queue(&fixture, periodic_due + interval) &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval) ==
-                  TAVRN_MENTORSHIP_OK &&
-              fixture.mentorship.join_obligations[0].valid != 0u &&
-              fixture.mentorship.join_obligations[0].join_sequence == 3u &&
-              fixture.mentorship.join_reannounce_deadline_ms == periodic_due + interval &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 1u) ==
-                  TAVRN_MENTORSHIP_BUSY &&
-              fixture.mentorship.join_obligations[0].valid != 0u &&
-              fixture.mentorship.join_obligations[0].join_sequence == 3u &&
-              ble_mesh_tx_queue_remove(&fixture.scheduler.routed_tx_queue, 0u, NULL) &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 5u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, &deferred_sequence) == 1u &&
-              deferred_sequence == 3u &&
-              fixture.mentorship.join_reannounce_deadline_ms ==
-                  periodic_due + interval + 5u + interval &&
-              tavrn_mentorship_tick(&fixture.mentorship, periodic_due + interval + 5u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, NULL) == 1u);
-
-    corrective_clear_queue(&fixture);
-    fixture.mentorship.tc_metadata->next_tc_sequence = 0xffffu;
-    fixture.mentorship.join_reannounce_deadline_ms = UINT32_MAX - 5u;
-    fixture.mentorship.join_reannounce_valid = 1u;
-    CHECK("SERIAL-01",
-          tavrn_mentorship_tick(&fixture.mentorship, UINT32_MAX - 6u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, NULL) == 0u &&
-              tavrn_mentorship_tick(&fixture.mentorship, UINT32_MAX - 5u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              fixture.mentorship.join_obligations[0].valid != 0u &&
-              fixture.mentorship.join_obligations[0].join_sequence == 0xffffu &&
-              tavrn_mentorship_tick(&fixture.mentorship, 0u) == TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, &wrap_sequence) == 1u &&
-              wrap_sequence == 0xffffu &&
-              fixture.mentorship.tc_metadata->next_tc_sequence == 1u &&
-              fixture.mentorship.join_reannounce_deadline_ms == 100u &&
-              tavrn_mentorship_tick(&fixture.mentorship, 1u) == TAVRN_MENTORSHIP_OK &&
-              corrective_queued_local_join_count(&fixture, NULL) == 1u);
-
-    corrective_clear_queue(&fixture);
-    CHECK("SERIAL-01",
-          tavrn_mentorship_recover_sid16(&fixture.mentorship, 2u) ==
-                  TAVRN_MENTORSHIP_OK &&
-              fixture.mentorship.join_reannounce_valid == 0u &&
-              (fixture.mentorship.join_reannounce_deadline_ms = 2u, 1) &&
-              (fixture.mentorship.join_reannounce_valid = 1u, 1) &&
-              tavrn_mentorship_tick(&fixture.mentorship, 2u) == TAVRN_MENTORSHIP_OK &&
-              fixture.mentorship.join_obligations[0].valid == 0u &&
-              corrective_queued_local_join_count(&fixture, NULL) == 0u);
+    make_tc(pdu, adva_b, adva_c, 0x71u, 15u, 0u, TAVRN_TC_EVENT_JOIN);
+    pdu[21] = 0xffu;
+    STRUCTURAL("corrective-rx-tc-rfi-rejected",
+               corrective_wrap_tc_event(pdu, adva_b, &event) &&
+               tavrn_mentorship_handle_scheduler_event(&fixture.mentorship, &event,
+                                                       62u, NULL) == TAVRN_MENTORSHIP_OK &&
+               fixture.mentorship.active_sync.valid != 0u);
+    if (structural_failures != 0u) return;
+    make_tc(pdu, adva_b, adva_c, 0x72u, 15u, 0u, TAVRN_TC_EVENT_JOIN);
+    fixture.maintenance.tc_metadata.uuid[0].origin = adva(adva_b);
+    fixture.maintenance.tc_metadata.uuid[0].sequence = 0x72u;
+    fixture.maintenance.tc_metadata.uuid[0].expires_at_ms = 100u;
+    fixture.maintenance.tc_metadata.uuid[0].valid = 1u;
+    CHECK("TCQ-06", corrective_wrap_tc_event(pdu, adva_b, &event) &&
+                        tavrn_mentorship_handle_scheduler_event(&fixture.mentorship,
+                                                                &event, 63u, NULL) ==
+                            TAVRN_MENTORSHIP_OK &&
+                        fixture.mentorship.active_sync.valid != 0u);
+    make_tc(pdu, adva_b, adva_c, 0x73u, 15u, 0u, TAVRN_TC_EVENT_JOIN);
+    fixture.maintenance.tc_metadata.subject[0].subject = adva(adva_c);
+    fixture.maintenance.tc_metadata.subject[0].event = TAVRN_TC_EVENT_JOIN;
+    fixture.maintenance.tc_metadata.subject[0].expires_at_ms = 100u;
+    fixture.maintenance.tc_metadata.subject[0].valid = 1u;
+    CHECK("TCQ-06", corrective_wrap_tc_event(pdu, adva_b, &event) &&
+                        tavrn_mentorship_handle_scheduler_event(&fixture.mentorship,
+                                                                &event, 64u, NULL) ==
+                            TAVRN_MENTORSHIP_OK &&
+                        fixture.mentorship.active_sync.valid != 0u);
+    make_tc(pdu, adva_b, adva_d, 0x74u, 0u, 0u, TAVRN_TC_EVENT_JOIN);
+    CHECK("TCQ-06", corrective_wrap_tc_event(pdu, adva_b, &event) &&
+                        tavrn_mentorship_handle_scheduler_event(&fixture.mentorship,
+                                                                &event, 65u, NULL) ==
+                            TAVRN_MENTORSHIP_OK &&
+                        fixture.mentorship.active_sync.valid == 0u);
 }
 
 static void test_corrective_metadata_answer_merge(void)
@@ -2347,7 +2436,9 @@ static void test_corrective_production_composition(void)
     if (structural_failures == 0u) test_corrective_obligation_capacity_and_hop_boundary();
     if (structural_failures == 0u) test_corrective_retry_exhausted_leave_overflow();
     if (structural_failures == 0u) test_corrective_join_leave_sequence_arbitration();
-    if (structural_failures == 0u) test_corrective_periodic_self_join_liveness();
+    if (structural_failures == 0u) test_corrective_local_tc_preempts_rfi();
+    if (structural_failures == 0u) test_corrective_local_tc_port_is_optional();
+    if (structural_failures == 0u) test_corrective_received_tc_preemption_filter();
     if (structural_failures == 0u) test_corrective_metadata_answer_merge();
     if (structural_failures == 0u) test_corrective_metadata_transaction_retention();
     if (structural_failures == 0u) test_corrective_decorated_control_pass_through();

@@ -19,6 +19,28 @@ static void invalid_result(tavrn_full_maintenance_binding_result_t *result)
     result->post_tick.maintenance_status = TAVRN_MAINTENANCE_INVALID;
 }
 
+static void full_local_tc_retained(void *context, uint32_t now_ms)
+{
+    tavrn_mentorship_t *mentorship = context;
+
+    if (mentorship != NULL) {
+        (void)tavrn_mentorship_note_local_tc_retained(mentorship, now_ms);
+    }
+}
+
+/* This binding owns both the static adapter and its opaque port context.  The
+ * comparison prevents a separately installed maintenance port from being
+ * misinterpreted as a mentorship object by received-TC policy. */
+static tavrn_mentorship_t *full_port_mentorship(
+    const tavrn_maintenance_t *maintenance)
+{
+    if (maintenance == NULL ||
+        maintenance->local_tc_retained.callback != full_local_tc_retained) {
+        return NULL;
+    }
+    return (tavrn_mentorship_t *)maintenance->local_tc_retained.context;
+}
+
 static int metadata_frame_for_control(const tavrn_validated_control_t *control,
                                       tavrn_metadata_frame_kind_t *kind_out,
                                       uint8_t *unreachable_count_out)
@@ -211,11 +233,18 @@ static void full_control_received(void *context,
     if (maintenance == NULL || control_event == NULL) return;
     control = &control_event->control;
     if (control->type == TAVRN_WIRE_TC_UPDATE) {
+        tavrn_tc_metadata_status_t status;
+        tavrn_mentorship_t *mentorship;
+
         memset(&relay, 0, sizeof(relay));
-        (void)tavrn_maintenance_tc_receive(&maintenance->tc_metadata, control->pdu,
-                                           control->pdu_len,
-                                           &control_event->transmitter.adva, now_ms,
-                                           &relay);
+        status = tavrn_maintenance_tc_receive(&maintenance->tc_metadata,
+                                               control->pdu, control->pdu_len,
+                                               &control_event->transmitter.adva,
+                                               now_ms, &relay);
+        mentorship = full_port_mentorship(maintenance);
+        if (status == TAVRN_TC_METADATA_APPLIED && mentorship != NULL) {
+            (void)tavrn_mentorship_note_real_tc_accepted(mentorship, now_ms);
+        }
         return;
     }
     if ((control->type == TAVRN_WIRE_E_RREQ || control->type == TAVRN_WIRE_E_RREP) &&
@@ -259,6 +288,7 @@ tavrn_full_maintenance_binding_status_t tavrn_full_maintenance_binding_install(
 {
     tavrn_router_control_augmentation_t augmentation;
     tavrn_router_data_terminal_hook_t terminal_hook;
+    tavrn_maintenance_local_tc_retained_port_t local_tc_retained;
 
     if (router == NULL || mentorship == NULL || maintenance == NULL ||
         maintenance->router != router) {
@@ -273,12 +303,17 @@ tavrn_full_maintenance_binding_status_t tavrn_full_maintenance_binding_install(
     memset(&terminal_hook, 0, sizeof(terminal_hook));
     terminal_hook.context = maintenance;
     terminal_hook.handle = tavrn_full_maintenance_tc_on_retry_exhausted;
+    memset(&local_tc_retained, 0, sizeof(local_tc_retained));
+    local_tc_retained.callback = full_local_tc_retained;
+    local_tc_retained.context = mentorship;
     if (tavrn_router_set_control_augmentation(router, &augmentation) !=
             TAVRN_ROUTER_EVENT_OK ||
         tavrn_router_set_data_terminal_hook(router, &terminal_hook) !=
             TAVRN_ROUTER_EVENT_OK ||
         tavrn_mentorship_bind_tc_metadata(mentorship, &maintenance->tc_metadata) !=
-            TAVRN_MENTORSHIP_OK) {
+            TAVRN_MENTORSHIP_OK ||
+        tavrn_maintenance_set_local_tc_retained_port(
+            maintenance, &local_tc_retained) != TAVRN_MAINTENANCE_OK) {
         return TAVRN_FULL_MAINTENANCE_BINDING_INVALID;
     }
     return TAVRN_FULL_MAINTENANCE_BINDING_OK;
@@ -338,8 +373,16 @@ tavrn_full_maintenance_binding_status_t tavrn_full_maintenance_binding_tick(
              &result_out->verification_owner_action);
     result_out->metadata_owner_status = tavrn_maintenance_metadata_owner_tick(
         input.maintenance, now_ms);
-    result_out->tc_owner_status = tavrn_maintenance_tc_owner_tick(input.maintenance,
-                                                                    now_ms);
+    {
+        uint32_t tc_admission_count =
+            input.maintenance->tc_metadata.admission_count;
+
+        result_out->tc_owner_status = tavrn_maintenance_tc_owner_tick(
+            input.maintenance, now_ms);
+        if (input.maintenance->tc_metadata.admission_count != tc_admission_count) {
+            (void)tavrn_mentorship_note_real_tc_accepted(input.mentorship, now_ms);
+        }
+    }
     result_out->post_tick = tavrn_maintenance_owner_post_tick(input.maintenance, now_ms);
     {
         const tavrn_maintenance_counters_t *counters =

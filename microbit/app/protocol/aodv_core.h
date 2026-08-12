@@ -305,6 +305,7 @@ typedef struct aodv_counters {
     uint32_t rrep_ack_unmatched;
     uint32_t rrep_ack_timeout;
     uint32_t action_backpressure;
+    uint32_t terminal_discovery_released;
 } aodv_counters_t;
 
 typedef union aodv_core_private_storage {

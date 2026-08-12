@@ -355,7 +355,12 @@ static tavrn_validated_control_t make_ordinary_hello(
     tavrn_validated_control_t control = make_bootstrap_hello(
         origin, TAVRN_IDENTITY_SID16, node_sequence);
 
-    control.pdu[5] = 0u;
+    control.pdu_len = 20u;
+    control.pdu[5] = 0x80u;
+    control.pdu[7] = 0xffu;
+    control.pdu[8] = 0xffu;
+    memcpy(&control.pdu[9], origin, TAVRN_ADVA_LEN);
+    pdu_put_u16(&control, 15u, node_sequence);
     return control;
 }
 

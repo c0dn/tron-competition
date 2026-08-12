@@ -1,6 +1,6 @@
 # TAVRN-BLE layered architecture and build contract
 
-Status: Phase 0 architecture contract for a medium-correctness proof of
+Status: V2.3 architecture contract for a medium-correctness proof of
 concept. This is not a Bluetooth Mesh, production-routing, security, clinical,
 or certification claim.
 
@@ -107,6 +107,32 @@ itself. Each mesh cycle is scheduler event, router scheduler handling, router
 tick, optional application submission, mandatory typed `dispatch_ex` event
 handling, then router link service. Router faults are copied to the logger/fault
 counters without recreating protocol ownership in the binding.
+
+### 3.1 V2.3 bounded-gossip ownership
+
+The router/wire boundary owns exact ordinary-HELLO construction and validation;
+it obtains the `GOSSIP-01` count from the GTT's occupied/nonself/nondeparted
+enumeration at construction time. Maintenance owns ordinary HELLO dedupe,
+direct GTT admission, and the required post-admission `remote_count >
+local_count` decision. It may notify mentorship only after `RX_UNIQUE`; neither
+the codec nor a duplicate/rejected frame may start repair.
+
+Mentorship owns the one private active-RFI initiator/cooldown and responder
+snapshot service. It reuses the existing bounded SYNC_PULL/SYNC_DATA by-value
+controls and snapshot capacity, but must not transition public mentorship state,
+change identity width/incarnation, gate application traffic, invoke bootstrap
+activation/recovery, or originate JOIN. Bootstrap, rejoin, identity conflict,
+and accepted/committed real TC work preempt and clear private RFI work. The
+existing `timer.mentor_sync_dedupe_ms` is the RFI success/abort cooldown; no
+new timer/config key, scheduler ownership, or background queue is introduced.
+`SYNC_PULL` flag bit 0 is the RFI marker only on page zero; the existing
+`SYNC_OFFER` flag byte remains zero, and continuation pulls use zero flags.
+
+`aodv_core` owns terminal discovery cleanup. Before clearing discovery or any
+matching pending DATA, it must enqueue the one existing destination-scoped
+`PENDING_DATA_FAILED` action. Router dispatch preserves that typed event as the
+application-facing failure; neither core nor router attaches a TC/LEAVE side
+effect.
 
 There are exactly two behavioral branches above the shared BLE foundation:
 

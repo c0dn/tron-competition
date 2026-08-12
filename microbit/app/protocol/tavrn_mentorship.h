@@ -21,11 +21,6 @@ typedef char tavrn_mentorship_join_obligation_capacity_guard[
 typedef char tavrn_mentorship_sync_dedupe_capacity_guard[
     (TAVRN_MENTORSHIP_SYNC_DEDUPE_CAPACITY == 8u) ? 1 : -1];
 
-/* Chosen from the existing TC UUID retention: 5/30/60 s across the profiles,
- * which is longer than the fixed 1 s subject suppression and leaves several
- * full-identity refreshes before the 15/150/300 s remote soft expiry. */
-#define TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS(config) ((config)->join_dedupe_ms)
-
 typedef struct tavrn_mentorship_record {
     tavrn_adva_t identity;
     uint16_t serial;
@@ -110,6 +105,7 @@ typedef struct tavrn_mentorship_state_snapshot {
     uint8_t pull_attempts;
     uint8_t restart_count;
     uint8_t join_originated;
+    uint8_t active_sync_in_progress;
 } tavrn_mentorship_state_snapshot_t;
 
 typedef struct tavrn_mentorship_counters {
@@ -135,6 +131,13 @@ typedef struct tavrn_mentorship_counters {
     uint32_t join_obligation_overflow;
     uint32_t join_relayed;
     uint32_t sync_dedupe_capacity_full;
+    uint32_t active_sync_trigger;
+    uint32_t active_sync_cooldown_suppressed;
+    uint32_t active_sync_busy;
+    uint32_t active_sync_pages;
+    uint32_t active_sync_success;
+    uint32_t active_sync_abort;
+    uint32_t active_sync_preempt;
 } tavrn_mentorship_counters_t;
 
 typedef struct tavrn_mentorship_event_trace {
@@ -164,10 +167,26 @@ typedef struct tavrn_mentorship_sync_dedupe {
     uint8_t valid;
 } tavrn_mentorship_sync_dedupe_t;
 
+typedef struct tavrn_mentorship_active_sync {
+    tavrn_adva_t mentor;
+    tavrn_validated_control_t queued_pull;
+    uint32_t cooldown_deadline_ms;
+    uint32_t page_deadline_ms;
+    uint16_t snapshot_id;
+    uint16_t receiving_page_bitmap;
+    uint8_t next_index;
+    uint8_t pull_attempts;
+    uint8_t valid;
+    uint8_t cooldown_valid;
+    uint8_t page_deadline_valid;
+    uint8_t queued_pull_valid;
+} tavrn_mentorship_active_sync_t;
+
 typedef enum tavrn_mentorship_pending_purpose {
     TAVRN_MENTORSHIP_PENDING_NONE = 0,
     TAVRN_MENTORSHIP_PENDING_OFFER,
     TAVRN_MENTORSHIP_PENDING_PULL,
+    TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL,
     TAVRN_MENTORSHIP_PENDING_DATA,
     TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN,
     TAVRN_MENTORSHIP_PENDING_JOIN_RELAY,
@@ -196,18 +215,20 @@ typedef struct tavrn_mentorship {
     tavrn_mentorship_join_key_t joins[TAVRN_MENTORSHIP_JOIN_DEDUPE_CAPACITY];
     tavrn_mentorship_sync_dedupe_t
         completed_sync[TAVRN_MENTORSHIP_SYNC_DEDUPE_CAPACITY];
+    tavrn_mentorship_active_sync_t active_sync;
     tavrn_mentorship_pending_control_t pending_control;
     tavrn_mentorship_pending_control_t
         join_obligations[TAVRN_MENTORSHIP_JOIN_OBLIGATION_CAPACITY];
     tavrn_adva_t serving_mentee;
+    tavrn_validated_control_t serving_rfi_data;
     uint32_t started_at_ms;
     uint32_t page_deadline_ms;
     uint32_t offer_window_deadline_ms;
     uint32_t serving_deadline_ms;
     uint32_t offer_suppressed_until_ms;
     uint32_t pending_offer_due_ms;
-    uint32_t join_reannounce_deadline_ms;
     uint16_t active_page_snapshot_id;
+    uint16_t active_sync_next_snapshot_id;
     uint16_t serving_boot_nonce;
     struct tavrn_tc_metadata_state *tc_metadata;
     uint16_t receiving_page_bitmap;
@@ -218,7 +239,8 @@ typedef struct tavrn_mentorship {
     uint8_t serving_session_valid;
     uint8_t sync_complete_authorized;
     uint8_t identity_conflict_pending;
-    uint8_t join_reannounce_valid;
+    uint8_t serving_active_rfi;
+    uint8_t serving_rfi_data_valid;
     uint8_t last_now_valid;
     uint32_t last_now_ms;
 } tavrn_mentorship_t;
@@ -260,6 +282,21 @@ tavrn_mentorship_status_t tavrn_mentorship_build_sync_pull(
     const tavrn_adva_t *mentee, const tavrn_adva_t *mentor,
     uint16_t snapshot_id, uint8_t page_index,
     tavrn_validated_control_t *control_out);
+/* Starts one private count-triggered active repair without changing public
+ * SID8-active state or ordinary application admission. */
+tavrn_mentorship_status_t tavrn_mentorship_begin_active_sync(
+    tavrn_mentorship_t *mentorship, const tavrn_adva_t *mentor,
+    uint8_t mentor_known_remote_count, uint32_t now_ms);
+/* FULL maintenance calls this as soon as a local JOIN/LEAVE fact has been
+ * retained.  Unlike received TC, local fact retention itself preempts private
+ * RFI ownership before any eventual link admission. */
+tavrn_mentorship_status_t tavrn_mentorship_note_local_tc_retained(
+    tavrn_mentorship_t *mentorship, uint32_t now_ms);
+/* FULL maintenance calls this only after a real TC has been accepted into its
+ * local transaction or committed from a received validated TC.  Decoded,
+ * duplicate, suppressed, and rejected TCs must not call it. */
+tavrn_mentorship_status_t tavrn_mentorship_note_real_tc_accepted(
+    tavrn_mentorship_t *mentorship, uint32_t now_ms);
 tavrn_mentorship_status_t tavrn_mentorship_build_sync_data(
     const tavrn_mentorship_snapshot_data_t *snapshot,
     const tavrn_adva_t *mentor, const tavrn_adva_t *mentee, uint8_t page_index,

@@ -705,6 +705,7 @@ tavrn_router_incarnation_status_t tavrn_router_complete_full_bootstrap(
  * generic FULL control injection path to router-common callers. */
 tavrn_router_hello_status_t tavrn_router_build_ordinary_hello(
     const tavrn_router_t *router, uint16_t node_sequence,
+    uint8_t known_remote_count,
     tavrn_validated_control_t *control_out);
 tavrn_router_hello_status_t tavrn_router_enqueue_ordinary_hello(
     tavrn_router_t *router, const tavrn_validated_control_t *control,

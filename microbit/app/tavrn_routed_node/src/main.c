@@ -926,10 +926,11 @@ static void log_summary(uint32_t now)
               (UINT)state->retry_log_pending,
               (UW)state->retry_log_dropped);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
-    tm_printf((UB *)"routed mentorship state=%s active_width=%s gated=%u offers_active=%u selected_present=%u selected=%02x:%02x:%02x:%02x:%02x:%02x selected_snapshot=%u frozen=%u sync_pages=%u pull_attempts=%u restarts=%u pending_offer=%u page_session=%u serving_session=%u serving_mentee=%02x:%02x:%02x:%02x:%02x:%02x serving_nonce=%u\n",
-              mentorship_state_name(state->mentorship.state),
-              identity_width_name(state->mentorship.active_width),
-              (UINT)state->mentorship.ordinary_traffic_gated,
+    tm_printf((UB *)"routed mentorship state=%s active_width=%s gated=%u active_sync=%u offers_active=%u selected_present=%u selected=%02x:%02x:%02x:%02x:%02x:%02x selected_snapshot=%u frozen=%u sync_pages=%u pull_attempts=%u restarts=%u pending_offer=%u page_session=%u serving_session=%u serving_mentee=%02x:%02x:%02x:%02x:%02x:%02x serving_nonce=%u\n",
+               mentorship_state_name(state->mentorship.state),
+               identity_width_name(state->mentorship.active_width),
+               (UINT)state->mentorship.ordinary_traffic_gated,
+               (UINT)state->mentorship.active_sync_in_progress,
               (UINT)state->mentorship.active_offer_count,
               (UINT)state->mentorship.selected_mentor_present,
               (UINT)state->mentorship.selected_mentor.bytes[0],
@@ -952,7 +953,7 @@ static void log_summary(uint32_t now)
               (UINT)state->serving_mentee.bytes[4],
               (UINT)state->serving_mentee.bytes[5],
               (UINT)state->serving_boot_nonce);
-    tm_printf((UB *)"routed mentorship_counters offer_collected=%lu offer_capacity_full=%lu offer_not_retained=%lu offer_scheduled=%lu offer_suppressed=%lu offer_selected=%lu sid8_unknown_drop=%lu sid8_collision_drop=%lu sid8_reserved_drop=%lu bootstrap_sid8=%lu gated_data=%lu transitions=%lu join_originated=%lu join_received=%lu join_duplicate=%lu join_dedupe_expired=%lu join_dedupe_replaced=%lu join_obligation_overflow=%lu join_relayed=%lu sync_dedupe_capacity_full=%lu\n",
+    tm_printf((UB *)"routed mentorship_counters offer_collected=%lu offer_capacity_full=%lu offer_not_retained=%lu offer_scheduled=%lu offer_suppressed=%lu offer_selected=%lu sid8_unknown_drop=%lu sid8_collision_drop=%lu sid8_reserved_drop=%lu bootstrap_sid8=%lu gated_data=%lu transitions=%lu join_originated=%lu join_received=%lu join_duplicate=%lu join_dedupe_expired=%lu join_dedupe_replaced=%lu join_obligation_overflow=%lu join_relayed=%lu sync_dedupe_capacity_full=%lu active_sync_trigger=%lu active_sync_cooldown_suppressed=%lu active_sync_busy=%lu active_sync_pages=%lu active_sync_success=%lu active_sync_abort=%lu active_sync_preempt=%lu\n",
               (UW)state->mentorship_counters.offer_collected,
               (UW)state->mentorship_counters.offer_capacity_full,
               (UW)state->mentorship_counters.offer_not_retained,
@@ -971,8 +972,15 @@ static void log_summary(uint32_t now)
               (UW)state->mentorship_counters.join_dedupe_expired,
               (UW)state->mentorship_counters.join_dedupe_replaced,
               (UW)state->mentorship_counters.join_obligation_overflow,
-               (UW)state->mentorship_counters.join_relayed,
-               (UW)state->mentorship_counters.sync_dedupe_capacity_full);
+                (UW)state->mentorship_counters.join_relayed,
+                (UW)state->mentorship_counters.sync_dedupe_capacity_full,
+                (UW)state->mentorship_counters.active_sync_trigger,
+                (UW)state->mentorship_counters.active_sync_cooldown_suppressed,
+                (UW)state->mentorship_counters.active_sync_busy,
+                (UW)state->mentorship_counters.active_sync_pages,
+                (UW)state->mentorship_counters.active_sync_success,
+                (UW)state->mentorship_counters.active_sync_abort,
+                (UW)state->mentorship_counters.active_sync_preempt);
     tm_printf((UB *)"routed maintenance armed=%u pending=%u next_due_ms=%lu next_topology_sample_ms=%lu current_interval_ms=%lu liveness_floor_ms=%lu liveness_timeout_ms=%lu direct_one_hop_count=%u next_node_sequence=%u due=%lu enqueued=%lu busy=%lu rx_unique=%lu rx_duplicate=%lu rx_rejected=%lu dedupe_capacity=%lu interval_advanced=%lu interval_snapped=%lu local_broadcast_suppressed=%lu topology_reset=%lu topology_unchanged=%lu liveness_sample=%lu liveness_floor_decayed=%lu targeted_owner_status=%u targeted_action_enqueued=%u targeted_action_token=%u targeted_action_context=%u targeted_owner_ticks=%lu targeted_owner_enqueued=%lu targeted_rx=%lu targeted_scheduler_events=%lu targeted_invalid=%lu\n",
                (UINT)state->maintenance.armed, (UINT)state->maintenance.pending,
                (UW)state->maintenance.next_hello_due_ms,
@@ -2096,13 +2104,22 @@ static tavrn_router_phase_trace_t routed_cycle_router_scheduler_event(
                             TAVRN_ROUTER_EVENT_INVALID;
                     }
                 } else if (mentorship_trace.rx_control.control.type ==
-                                TAVRN_WIRE_HELLO &&
+                                 TAVRN_WIRE_HELLO &&
                             mentorship_trace.rx_control.control.pdu_len >= 6u &&
                             (mentorship_trace.rx_control.control.pdu[5] == 0x80u ||
                              (mentorship_trace.rx_control.control.pdu[5] & 0x40u) != 0u)) {
-                    if (tavrn_maintenance_handle_rx_control(
-                            &routed_maintenance, rx_control,
-                            now) == TAVRN_MAINTENANCE_INVALID) {
+                    tavrn_maintenance_status_t maintenance_status =
+                        tavrn_maintenance_handle_rx_control(
+                            &routed_maintenance, rx_control, now);
+
+                    if (maintenance_status == TAVRN_MAINTENANCE_RX_UNIQUE &&
+                        rx_control->control.pdu_len == 20u &&
+                        rx_control->control.pdu[5] == 0x80u) {
+                        (void)tavrn_mentorship_begin_active_sync(
+                            &routed_mentorship, &rx_control->transmitter.adva,
+                            rx_control->control.pdu[17], now);
+                    }
+                    if (maintenance_status == TAVRN_MAINTENANCE_INVALID) {
                         trace.detail.scheduler_event.status =
                             TAVRN_ROUTER_EVENT_INVALID;
                     }

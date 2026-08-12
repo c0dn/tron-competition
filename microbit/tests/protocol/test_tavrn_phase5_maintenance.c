@@ -325,7 +325,7 @@ static tavrn_validated_control_t make_sid8_ordinary_hello(
 
     memset(&control, 0, sizeof(control));
     control.type = TAVRN_WIRE_HELLO;
-    control.pdu_len = 17u;
+    control.pdu_len = 20u;
     control.pdu[0] = 0x54u;
     control.pdu[1] = 0x52u;
     control.pdu[2] = 0x02u;
@@ -516,12 +516,13 @@ static int queued_hello_matches(const ble_mesh_tx_queue_entry_t *entry,
         return 0;
     }
     pdu = &entry->item.adv_data[7];
-    return entry->item.adv_len == 24u && entry->item.adv_data[3] == 20u &&
+    return entry->item.adv_len == 27u && entry->item.adv_data[3] == 23u &&
         pdu[0] == 0x54u && pdu[1] == 0x52u && pdu[2] == 0x02u &&
         pdu[3] == TEST_NETWORK_ID && pdu[4] == TAVRN_WIRE_HELLO &&
         pdu[5] == 0x80u && pdu[6] == 0x10u && pdu[7] == 0xffu &&
         pdu[8] == 0xffu && memcmp(&pdu[9], origin, TAVRN_ADVA_LEN) == 0 &&
-        pdu_u16(pdu, 15u) == sequence;
+        pdu_u16(pdu, 15u) == sequence && pdu[17] <= 15u &&
+        pdu[18] == 0u && pdu[19] == 0u;
 }
 
 static int fill_control_queue(maintenance_fixture_t *fixture, uint32_t now_ms)
@@ -640,9 +641,10 @@ static int test_maint_02_arm_cadence_wire_and_busy(void)
             TAVRN_MAINTENANCE_OK &&
         state.pending != 0u && state.next_node_sequence == 0xffffu &&
         state.next_hello_due_ms == busy_due_at &&
-        state.pending_hello.pdu_len == 17u &&
+        state.pending_hello.pdu_len == 20u &&
         state.pending_hello.pdu[5] == 0x80u &&
         pdu_u16(state.pending_hello.pdu, 15u) == 0xffffu &&
+        state.pending_hello.pdu[17] <= 15u &&
         tavrn_maintenance_counters(&busy_fixture.maintenance)->due == 1u &&
         tavrn_maintenance_counters(&busy_fixture.maintenance)->enqueued == 0u &&
         tavrn_maintenance_counters(&busy_fixture.maintenance)->busy == 1u &&
@@ -650,8 +652,9 @@ static int test_maint_02_arm_cadence_wire_and_busy(void)
     ok &= tavrn_maintenance_tick(&busy_fixture.maintenance, busy_due_at + 1u) ==
             TAVRN_MAINTENANCE_BUSY &&
         tavrn_maintenance_snapshot(&busy_fixture.maintenance, &state) ==
-            TAVRN_MAINTENANCE_OK && state.pending != 0u &&
+        TAVRN_MAINTENANCE_OK && state.pending != 0u &&
         pdu_u16(state.pending_hello.pdu, 15u) == 0xffffu &&
+        state.pending_hello.pdu[17] <= 15u &&
         tavrn_maintenance_counters(&busy_fixture.maintenance)->pending == 1u;
     clear_queued_controls(&busy_fixture);
     ok &= tavrn_maintenance_tick(&busy_fixture.maintenance, busy_due_at + 2u) ==
@@ -896,7 +899,6 @@ static int test_serial_03_hello_equality_dedupe(void)
 static int test_bearer_04_rx_rejects_without_feedback(void)
 {
     maintenance_fixture_t fixture;
-    tavrn_validated_control_t targeted = make_sid8_ordinary_hello(adva_b, 7u);
     tavrn_validated_control_t foreign = make_sid8_ordinary_hello(adva_b, 8u);
     tavrn_validated_control_t mismatched = make_sid8_ordinary_hello(adva_b, 9u);
     tavrn_validated_control_t malformed = make_sid8_ordinary_hello(adva_b, 10u);
@@ -906,19 +908,16 @@ static int test_bearer_04_rx_rejects_without_feedback(void)
     uint32_t armed_at;
     int ok = 1;
 
-    targeted.pdu[5] = 0xa0u;
-    targeted.pdu[7] = adva_a[0];
-    targeted.pdu[8] = adva_a[0];
     foreign.pdu[3] = 0x55u;
-    malformed.pdu[5] = 0x81u;
+    malformed.pdu[17] = 16u;
     ok &= setup_armed(&fixture, 0u, &armed_at) && capture_protocol_snapshot(&fixture,
                                                                               &before);
-    ok &= deliver_control(&fixture, &targeted, adva_b, armed_at + 1u, 0u) ==
-            TAVRN_MAINTENANCE_RX_REJECTED &&
+    ok &= deliver_control(&fixture, &mismatched, adva_c, armed_at + 1u, 1u) ==
+            TAVRN_MAINTENANCE_IGNORED &&
         nonmaintenance_protocol_unchanged(&fixture, &before) &&
         maintenance_shape_unchanged(&fixture, &before) &&
         tavrn_maintenance_counters(&fixture.maintenance)->rx_rejected ==
-            before.maintenance_counters.rx_rejected + 1u &&
+            before.maintenance_counters.rx_rejected &&
         tavrn_maintenance_counters(&fixture.maintenance)->enqueued ==
             before.maintenance_counters.enqueued;
     ok &= capture_protocol_snapshot(&fixture, &after_n1) &&

@@ -2083,6 +2083,28 @@ aodv_status_t aodv_core_cancel_unsent_action(aodv_core_t *core,
     return AODV_STATUS_NOT_FOUND;
 }
 
+static int discovery_is_terminal(const aodv_core_t *core,
+                                 const aodv_discovery_entry_t *discovery)
+{
+    if (discovery->scoped != 0u) {
+        return !discovery_has_attempt_remaining(core, discovery);
+    }
+    return discovery->next_ring >=
+        (uint8_t)(AODV_RREQ_RING_COUNT + core->config.rreq_retries);
+}
+
+static int terminal_discovery_release_pending(aodv_core_t *core,
+                                              uint16_t destination,
+                                              uint32_t now_ms)
+{
+    aodv_discovery_entry_t *discovery = discovery_find(core, destination);
+
+    return discovery != NULL &&
+        !route_is_valid_at(core, route_find(core, destination), now_ms) &&
+        time_due(now_ms, discovery->next_attempt_ms) &&
+        discovery_is_terminal(core, discovery);
+}
+
 static void expire_pending(aodv_core_t *core, uint32_t now_ms)
 {
     aodv_core_state_t *state = state_of(core);
@@ -2093,6 +2115,10 @@ static void expire_pending(aodv_core_t *core, uint32_t now_ms)
             time_due(now_ms, state->pending[i].expires_at_ms)) {
             aodv_action_t action;
 
+            if (terminal_discovery_release_pending(
+                    core, state->pending[i].data.final_destination.value, now_ms)) {
+                continue;
+            }
             if (!action_space(state, 1u)) {
                 core->counters.action_backpressure++;
                 continue;
@@ -2105,6 +2131,33 @@ static void expire_pending(aodv_core_t *core, uint32_t now_ms)
             core->counters.pending_expired++;
         }
     }
+}
+
+static int release_terminal_discovery(aodv_core_t *core,
+                                      aodv_discovery_entry_t *discovery)
+{
+    aodv_core_state_t *state = state_of(core);
+    aodv_action_t action;
+    uint8_t i;
+
+    memset(&action, 0, sizeof(action));
+    action.type = AODV_ACTION_PENDING_DATA_FAILED;
+    action.detail.failure.destination.width =
+        core->config.local_peer.logical_id.width;
+    action.detail.failure.destination.value = discovery->destination;
+    if (!enqueue_action(core, &action)) {
+        return 0;
+    }
+    for (i = 0u; i < TAVRN_AODV_PENDING_DATA_CAPACITY; i++) {
+        if (state->pending[i].occupied != 0u &&
+            state->pending[i].data.final_destination.value ==
+                discovery->destination) {
+            state->pending[i].occupied = 0u;
+        }
+    }
+    discovery->occupied = 0u;
+    core->counters.terminal_discovery_released++;
+    return 1;
 }
 
 static void advance_discoveries(aodv_core_t *core, uint32_t now_ms)
@@ -2128,14 +2181,12 @@ static void advance_discoveries(aodv_core_t *core, uint32_t now_ms)
                 if (discovery_has_attempt_remaining(core, discovery)) {
                     (void)emit_rreq(core, discovery, now_ms);
                 } else {
-                    discovery->occupied = 0u;
+                    (void)release_terminal_discovery(core, discovery);
                 }
-            } else if (discovery->next_ring <
-                       (uint8_t)(AODV_RREQ_RING_COUNT +
-                                 core->config.rreq_retries)) {
+            } else if (!discovery_is_terminal(core, discovery)) {
                 (void)emit_rreq(core, discovery, now_ms);
             } else {
-                discovery->occupied = 0u;
+                (void)release_terminal_discovery(core, discovery);
             }
         }
     }
@@ -2172,9 +2223,9 @@ aodv_status_t aodv_core_tick(aodv_core_t *core, uint32_t now_ms)
             state->blacklist[i].occupied = 0u;
         }
     }
+    advance_discoveries(core, now_ms);
     expire_pending(core, now_ms);
     drain_pending_routes(core);
-    advance_discoveries(core, now_ms);
     return AODV_STATUS_OK;
 }
 

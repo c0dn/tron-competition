@@ -133,6 +133,12 @@ static const uint8_t hello8_verification[] = {
     0xdcu, 0xdcu, 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au,
     0xddu, 0x02u, 0x00u, 0x01u, 0xdcu, 0x01u,
 };
+static const uint8_t hello8_ordinary[] = {
+    0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x04u, 0x80u, 0x10u,
+    0xffu, 0xffu, 0xdcu, 0x4bu, 0x0au, 0x06u, 0x03u,
+    0xf8u, 0x34u, 0x12u, 0x0fu, 0x00u, 0x00u,
+};
 static const uint8_t sync_offer[] = {
     0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
     0x54u, 0x52u, 0x02u, 0x2au, 0x05u, 0x00u, 0x10u,
@@ -634,6 +640,8 @@ static void test_bearer_02_control_budget_shapes_and_hello_q(void)
         { rrep_ack8, sizeof(rrep_ack8), adva_b, TAVRN_IDENTITY_SID8 },
         { hello8_verification, sizeof(hello8_verification), adva_a,
           TAVRN_IDENTITY_SID8 },
+        { hello8_ordinary, sizeof(hello8_ordinary), adva_b,
+          TAVRN_IDENTITY_SID8 },
         { sync_offer, sizeof(sync_offer), adva_a, TAVRN_IDENTITY_SID16 },
         { sync_pull, sizeof(sync_pull), adva_b, TAVRN_IDENTITY_SID16 },
         { sync_data_present, sizeof(sync_data_present), adva_a,
@@ -660,8 +668,9 @@ static void test_bearer_02_control_budget_shapes_and_hello_q(void)
                        sizeof(rerr8_d1_meta) == 30u &&
                        sizeof(rerr8_d2_meta) == BLE_ADV_MAX_DATA &&
                        sizeof(rerr8_d3_meta) == 30u &&
-                       sizeof(rerr8_d4) == 30u &&
-                       sizeof(hello8_verification) == 27u &&
+                        sizeof(rerr8_d4) == 30u &&
+                        sizeof(hello8_verification) == 27u &&
+                        sizeof(hello8_ordinary) == 27u &&
                        sizeof(sync_offer) == BLE_ADV_MAX_DATA &&
                        sizeof(sync_pull) == 29u &&
                        sizeof(sync_data_present) == BLE_ADV_MAX_DATA &&
@@ -676,6 +685,21 @@ static void test_bearer_02_control_budget_shapes_and_hello_q(void)
                                  control_vectors[i].vector,
                                  control_vectors[i].length);
     }
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[3] = 20u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               24u, &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[24] = 16u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               sizeof(mutation), &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[25] = 1u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               sizeof(mutation), &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
 
     memcpy(invalid_rerr8_d4, rerr8_d4, sizeof(invalid_rerr8_d4));
     invalid_rerr8_d4[12] |= 0x10u;

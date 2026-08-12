@@ -378,6 +378,26 @@ tavrn_gtt_observe_status_t tavrn_gtt_observe(
     return TAVRN_GTT_OBSERVE_ADDED;
 }
 
+uint8_t tavrn_gtt_known_remote_count(const tavrn_gtt_t *gtt)
+{
+    uint8_t count = 0u;
+    uint8_t index;
+
+    if (!gtt_is_usable(gtt)) {
+        return 0u;
+    }
+    for (index = 0u; index < TAVRN_GTT_CAPACITY; index++) {
+        const tavrn_gtt_entry_t *entry = &gtt->storage->entries[index];
+
+        if (entry->occupied == 0u || entry->departed != 0u ||
+            identities_equal(&entry->identity, &gtt->config.local_identity)) {
+            continue;
+        }
+        count++;
+    }
+    return count;
+}
+
 tavrn_gtt_query_status_t tavrn_gtt_snapshot(
     const tavrn_gtt_t *gtt, const tavrn_adva_t *identity, uint32_t now_ms,
     tavrn_gtt_snapshot_t *snapshot_out)

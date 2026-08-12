@@ -2523,12 +2523,12 @@ manifest = dict(line.split("=", 1) for line in
                 manifest_path.read_text(encoding="utf-8").splitlines() if line)
 if manifest.get("artifact.name") != artifact_name.name or \
         manifest.get("capacity.benchmark_attempt_queue") != "1024" or \
-        manifest.get("resource.fixed_state.declared_delta_bytes") != "42712":
+         manifest.get("resource.fixed_state.declared_delta_bytes") != "42712":
     raise SystemExit("benchmark manifest capacity/fixed-state binding differs")
 resource = json.loads(resource_path.read_text(encoding="utf-8"))
 if resource["fixed_state"] != {
-        "after_bytes": 69396,
-        "before_bytes": 69396,
+        "after_bytes": 69532,
+        "before_bytes": 69532,
         "declared_delta_bytes": 42712,
         "unexplained_delta_bytes": 0,
 }:

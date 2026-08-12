@@ -261,6 +261,9 @@ tavrn_gtt_query_status_t tavrn_gtt_enumerate_active(
     const tavrn_gtt_t *gtt, uint32_t now_ms,
     tavrn_gtt_snapshot_t *snapshots_out, uint8_t snapshot_capacity,
     uint8_t *snapshot_count_out);
+/* Counts occupied, non-local, non-departed records.  Retained soft- and
+ * hard-expired liveness records remain known until table eviction. */
+uint8_t tavrn_gtt_known_remote_count(const tavrn_gtt_t *gtt);
 const tavrn_gtt_counters_t *tavrn_gtt_counters(const tavrn_gtt_t *gtt);
 
 tavrn_gtt_expiry_observe_status_t tavrn_gtt_observe_with_provenance(

@@ -446,27 +446,29 @@ static void remember_dedupe(tavrn_maintenance_dedupe_entry_t *entry,
 }
 
 static int ordinary_hello_event(const tavrn_maintenance_t *maintenance,
-                                const tavrn_rx_control_event_t *event,
-                                tavrn_adva_t *origin_out,
-                                uint16_t *node_sequence_out)
+                                 const tavrn_rx_control_event_t *event,
+                                 tavrn_adva_t *origin_out,
+                                 uint16_t *node_sequence_out,
+                                 uint8_t *known_remote_count_out)
 {
     const tavrn_validated_control_t *control;
     const tavrn_direct_peer_t *transmitter;
     tavrn_adva_t origin;
 
     if (maintenance == NULL || event == NULL || origin_out == NULL ||
-        node_sequence_out == NULL) {
+        node_sequence_out == NULL || known_remote_count_out == NULL) {
         return 0;
     }
     control = &event->control;
     transmitter = &event->transmitter;
-    if (control->type != TAVRN_WIRE_HELLO || control->pdu_len != 17u ||
+    if (control->type != TAVRN_WIRE_HELLO || control->pdu_len != 20u ||
         control->pdu[0] != 0x54u || control->pdu[1] != 0x52u ||
         control->pdu[2] != 0x02u ||
         control->pdu[3] != maintenance->router->link->config.network_id ||
         control->pdu[4] != TAVRN_WIRE_HELLO || control->pdu[5] != 0x80u ||
         control->pdu[6] != 0x10u || control->pdu[7] != 0xffu ||
-        control->pdu[8] != 0xffu ||
+        control->pdu[8] != 0xffu || control->pdu[17] > 15u ||
+        control->pdu[18] != 0u || control->pdu[19] != 0u ||
         transmitter->logical_id.width != TAVRN_IDENTITY_SID8) {
         return 0;
     }
@@ -479,6 +481,7 @@ static int ordinary_hello_event(const tavrn_maintenance_t *maintenance,
     *origin_out = origin;
     *node_sequence_out = (uint16_t)control->pdu[15] |
         ((uint16_t)control->pdu[16] << 8);
+    *known_remote_count_out = control->pdu[17];
     return 1;
 }
 
@@ -596,6 +599,21 @@ tavrn_maintenance_status_t tavrn_maintenance_init(
     return TAVRN_MAINTENANCE_OK;
 }
 
+tavrn_maintenance_status_t tavrn_maintenance_set_local_tc_retained_port(
+    tavrn_maintenance_t *maintenance,
+    const tavrn_maintenance_local_tc_retained_port_t *port_or_null)
+{
+    if (!maintenance_is_initialized(maintenance)) {
+        return TAVRN_MAINTENANCE_INVALID;
+    }
+    memset(&maintenance->local_tc_retained, 0,
+           sizeof(maintenance->local_tc_retained));
+    if (port_or_null != NULL) {
+        maintenance->local_tc_retained = *port_or_null;
+    }
+    return TAVRN_MAINTENANCE_OK;
+}
+
 tavrn_maintenance_status_t tavrn_maintenance_activate(
     tavrn_maintenance_t *maintenance, uint32_t now_ms)
 {
@@ -657,6 +675,7 @@ tavrn_maintenance_status_t tavrn_maintenance_tick(
            sizeof(maintenance->snapshot.pending_hello));
     build_status = tavrn_router_build_ordinary_hello(
         maintenance->router, maintenance->snapshot.next_node_sequence,
+        tavrn_gtt_known_remote_count(maintenance->gtt),
         &maintenance->snapshot.pending_hello);
     if (build_status != TAVRN_ROUTER_HELLO_OK) {
         return build_status == TAVRN_ROUTER_HELLO_GATED ?
@@ -677,6 +696,7 @@ tavrn_maintenance_status_t tavrn_maintenance_handle_rx_control(
     tavrn_gtt_evidence_t evidence;
     tavrn_gtt_expiry_observe_status_t observe_status;
     uint16_t node_sequence;
+    uint8_t known_remote_count;
     uint8_t duplicate;
 
     if (!maintenance_is_initialized(maintenance) || control_event == NULL) {
@@ -696,10 +716,11 @@ tavrn_maintenance_status_t tavrn_maintenance_handle_rx_control(
         return TAVRN_MAINTENANCE_IGNORED;
     }
     if (!ordinary_hello_event(maintenance, control_event, &origin,
-                              &node_sequence)) {
+                               &node_sequence, &known_remote_count)) {
         maintenance->counters.rx_rejected++;
         return TAVRN_MAINTENANCE_RX_REJECTED;
     }
+    (void)known_remote_count;
     entry = dedupe_slot(maintenance, &origin, node_sequence, now_ms, &duplicate);
     if (duplicate != 0u) {
         maintenance->counters.rx_duplicate++;
@@ -3848,6 +3869,15 @@ static void tc_metadata_build_action(tavrn_tc_metadata_state_t *state,
     action_out->pdu[21] = (uint8_t)event;
 }
 
+static void tc_metadata_preempt_rfi_for_local_fact(
+    tavrn_maintenance_t *maintenance, uint32_t now_ms)
+{
+    if (maintenance != NULL && maintenance->local_tc_retained.callback != NULL) {
+        maintenance->local_tc_retained.callback(
+            maintenance->local_tc_retained.context, now_ms);
+    }
+}
+
 static tavrn_tc_metadata_status_t tc_metadata_promote_origin(
     tavrn_tc_metadata_state_t *state)
 {
@@ -5178,37 +5208,52 @@ void tavrn_maintenance_metadata_release_delayed(
 tavrn_tc_metadata_status_t tavrn_maintenance_tc_on_verified_departure(
     tavrn_maintenance_t *maintenance, const tavrn_adva_t *subject, uint32_t now_ms)
 {
-    (void)now_ms;
+    tavrn_tc_metadata_status_t status;
+
     if (!maintenance_is_initialized(maintenance) || !tc_metadata_adva_valid(subject)) {
         return TAVRN_TC_METADATA_INVALID;
     }
-    return tc_metadata_enqueue_origin_fact(&maintenance->tc_metadata, subject,
-                                           TAVRN_TC_EVENT_LEAVE);
+    status = tc_metadata_enqueue_origin_fact(&maintenance->tc_metadata, subject,
+                                             TAVRN_TC_EVENT_LEAVE);
+    if (status == TAVRN_TC_METADATA_PREPARED || status == TAVRN_TC_METADATA_RETAINED) {
+        tc_metadata_preempt_rfi_for_local_fact(maintenance, now_ms);
+    }
+    return status;
 }
 
 tavrn_tc_metadata_status_t tavrn_maintenance_tc_on_direct_timeout_departure(
     tavrn_maintenance_t *maintenance, const tavrn_adva_t *subject, uint32_t now_ms)
 {
-    (void)now_ms;
+    tavrn_tc_metadata_status_t status;
+
     if (!maintenance_is_initialized(maintenance) || !tc_metadata_adva_valid(subject)) {
         return TAVRN_TC_METADATA_INVALID;
     }
-    return tc_metadata_enqueue_origin_fact(&maintenance->tc_metadata, subject,
-                                           TAVRN_TC_EVENT_LEAVE);
+    status = tc_metadata_enqueue_origin_fact(&maintenance->tc_metadata, subject,
+                                             TAVRN_TC_EVENT_LEAVE);
+    if (status == TAVRN_TC_METADATA_PREPARED || status == TAVRN_TC_METADATA_RETAINED) {
+        tc_metadata_preempt_rfi_for_local_fact(maintenance, now_ms);
+    }
+    return status;
 }
 
 tavrn_tc_metadata_status_t tavrn_maintenance_tc_on_retry_exhausted(
     tavrn_maintenance_t *maintenance, const tavrn_adva_t *failed_next_hop,
     const tavrn_adva_t *final_destination_or_null, uint32_t now_ms)
 {
+    tavrn_tc_metadata_status_t status;
+
     (void)final_destination_or_null;
-    (void)now_ms;
     if (!maintenance_is_initialized(maintenance) ||
         !tc_metadata_adva_valid(failed_next_hop)) {
         return TAVRN_TC_METADATA_INVALID;
     }
-    return tc_metadata_enqueue_retry_exhausted_leave(&maintenance->tc_metadata,
-                                                      failed_next_hop);
+    status = tc_metadata_enqueue_retry_exhausted_leave(&maintenance->tc_metadata,
+                                                        failed_next_hop);
+    if (status == TAVRN_TC_METADATA_PREPARED || status == TAVRN_TC_METADATA_RETAINED) {
+        tc_metadata_preempt_rfi_for_local_fact(maintenance, now_ms);
+    }
+    return status;
 }
 
 static tavrn_tc_admission_t tc_metadata_link_admission(tavrn_link_send_status_t status)
@@ -5294,6 +5339,12 @@ tavrn_tc_metadata_status_t tavrn_maintenance_tc_owner_tick(
         &state->relay_pending;
     origin = state->origin_pending.valid != 0u;
     if (pending->valid == 0u) return TAVRN_TC_METADATA_OK;
+    if (origin != 0u) {
+        /* The local FIFO remains a real TC obligation during every admission
+         * retry.  This also covers a retained action constructed before the
+         * binding was installed. */
+        tc_metadata_preempt_rfi_for_local_fact(maintenance, now_ms);
+    }
     action = *pending;
     memset(&control, 0, sizeof(control));
     control.type = TAVRN_WIRE_TC_UPDATE;

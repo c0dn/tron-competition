@@ -117,14 +117,11 @@ require("tavrn_maintenance_tc_sequence_prepare(" in join_origin,
 require("tavrn_maintenance_tc_sequence_commit(" in join_flush,
         "mentorship JOIN enqueue does not commit the generic TC sequence")
 mentorship_tick = function_body(mentorship, "tavrn_mentorship_status_t tavrn_mentorship_tick(")
-require("join_reannounce_deadline_ms" in mentorship_tick and
-        "originate_join(mentorship)" in mentorship_tick,
-        "mentorship tick does not schedule bounded periodic self-JOIN")
-require("join_reannounce_deadline_ms" in join_flush and
-        "join_reannounce_valid" in join_flush,
-        "periodic self-JOIN cadence is not rebased at admission")
-require("TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS" in mentorship,
-        "periodic self-JOIN has no documented bounded cadence")
+require("join_reannounce" not in mentorship and
+        "TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS" not in mentorship,
+        "periodic self-JOIN state remains in mentorship")
+require("originate_join(mentorship)" not in mentorship_tick,
+        "mentorship tick still originates periodic self-JOIN")
 require("next_join_sequence" not in mentorship,
         "mentorship still owns an independent JOIN sequence stream")
 verified_departure = function_body(
@@ -145,6 +142,13 @@ require("TAVRN_LINK_EVENT_RETRY_EXHAUSTED" in retry_terminal and
 require("tavrn_full_maintenance_tc_on_retry_exhausted(" in binding and
         "tavrn_maintenance_tc_on_retry_exhausted(" in binding,
         "FULL binding does not route retry exhaustion to TC maintenance")
+require("tavrn_maintenance_set_local_tc_retained_port(" in binding and
+        "full_local_tc_retained" in binding and
+        "tavrn_mentorship_note_local_tc_retained" in binding,
+        "FULL binding does not install the local-TC retained callback port")
+require('#include "tavrn_mentorship.h"' not in maintenance and
+        "tavrn_mentorship_note_local_tc_retained" not in maintenance,
+        "maintenance retains a direct mentorship dependency")
 tc_receive_case = function_body(mentorship, "tavrn_mentorship_handle_scheduler_event(")
 require("if (mentorship->tc_metadata == NULL)" in tc_receive_case,
         "mentorship still owns inbound TC while FULL maintenance is installed")

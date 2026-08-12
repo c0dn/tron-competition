@@ -1,12 +1,13 @@
 # TAVRN-BLE identity and compression contract
 
-Status: **frozen Phase 0 proof-of-concept contract**. This defines identity
+Status: **V2.3 normative proof-of-concept contract**. This defines identity
 bytes, not authentication. There is no provisioning, cryptographic binding,
 privacy address rotation, or Bluetooth Mesh identity claim.
 
 Profile mapping: this document derives `IDENT-01` through `IDENT-04`,
-`SERIAL-01` through `SERIAL-04`, `ESC-01` through `ESC-03`, and `BOOT-01`
-through `BOOT-05`.
+`SERIAL-01` through `SERIAL-04`, `ESC-01` through `ESC-03`, `BOOT-01`
+through `BOOT-05`, and the full-identity membership context used by
+`GOSSIP-01` through `GOSSIP-03`.
 
 ## 1. Canonical identity
 
@@ -232,6 +233,15 @@ field is added to HELLO.
 One-entry SYNC_DATA pages are a deliberate cost of carrying full identity
 inside the 24-byte custom PDU. There is no suffix-only bootstrap page.
 
+After SID8 activation, the same full-identity SYNC_PULL/SYNC_DATA roles also
+serve the private active-RFI path. The RFI initiator remains the full mentee
+identity in SYNC_PULL and its selected direct mentor remains the full receiver;
+each returned page still contains one full canonical identity. Thus a SID8
+`known_remote_count` can only hint at a missing member; it cannot identify,
+resolve, or establish that member without the existing full-identity page
+merge/collision checks. Active RFI neither changes the active SID8 identity nor
+re-enters bootstrap.
+
 ## 7. Collision handling: fail closed
 
 Collision scope depends on identity width:
@@ -445,6 +455,15 @@ Later tests must cover at least:
 - SID8 zero/one/multiple full-context lookup outcomes;
 - no fixed-k traffic before completed full-identity bootstrap;
 - one-entry full-identity SYNC pagination and deterministic sorting;
+- V2.3 ordinary SID8 HELLO is exactly 20 bytes with count `0..15`, reserved
+  zero bytes, occupied/nonself/nondeparted membership semantics, retained
+  hard-expired inclusion, legacy 17-byte rejection, and no equal-count
+  consensus inference;
+- homogeneous FULL-fleet upgrade rejects old/new ordinary-HELLO mixing without
+  a fallback or per-peer downgrade;
+- RFI-marked page-zero SYNC_PULL retains full initiator/mentor roles, freezes a
+  bounded snapshot, serves contiguous SYNC_DATA pages, and leaves public
+  SID8_ACTIVE identity/application admission unchanged;
 - collision discovered during page merge prevents activation;
 - later TC_UPDATE full identity collision invalidates affected routes;
 - zero boot nonce rejection, same `{AdvA,nonce}` idempotency, and different

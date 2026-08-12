@@ -99,6 +99,12 @@ static int offer_equal(const tavrn_mentorship_offer_t *left,
 }
 
 static uint16_t local_boot_nonce(const tavrn_mentorship_t *mentorship);
+static tavrn_mentorship_status_t build_active_sync_pull(
+    const tavrn_adva_t *mentee, const tavrn_adva_t *mentor,
+    uint16_t snapshot_id, uint8_t page_index,
+    tavrn_validated_control_t *control_out);
+static tavrn_mentorship_status_t validate_staged_live_sid8_set(
+    tavrn_mentorship_t *mentorship, uint8_t record_count, uint32_t now_ms);
 
 static int offer_is_valid(const tavrn_mentorship_t *mentorship,
                           const tavrn_mentorship_offer_t *offer)
@@ -261,14 +267,104 @@ static void clear_receiving_session(tavrn_mentorship_t *mentorship)
     mentorship->sync_complete_authorized = 0u;
 }
 
+static void arm_active_sync_cooldown(tavrn_mentorship_t *mentorship,
+                                     uint32_t now_ms)
+{
+    mentorship->active_sync.cooldown_deadline_ms =
+        now_ms + mentorship->config.sync_dedupe_ms;
+    mentorship->active_sync.cooldown_valid = 1u;
+}
+
+/* Generic controls have link-owned low tokens, so this exact byte-level
+ * cancellation is the only safe way for mentorship to retire work after link
+ * admission.  It intentionally leaves an already selected radio item alone. */
+static void cancel_queued_rfi_control(tavrn_mentorship_t *mentorship,
+                                      const tavrn_validated_control_t *control,
+                                      uint8_t valid)
+{
+    if (mentorship == NULL || mentorship->router == NULL ||
+        mentorship->router->link == NULL || control == NULL || valid == 0u) {
+        return;
+    }
+    (void)tavrn_link_v2_cancel_queued_control(mentorship->router->link, control);
+}
+
+static void abort_active_sync(tavrn_mentorship_t *mentorship, uint32_t now_ms,
+                               uint8_t preempted)
+{
+    tavrn_validated_control_t pull;
+    uint8_t index;
+
+    if (mentorship == NULL || mentorship->active_sync.valid == 0u) {
+        return;
+    }
+    if (mentorship->pending_control.valid != 0u &&
+        mentorship->pending_control.purpose ==
+            TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL) {
+        memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
+    }
+    cancel_queued_rfi_control(mentorship, &mentorship->active_sync.queued_pull,
+                              mentorship->active_sync.queued_pull_valid);
+    /* A received page proves that its pull was admitted, but host injection and
+     * queue scheduling can leave an older exact pull queued while a newer one
+     * is retained.  Rebuild each bounded transaction page and retire every
+     * still-queued exact copy. */
+    for (index = 0u; index <= mentorship->active_sync.next_index &&
+         index < TAVRN_MENTORSHIP_SNAPSHOT_CAPACITY; index++) {
+        if (build_active_sync_pull(&mentorship->gtt->config.local_identity,
+                                   &mentorship->active_sync.mentor,
+                                   mentorship->active_sync.snapshot_id, index,
+                                   &pull) == TAVRN_MENTORSHIP_OK) {
+            cancel_queued_rfi_control(mentorship, &pull, 1u);
+        }
+    }
+    mentorship->active_sync.valid = 0u;
+    mentorship->state.active_sync_in_progress = 0u;
+    mentorship->active_sync.page_deadline_valid = 0u;
+    mentorship->active_sync.pull_attempts = 0u;
+    mentorship->active_sync.queued_pull_valid = 0u;
+    memset(&mentorship->active_sync.queued_pull, 0,
+           sizeof(mentorship->active_sync.queued_pull));
+    arm_active_sync_cooldown(mentorship, now_ms);
+    memset(mentorship->receiving_records, 0, sizeof(mentorship->receiving_records));
+    mentorship->counters.active_sync_abort++;
+    if (preempted != 0u) {
+        mentorship->counters.active_sync_preempt++;
+    }
+}
+
 /* A mentor has exactly one fixed-capacity serving slot.  Clear every field
  * owned by that slot together so a later N=1 cannot inherit an OFFER/DATA or
  * snapshot from the previous mentee.  Suppression is overhearing state, not
  * serving-session state, and intentionally survives this reset. */
 static void clear_serving_session(tavrn_mentorship_t *mentorship)
 {
+    tavrn_validated_control_t data;
+    uint8_t index;
+
     if (mentorship == NULL) {
         return;
+    }
+    cancel_queued_rfi_control(mentorship, &mentorship->serving_rfi_data,
+                              mentorship->serving_rfi_data_valid);
+    if (mentorship->serving_active_rfi != 0u) {
+        for (index = 0u; index < mentorship->serving_snapshot.count; index++) {
+            if (tavrn_mentorship_build_sync_data(
+                    &mentorship->serving_snapshot,
+                    &mentorship->gtt->config.local_identity,
+                    &mentorship->serving_mentee, index, &data) ==
+                TAVRN_MENTORSHIP_OK) {
+                cancel_queued_rfi_control(mentorship, &data, 1u);
+            }
+        }
+        if (mentorship->serving_snapshot.count == 0u &&
+            tavrn_mentorship_build_sync_data(
+                &mentorship->serving_snapshot,
+                &mentorship->gtt->config.local_identity,
+                &mentorship->serving_mentee, 0u, &data) ==
+                TAVRN_MENTORSHIP_OK) {
+            cancel_queued_rfi_control(mentorship, &data, 1u);
+        }
     }
     memset(&mentorship->serving_snapshot, 0, sizeof(mentorship->serving_snapshot));
     memset(&mentorship->serving_mentee, 0, sizeof(mentorship->serving_mentee));
@@ -276,13 +372,85 @@ static void clear_serving_session(tavrn_mentorship_t *mentorship)
     mentorship->serving_deadline_ms = 0u;
     mentorship->serving_boot_nonce = 0u;
     mentorship->pending_offer_due_ms = 0u;
+    memset(&mentorship->serving_rfi_data, 0, sizeof(mentorship->serving_rfi_data));
     mentorship->serving_session_valid = 0u;
     mentorship->pending_offer_valid = 0u;
+    mentorship->serving_active_rfi = 0u;
+    mentorship->serving_rfi_data_valid = 0u;
     if (mentorship->pending_control.valid != 0u &&
         (mentorship->pending_control.purpose == TAVRN_MENTORSHIP_PENDING_OFFER ||
          mentorship->pending_control.purpose == TAVRN_MENTORSHIP_PENDING_DATA)) {
         memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
     }
+}
+
+static int rfi_join_obligation_pending(const tavrn_mentorship_t *mentorship)
+{
+    uint8_t index;
+
+    for (index = 0u; index < TAVRN_MENTORSHIP_JOIN_OBLIGATION_CAPACITY; index++) {
+        if (mentorship->join_obligations[index].valid != 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int rfi_real_tc_obligation_pending(const tavrn_mentorship_t *mentorship)
+{
+    const tavrn_tc_metadata_state_t *tc;
+
+    if (mentorship->tc_metadata == NULL) {
+        return 0;
+    }
+    tc = mentorship->tc_metadata;
+    return tc->sequence_ticket.valid != 0u || tc->origin_pending.valid != 0u ||
+        tc->origin_fact_count != 0u ||
+        tc->retry_exhausted_leave_overflow.valid != 0u ||
+        tc->relay_pending.valid != 0u || tc->relay_queue_count != 0u;
+}
+
+/* The sole ownership gate for both ends of a private RFI transaction.  A
+ * requester may not start while a responder owns a snapshot, and a responder
+ * may not freeze one while a requester owns staged state.  Bootstrap, JOIN,
+ * pending-control, and real-TC obligations all retain their existing owners. */
+static int rfi_ownership_available(const tavrn_mentorship_t *mentorship)
+{
+    return mentorship != NULL && mentorship->state.state ==
+            TAVRN_MENTORSHIP_SID8_ACTIVE &&
+        mentorship->state.active_width == TAVRN_IDENTITY_SID8 &&
+        mentorship->state.ordinary_traffic_gated == 0u &&
+        mentorship->state.active_offer_count == 0u &&
+        mentorship->state.selected_mentor_present == 0u &&
+        mentorship->active_sync.valid == 0u &&
+        mentorship->serving_session_valid == 0u &&
+        mentorship->pending_offer_valid == 0u &&
+        mentorship->page_session_valid == 0u &&
+        mentorship->pending_control.valid == 0u &&
+        !rfi_join_obligation_pending(mentorship) &&
+        !rfi_real_tc_obligation_pending(mentorship);
+}
+
+tavrn_mentorship_status_t tavrn_mentorship_note_local_tc_retained(
+    tavrn_mentorship_t *mentorship, uint32_t now_ms)
+{
+    if (mentorship == NULL || mentorship->router == NULL || mentorship->gtt == NULL) {
+        return TAVRN_MENTORSHIP_INVALID;
+    }
+    if (mentorship->active_sync.valid != 0u) {
+        abort_active_sync(mentorship, now_ms, 1u);
+    }
+    if (mentorship->serving_session_valid != 0u &&
+        mentorship->serving_active_rfi != 0u) {
+        clear_serving_session(mentorship);
+    }
+    return TAVRN_MENTORSHIP_OK;
+}
+
+tavrn_mentorship_status_t tavrn_mentorship_note_real_tc_accepted(
+    tavrn_mentorship_t *mentorship, uint32_t now_ms)
+{
+    return tavrn_mentorship_note_local_tc_retained(mentorship, now_ms);
 }
 
 static tavrn_mentorship_status_t enter_identity_conflict(
@@ -304,6 +472,7 @@ static tavrn_mentorship_status_t enter_identity_conflict(
     }
     clear_receiving_session(mentorship);
     clear_serving_session(mentorship);
+    abort_active_sync(mentorship, now_ms, 1u);
     memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
     memset(mentorship->join_obligations, 0, sizeof(mentorship->join_obligations));
     mentorship->state.state = TAVRN_MENTORSHIP_IDENTITY_CONFLICT;
@@ -312,8 +481,6 @@ static tavrn_mentorship_status_t enter_identity_conflict(
     mentorship->state.full_bootstrap_admission_enabled = 1u;
     mentorship->started_at_ms = now_ms;
     mentorship->identity_conflict_pending = 0u;
-    mentorship->join_reannounce_deadline_ms = 0u;
-    mentorship->join_reannounce_valid = 0u;
     mentorship->counters.transition_cleared++;
     return TAVRN_MENTORSHIP_COLLISION;
 }
@@ -384,6 +551,7 @@ static tavrn_mentorship_status_t retain_control(
     if (mentorship == NULL || control == NULL || controlled_flood > 1u ||
         (purpose != TAVRN_MENTORSHIP_PENDING_OFFER &&
          purpose != TAVRN_MENTORSHIP_PENDING_PULL &&
+         purpose != TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL &&
          purpose != TAVRN_MENTORSHIP_PENDING_DATA)) {
         return TAVRN_MENTORSHIP_INVALID;
     }
@@ -555,6 +723,21 @@ static tavrn_mentorship_status_t flush_pending_control(
         mentorship->page_deadline_ms = now_ms + mentorship->config.page_timeout_ms;
         mentorship->page_deadline_valid = 1u;
         break;
+    case TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL:
+        mentorship->active_sync.queued_pull = pending.control;
+        mentorship->active_sync.queued_pull_valid = 1u;
+        mentorship->active_sync.pull_attempts++;
+        mentorship->active_sync.page_deadline_ms =
+            now_ms + mentorship->config.page_timeout_ms;
+        mentorship->active_sync.page_deadline_valid = 1u;
+        break;
+    case TAVRN_MENTORSHIP_PENDING_DATA:
+        if (mentorship->serving_session_valid != 0u &&
+            mentorship->serving_active_rfi != 0u) {
+            mentorship->serving_rfi_data = pending.control;
+            mentorship->serving_rfi_data_valid = 1u;
+        }
+        break;
     default:
         break;
     }
@@ -649,16 +832,6 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
             }
             mentorship->state.join_originated = 1u;
             mentorship->counters.join_originated++;
-            /* Queue admission is the existing JOIN transaction commit point.
-             * Rebase from that point, rather than the stale due time, so a
-             * delayed/busy JOIN can never produce catch-up reannouncements. */
-            if (mentorship->state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
-                mentorship->tc_metadata != NULL) {
-                mentorship->join_reannounce_deadline_ms =
-                    now_ms + TAVRN_MENTORSHIP_JOIN_REANNOUNCE_MS(
-                        &mentorship->config);
-                mentorship->join_reannounce_valid = 1u;
-            }
         } else if (pending->purpose == TAVRN_MENTORSHIP_PENDING_JOIN_RELAY) {
             join_origin = pending->join_origin;
             join_sequence = pending->join_sequence;
@@ -681,10 +854,11 @@ static tavrn_mentorship_status_t flush_pending_join_obligation(
     return TAVRN_MENTORSHIP_OK;
 }
 
-static void originate_join(tavrn_mentorship_t *mentorship)
+static void originate_join(tavrn_mentorship_t *mentorship, uint32_t now_ms)
 {
     tavrn_validated_control_t join;
     uint16_t sequence = 1u;
+    tavrn_mentorship_status_t retain_status;
 
     if (mentorship == NULL || mentorship->router == NULL || mentorship->gtt == NULL) {
         return;
@@ -703,10 +877,12 @@ static void originate_join(tavrn_mentorship_t *mentorship)
     if (build_join_for_local(mentorship, sequence, &join) != TAVRN_MENTORSHIP_OK) {
         return;
     }
-    (void)retain_join_obligation(mentorship, &join,
-                                  TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN,
-                                  &mentorship->gtt->config.local_identity,
-                                  sequence);
+    retain_status = retain_join_obligation(
+        mentorship, &join, TAVRN_MENTORSHIP_PENDING_JOIN_ORIGIN,
+        &mentorship->gtt->config.local_identity, sequence);
+    if (retain_status == TAVRN_MENTORSHIP_OK) {
+        (void)tavrn_mentorship_note_local_tc_retained(mentorship, now_ms);
+    }
 }
 
 tavrn_mentorship_status_t tavrn_mentorship_init(
@@ -1026,6 +1202,80 @@ tavrn_mentorship_status_t tavrn_mentorship_build_sync_pull(
     return TAVRN_MENTORSHIP_OK;
 }
 
+static tavrn_mentorship_status_t build_active_sync_pull(
+    const tavrn_adva_t *mentee, const tavrn_adva_t *mentor,
+    uint16_t snapshot_id, uint8_t page_index,
+    tavrn_validated_control_t *control_out)
+{
+    tavrn_mentorship_status_t status = tavrn_mentorship_build_sync_pull(
+        mentee, mentor, snapshot_id, page_index, control_out);
+
+    if (status != TAVRN_MENTORSHIP_OK) {
+        return status;
+    }
+    if (page_index == 0u) {
+        control_out->pdu[5] = 0x01u;
+    }
+    return TAVRN_MENTORSHIP_OK;
+}
+
+tavrn_mentorship_status_t tavrn_mentorship_begin_active_sync(
+    tavrn_mentorship_t *mentorship, const tavrn_adva_t *mentor,
+    uint8_t mentor_known_remote_count, uint32_t now_ms)
+{
+    tavrn_validated_control_t pull;
+    uint8_t local_known_remote_count;
+    uint16_t snapshot_id;
+
+    if (mentorship == NULL || mentor == NULL || mentorship->gtt == NULL ||
+        mentor_known_remote_count > TAVRN_GTT_CAPACITY - 1u) {
+        return TAVRN_MENTORSHIP_INVALID;
+    }
+    if (adva_equal(mentor, &mentorship->gtt->config.local_identity)) {
+        return TAVRN_MENTORSHIP_BUSY;
+    }
+    local_known_remote_count = tavrn_gtt_known_remote_count(mentorship->gtt);
+    if (mentor_known_remote_count <= local_known_remote_count) {
+        return TAVRN_MENTORSHIP_OK;
+    }
+    if (!rfi_ownership_available(mentorship)) {
+        mentorship->counters.active_sync_busy++;
+        return TAVRN_MENTORSHIP_BUSY;
+    }
+    if (mentorship->active_sync.cooldown_valid != 0u) {
+        if (!time_due(now_ms, mentorship->active_sync.cooldown_deadline_ms)) {
+            mentorship->counters.active_sync_cooldown_suppressed++;
+            return TAVRN_MENTORSHIP_BUSY;
+        }
+        mentorship->active_sync.cooldown_valid = 0u;
+    }
+    snapshot_id = (uint16_t)(mentorship->active_sync_next_snapshot_id + 1u);
+    if (snapshot_id == 0u) {
+        snapshot_id = 1u;
+    }
+    mentorship->active_sync_next_snapshot_id = snapshot_id;
+    memset(&mentorship->active_sync, 0, sizeof(mentorship->active_sync));
+    mentorship->active_sync.mentor = *mentor;
+    mentorship->active_sync.snapshot_id = snapshot_id;
+    mentorship->active_sync.valid = 1u;
+    mentorship->state.active_sync_in_progress = 1u;
+    memset(mentorship->receiving_records, 0, sizeof(mentorship->receiving_records));
+    if (build_active_sync_pull(&mentorship->gtt->config.local_identity, mentor,
+                               snapshot_id, 0u, &pull) != TAVRN_MENTORSHIP_OK) {
+        abort_active_sync(mentorship, now_ms, 0u);
+        return TAVRN_MENTORSHIP_INVALID;
+    }
+    if (retain_control(mentorship, &pull, 0u,
+                       TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL, NULL, 0u) !=
+        TAVRN_MENTORSHIP_OK) {
+        abort_active_sync(mentorship, now_ms, 0u);
+        mentorship->counters.active_sync_busy++;
+        return TAVRN_MENTORSHIP_BUSY;
+    }
+    mentorship->counters.active_sync_trigger++;
+    return TAVRN_MENTORSHIP_OK;
+}
+
 tavrn_mentorship_status_t tavrn_mentorship_build_sync_data(
     const tavrn_mentorship_snapshot_data_t *snapshot,
     const tavrn_adva_t *mentor, const tavrn_adva_t *mentee, uint8_t page_index,
@@ -1087,9 +1337,12 @@ static tavrn_mentorship_status_t commit_received_snapshot(
          received_page_bitmap != expected_receiving_page_bitmap(record_count))) {
         return TAVRN_MENTORSHIP_INVALID;
     }
+    if (validate_staged_live_sid8_set(mentorship, record_count, now_ms) !=
+        TAVRN_MENTORSHIP_OK) {
+        return TAVRN_MENTORSHIP_COLLISION;
+    }
     for (index = 0u; index < record_count; index++) {
         const tavrn_mentorship_record_t *record = &mentorship->receiving_records[index];
-        uint8_t prior;
 
         memset(&records[index], 0, sizeof(records[index]));
         records[index].identity = record->identity;
@@ -1099,6 +1352,25 @@ static tavrn_mentorship_status_t commit_received_snapshot(
         records[index].departed = record->departed;
         records[index].remaining_lifetime_ms =
             (uint32_t)record->ttl_bucket * 20000u;
+    }
+    merge_status = record_count == 0u ? TAVRN_GTT_SYNC_MERGE_UNCHANGED :
+        tavrn_gtt_sync_merge(mentorship->gtt, records, record_count, now_ms);
+    if (merge_status != TAVRN_GTT_SYNC_MERGE_COMMITTED &&
+        merge_status != TAVRN_GTT_SYNC_MERGE_UNCHANGED) {
+        return TAVRN_MENTORSHIP_BUSY;
+    }
+    return TAVRN_MENTORSHIP_OK;
+}
+
+static tavrn_mentorship_status_t validate_staged_live_sid8_set(
+    tavrn_mentorship_t *mentorship, uint8_t record_count, uint32_t now_ms)
+{
+    uint8_t index;
+
+    for (index = 0u; index < record_count; index++) {
+        const tavrn_mentorship_record_t *record = &mentorship->receiving_records[index];
+        uint8_t prior;
+
         if (record->departed != 0u) {
             continue;
         }
@@ -1123,12 +1395,6 @@ static tavrn_mentorship_status_t commit_received_snapshot(
                 return enter_identity_conflict(mentorship, now_ms);
             }
         }
-    }
-    merge_status = record_count == 0u ? TAVRN_GTT_SYNC_MERGE_UNCHANGED :
-        tavrn_gtt_sync_merge(mentorship->gtt, records, record_count, now_ms);
-    if (merge_status != TAVRN_GTT_SYNC_MERGE_COMMITTED &&
-        merge_status != TAVRN_GTT_SYNC_MERGE_UNCHANGED) {
-        return TAVRN_MENTORSHIP_BUSY;
     }
     return TAVRN_MENTORSHIP_OK;
 }
@@ -1272,6 +1538,13 @@ static tavrn_mentorship_status_t process_hello(tavrn_mentorship_t *mentorship,
         !adva_bytes_equal(&event->transmitter.adva, &event->control.pdu[11])) {
         return TAVRN_MENTORSHIP_OK;
     }
+    if (mentorship->active_sync.valid != 0u) {
+        abort_active_sync(mentorship, now_ms, 1u);
+    }
+    if (mentorship->serving_session_valid != 0u &&
+        mentorship->serving_active_rfi != 0u) {
+        clear_serving_session(mentorship);
+    }
     boot_nonce = pdu_u16(&event->control, 17u);
     if (mentorship->state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
         mentorship->serving_session_valid != 0u) {
@@ -1400,6 +1673,7 @@ static tavrn_mentorship_status_t process_pull(tavrn_mentorship_t *mentorship,
     tavrn_validated_control_t data;
     uint16_t snapshot_id;
     uint8_t page_index;
+    uint8_t active_rfi;
 
     if (event->control.type != TAVRN_WIRE_SYNC_PULL || event->control.pdu_len != 22u) {
         return TAVRN_MENTORSHIP_INVALID;
@@ -1408,8 +1682,50 @@ static tavrn_mentorship_status_t process_pull(tavrn_mentorship_t *mentorship,
     mentor = adva_from_bytes(&event->control.pdu[12]);
     snapshot_id = pdu_u16(&event->control, 18u);
     page_index = event->control.pdu[20];
+    active_rfi = event->control.pdu[5] == 0x01u;
     if (!adva_equal(&mentor, &mentorship->gtt->config.local_identity) ||
-        mentorship->serving_session_valid == 0u ||
+        !adva_equal(&mentee, &event->transmitter.adva)) {
+        return TAVRN_MENTORSHIP_OK;
+    }
+    if (active_rfi != 0u) {
+        tavrn_mentorship_snapshot_data_t snapshot;
+
+        if ((page_index != 0u && mentorship->serving_session_valid == 0u) ||
+            mentorship->state.state !=
+                TAVRN_MENTORSHIP_SID8_ACTIVE) {
+            return TAVRN_MENTORSHIP_INVALID;
+        }
+        if (mentorship->serving_session_valid != 0u) {
+            if (mentorship->serving_active_rfi == 0u ||
+                !adva_equal(&mentee, &mentorship->serving_mentee) ||
+                snapshot_id != mentorship->serving_snapshot.snapshot_id) {
+                return TAVRN_MENTORSHIP_BUSY;
+            }
+        } else {
+            if (!rfi_ownership_available(mentorship)) {
+                return TAVRN_MENTORSHIP_BUSY;
+            }
+            memset(&snapshot, 0, sizeof(snapshot));
+            if (tavrn_mentorship_freeze_snapshot(mentorship, snapshot_id, now_ms,
+                                                 &snapshot) != TAVRN_MENTORSHIP_OK) {
+                return TAVRN_MENTORSHIP_BUSY;
+            }
+            mentorship->serving_snapshot = snapshot;
+            mentorship->serving_mentee = mentee;
+            mentorship->serving_session_valid = 1u;
+            mentorship->serving_active_rfi = 1u;
+            mentorship->serving_deadline_ms = now_ms +
+                mentorship->config.page_timeout_ms * mentorship->config.page_attempts +
+                mentorship->config.offer_window_ms;
+        }
+    } else if (mentorship->serving_session_valid != 0u &&
+               mentorship->serving_active_rfi != 0u &&
+               (page_index == 0u ||
+                !adva_equal(&mentee, &mentorship->serving_mentee) ||
+                snapshot_id != mentorship->serving_snapshot.snapshot_id)) {
+        return TAVRN_MENTORSHIP_OK;
+    }
+    if (mentorship->serving_session_valid == 0u ||
         !adva_equal(&mentee, &mentorship->serving_mentee)) {
         return TAVRN_MENTORSHIP_OK;
     }
@@ -1417,8 +1733,7 @@ static tavrn_mentorship_status_t process_pull(tavrn_mentorship_t *mentorship,
         clear_serving_session(mentorship);
         return TAVRN_MENTORSHIP_OK;
     }
-    if (!adva_equal(&mentee, &event->transmitter.adva) ||
-        snapshot_id != mentorship->serving_snapshot.snapshot_id ||
+    if (snapshot_id != mentorship->serving_snapshot.snapshot_id ||
         (mentorship->serving_snapshot.count == 0u && page_index != 0u) ||
         (mentorship->serving_snapshot.count != 0u &&
          page_index >= mentorship->serving_snapshot.count)) {
@@ -1433,7 +1748,127 @@ static tavrn_mentorship_status_t process_pull(tavrn_mentorship_t *mentorship,
         mentorship->config.page_timeout_ms * mentorship->config.page_attempts +
         mentorship->config.offer_window_ms;
     return retain_control(mentorship, &data, 0u, TAVRN_MENTORSHIP_PENDING_DATA,
-                          NULL, 0u);
+                           NULL, 0u);
+}
+
+static tavrn_mentorship_status_t commit_active_sync_snapshot(
+    tavrn_mentorship_t *mentorship, uint8_t record_count, uint32_t now_ms)
+{
+    tavrn_gtt_sync_record_t records[TAVRN_MENTORSHIP_SNAPSHOT_CAPACITY];
+    tavrn_gtt_sync_merge_status_t merge_status;
+    uint8_t index;
+
+    if (validate_staged_live_sid8_set(mentorship, record_count, now_ms) !=
+        TAVRN_MENTORSHIP_OK) {
+        return TAVRN_MENTORSHIP_COLLISION;
+    }
+    for (index = 0u; index < record_count; index++) {
+        const tavrn_mentorship_record_t *record = &mentorship->receiving_records[index];
+
+        memset(&records[index], 0, sizeof(records[index]));
+        records[index].identity = record->identity;
+        records[index].serial = record->serial;
+        records[index].serial_present = record->serial_present;
+        records[index].hop_count = record->hop_count;
+        records[index].departed = record->departed;
+        records[index].remaining_lifetime_ms =
+            (uint32_t)record->ttl_bucket * 20000u;
+    }
+    merge_status = record_count == 0u ? TAVRN_GTT_SYNC_MERGE_UNCHANGED :
+        tavrn_gtt_sync_merge(mentorship->gtt, records, record_count, now_ms);
+    return merge_status == TAVRN_GTT_SYNC_MERGE_COMMITTED ||
+            merge_status == TAVRN_GTT_SYNC_MERGE_UNCHANGED ?
+        TAVRN_MENTORSHIP_OK : TAVRN_MENTORSHIP_BUSY;
+}
+
+static tavrn_mentorship_status_t ingest_active_sync_data(
+    tavrn_mentorship_t *mentorship, const tavrn_adva_t *mentor,
+    const tavrn_validated_control_t *control, uint32_t now_ms)
+{
+    tavrn_mentorship_record_t record;
+    tavrn_esc_context_match_t existing;
+    tavrn_esc_context_status_t context_status;
+    tavrn_validated_control_t pull;
+    uint8_t index;
+    uint8_t present;
+    uint8_t last;
+
+    if (mentorship == NULL || mentor == NULL || control == NULL ||
+        control->type != TAVRN_WIRE_SYNC_DATA ||
+        !adva_bytes_equal(&mentorship->gtt->config.local_identity, &control->pdu[6]) ||
+        mentorship->active_sync.valid == 0u ||
+        !adva_equal(&mentorship->active_sync.mentor, mentor) ||
+        mentorship->active_sync.snapshot_id != pdu_u16(control, 12u) ||
+        mentorship->active_sync.page_deadline_valid == 0u) {
+        return TAVRN_MENTORSHIP_OK;
+    }
+    if (time_due(now_ms, mentorship->active_sync.page_deadline_ms)) {
+        return TAVRN_MENTORSHIP_SYNC_PAGE_DUPLICATE;
+    }
+    index = control->pdu[14];
+    present = (control->pdu[5] & 0x80u) != 0u;
+    last = (control->pdu[5] & 0x40u) != 0u;
+    if (index != mentorship->active_sync.next_index ||
+        index >= TAVRN_MENTORSHIP_SNAPSHOT_CAPACITY ||
+        (present == 0u && (control->pdu_len != 15u || index != 0u || last == 0u)) ||
+        (present != 0u && control->pdu_len != 24u)) {
+        return TAVRN_MENTORSHIP_INVALID;
+    }
+    if (present != 0u) {
+        memset(&record, 0, sizeof(record));
+        record.identity = adva_from_bytes(&control->pdu[15]);
+        record.serial = pdu_u16(control, 21u);
+        record.serial_present = 1u;
+        record.departed = (control->pdu[23] >> 4) == 0u;
+        record.ttl_bucket = (uint8_t)(control->pdu[23] >> 4);
+        record.hop_count = (uint8_t)(control->pdu[23] & 0x0fu);
+        if (record.hop_count < TAVRN_GTT_HOP_MAX) {
+            record.hop_count++;
+        }
+        context_status = resolve_sid8(mentorship, record.identity.bytes[0], now_ms,
+                                       &existing);
+        if (record.departed == 0u &&
+            (context_status == TAVRN_ESC_CONTEXT_COLLIDING ||
+             (context_status == TAVRN_ESC_CONTEXT_UNIQUE &&
+              !adva_equal(&existing.identity, &record.identity)))) {
+            return enter_identity_conflict(mentorship, now_ms);
+        }
+        mentorship->receiving_records[index] = record;
+    }
+    mentorship->active_sync.receiving_page_bitmap |= (uint16_t)1u << index;
+    mentorship->active_sync.next_index = (uint8_t)(index + 1u);
+    mentorship->active_sync.pull_attempts = 0u;
+    mentorship->active_sync.page_deadline_valid = 0u;
+    mentorship->counters.active_sync_pages++;
+    if (last != 0u) {
+        tavrn_mentorship_status_t status = commit_active_sync_snapshot(
+            mentorship, present != 0u ? (uint8_t)(index + 1u) : 0u, now_ms);
+
+        if (status != TAVRN_MENTORSHIP_OK) {
+            abort_active_sync(mentorship, now_ms, 0u);
+            return status;
+        }
+        mentorship->active_sync.valid = 0u;
+        mentorship->state.active_sync_in_progress = 0u;
+        mentorship->active_sync.queued_pull_valid = 0u;
+        memset(&mentorship->active_sync.queued_pull, 0,
+               sizeof(mentorship->active_sync.queued_pull));
+        arm_active_sync_cooldown(mentorship, now_ms);
+        mentorship->counters.active_sync_success++;
+        return TAVRN_MENTORSHIP_OK;
+    }
+    if (build_active_sync_pull(&mentorship->gtt->config.local_identity,
+                               &mentorship->active_sync.mentor,
+                               mentorship->active_sync.snapshot_id,
+                               mentorship->active_sync.next_index, &pull) !=
+            TAVRN_MENTORSHIP_OK ||
+        retain_control(mentorship, &pull, 0u,
+                       TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL, NULL, 0u) !=
+            TAVRN_MENTORSHIP_OK) {
+        abort_active_sync(mentorship, now_ms, 0u);
+        return TAVRN_MENTORSHIP_BUSY;
+    }
+    return TAVRN_MENTORSHIP_OK;
 }
 
 static void purge_expired_joins(tavrn_mentorship_t *mentorship, uint32_t now_ms)
@@ -1567,9 +2002,14 @@ static tavrn_mentorship_status_t process_join(tavrn_mentorship_t *mentorship,
     if ((relay.pdu[6] >> 4) != 0u && (relay.pdu[6] & 0x0fu) < 15u) {
         relay.pdu[6] = (uint8_t)(((relay.pdu[6] >> 4) - 1u) << 4) |
             (uint8_t)((relay.pdu[6] & 0x0fu) + 1u);
-        return retain_join_obligation(mentorship, &relay,
-                                      TAVRN_MENTORSHIP_PENDING_JOIN_RELAY,
-                                      &origin, sequence);
+        tavrn_mentorship_status_t status = retain_join_obligation(
+            mentorship, &relay, TAVRN_MENTORSHIP_PENDING_JOIN_RELAY,
+            &origin, sequence);
+
+        if (status == TAVRN_MENTORSHIP_OK) {
+            (void)tavrn_mentorship_note_real_tc_accepted(mentorship, now_ms);
+        }
+        return status;
     }
     memset(&record, 0, sizeof(record));
     record.identity = subject;
@@ -1581,6 +2021,7 @@ static tavrn_mentorship_status_t process_join(tavrn_mentorship_t *mentorship,
     }
     remember_join(mentorship, &origin, sequence, now_ms);
     mentorship->counters.join_received++;
+    (void)tavrn_mentorship_note_real_tc_accepted(mentorship, now_ms);
     return TAVRN_MENTORSHIP_OK;
 }
 
@@ -1697,6 +2138,15 @@ tavrn_mentorship_status_t tavrn_mentorship_handle_scheduler_event(
         result = process_pull(mentorship, control_event, now_ms);
         break;
     case TAVRN_WIRE_SYNC_DATA:
+    if (mentorship->active_sync.valid != 0u &&
+        control_event->control.pdu_len >= 12u &&
+        adva_bytes_equal(&mentorship->gtt->config.local_identity,
+                         &control_event->control.pdu[6])) {
+            result = ingest_active_sync_data(
+                mentorship, &control_event->transmitter.adva,
+                &control_event->control, now_ms);
+            break;
+        }
         if (!adva_bytes_equal(&mentorship->gtt->config.local_identity,
                               &control_event->control.pdu[6]) ||
             mentorship->state.state != TAVRN_MENTORSHIP_SYNCING ||
@@ -1797,7 +2247,7 @@ tavrn_mentorship_status_t tavrn_mentorship_activate_sid8(
     mentorship->state.ordinary_traffic_gated = 0u;
     mentorship->state.full_bootstrap_admission_enabled = 1u;
     mentorship->counters.transition_cleared++;
-    originate_join(mentorship);
+    originate_join(mentorship, now_ms);
     return TAVRN_MENTORSHIP_OK;
 }
 
@@ -1822,8 +2272,7 @@ tavrn_mentorship_status_t tavrn_mentorship_recover_sid16(
     mentorship->state.active_width = TAVRN_IDENTITY_SID16;
     mentorship->state.ordinary_traffic_gated = 1u;
     mentorship->started_at_ms = now_ms;
-    mentorship->join_reannounce_deadline_ms = 0u;
-    mentorship->join_reannounce_valid = 0u;
+    abort_active_sync(mentorship, now_ms, 1u);
     clear_receiving_session(mentorship);
     clear_serving_session(mentorship);
     memset(&mentorship->pending_control, 0, sizeof(mentorship->pending_control));
@@ -1908,6 +2357,28 @@ tavrn_mentorship_status_t tavrn_mentorship_tick(
         return retain_control(mentorship, &control, 0u,
                               TAVRN_MENTORSHIP_PENDING_PULL, NULL, 0u);
     }
+    if (mentorship->active_sync.valid != 0u &&
+        mentorship->active_sync.page_deadline_valid != 0u &&
+        time_due(now_ms, mentorship->active_sync.page_deadline_ms) &&
+        mentorship->pending_control.valid == 0u) {
+        if (mentorship->active_sync.pull_attempts >=
+            mentorship->config.page_attempts) {
+            abort_active_sync(mentorship, now_ms, 0u);
+            return TAVRN_MENTORSHIP_RESTARTED;
+        }
+        if (build_active_sync_pull(&mentorship->gtt->config.local_identity,
+                                   &mentorship->active_sync.mentor,
+                                   mentorship->active_sync.snapshot_id,
+                                   mentorship->active_sync.next_index, &control) !=
+                TAVRN_MENTORSHIP_OK ||
+            retain_control(mentorship, &control, 0u,
+                           TAVRN_MENTORSHIP_PENDING_ACTIVE_PULL, NULL, 0u) !=
+                TAVRN_MENTORSHIP_OK) {
+            abort_active_sync(mentorship, now_ms, 0u);
+            return TAVRN_MENTORSHIP_BUSY;
+        }
+        return TAVRN_MENTORSHIP_OK;
+    }
     if ((mentorship->state.state == TAVRN_MENTORSHIP_REJOINING ||
          mentorship->state.state == TAVRN_MENTORSHIP_COLLECTING_OFFERS) &&
         mentorship->state.active_offer_count == 0u &&
@@ -1919,18 +2390,6 @@ tavrn_mentorship_status_t tavrn_mentorship_tick(
             return activation;
         }
         return TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED;
-    }
-    /* Full maintenance owns the one shared TC sequence stream.  An unbound
-     * legacy bootstrap fixture retains its one initial JOIN only; it cannot
-     * safely mint fresh periodic TC UUIDs.  A pending JOIN is flushed above,
-     * before this branch, so it always retains exact bytes/sequence across
-     * busy backpressure.  The existing UUID retention is longer than TC
-     * subject suppression and well below remote soft expiry in every profile. */
-    if (mentorship->state.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
-        mentorship->tc_metadata != NULL &&
-        mentorship->join_reannounce_valid != 0u &&
-        time_due(now_ms, mentorship->join_reannounce_deadline_ms)) {
-        originate_join(mentorship);
     }
     return TAVRN_MENTORSHIP_OK;
 }

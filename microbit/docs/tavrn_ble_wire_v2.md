@@ -1,6 +1,6 @@
 # TAVRN-BLE routed wire-v2 contract
 
-Status: **frozen Phase 0 proof-of-concept contract**. This is an experimental
+Status: **V2.3 normative proof-of-concept contract**. This is an experimental
 legacy-advertising transport. It is not Bluetooth Mesh, is not secure, and does
 not replace the separately versioned legacy flood wire-v1 codec.
 
@@ -30,8 +30,8 @@ wire-v2. Requirement IDs are stable test handles.
 
 Profile mapping: this document derives representation for `BEARER-01` through
 `BEARER-04`, `IDENT-01` through `IDENT-04`, `SERIAL-01` through `SERIAL-05`,
-`LINK-01` through `LINK-06`, `AODV-02` through `AODV-07`, `BOOT-01` through
-`BOOT-06`, and `META-01` through `META-04`. Profile behavior wins if a derived
+`LINK-01` through `LINK-06`, `AODV-02` through `AODV-09`, `BOOT-01` through
+`BOOT-06`, `GOSSIP-01` through `GOSSIP-03`, and `META-01` through `META-04`. Profile behavior wins if a derived
 representation is later found to conflict.
 
 ## 2. Notation and common encodings
@@ -448,10 +448,27 @@ freshness request; bit 3 `M`; bits 2..0 zero.
 | `13+2W` | 2 | `boot_nonce` when `N=1`; node sequence when `N=0` |
 | `15+2W` | variable | optional metadata |
 
-An ordinary HELLO is exactly `N=0,T=0,Q=0,M=0`, with broadcast receiver/final
-target, TTL=1/hops=0, and full origin AdvA equal to outer AdvA. It is direct
-one-hop control: it is never relayed, never answered, and refreshes
-direct-neighbor evidence only. A bootstrap HELLO is `N=1,T=0,Q=0,M=0`, SID16,
+For an ordinary SID8 HELLO only (`I=1,N=0,T=0,Q=0,M=0`), the variable tail is
+exactly three bytes:
+
+| PDU offset | Size | Field |
+| ---: | ---: | --- |
+| 17 | 1 | `known_remote_count`, `0..15` |
+| 18 | 1 | reserved, MUST be zero |
+| 19 | 1 | reserved, MUST be zero |
+
+An ordinary HELLO is exactly `N=0,T=0,Q=0,M=0`, SID8, and exactly 20 bytes, with
+broadcast receiver/final target, TTL=1/hops=0, and full origin AdvA equal to
+outer AdvA. `known_remote_count` is the `GOSSIP-01` occupied, canonical,
+nonself, nondeparted membership count, including a retained hard-expired member
+until it is marked departed; values above 15, nonzero reserved bytes, and the
+former 17-byte ordinary SID8 form are malformed. It is direct one-hop control:
+it is never relayed or answered and refreshes direct-neighbor evidence only. Its
+count is a one-sided post-admission missing-members hint, not a claim that equal
+counts imply equal GTT contents, freshness, or membership consensus. This is a
+breaking homogeneous-fleet V2.3 representation: all FULL_TAVRN participants
+MUST use it; encoders MUST NOT downgrade and decoders MUST reject the legacy
+17-byte ordinary form. A bootstrap HELLO is `N=1,T=0,Q=0,M=0`, SID16,
 direct one-hop/non-relayed, with a nonzero boot nonce, no metadata, and the same
 full-origin/outer-AdvA rule. It may elicit a separate mentorship `SYNC_OFFER`,
 which is not a HELLO reply. `{full origin AdvA,boot_nonce}` is routed-common
@@ -550,9 +567,11 @@ consumes part of it. Route loss or deadline expiry drops work without discovery
 or departure. Stage 0 has no independent rate limiter or timer key;
 `timer.aodv_rreq_rate` applies only to later RREQ stages.
 A response with `Q=0` is incapable of recursively eliciting another response.
-Base length is 19 (SID16) or 17 (SID8). HELLO has zero general metadata slots; the
-only exceptions are the two 20-byte (`17 + 1 + 2`) targeted forms above. Any other
-HELLO metadata count or flag combination is malformed. Ordinary `N=0` dedupe key
+The bootstrap HELLO base length is 19 (SID16). The ordinary SID8 and each targeted
+SID8 form are exactly 20 bytes. HELLO has zero general metadata slots; the
+targeted verification forms are the only metadata exception, while the ordinary
+three-byte trailer is not metadata. Any other HELLO metadata count or flag
+combination is malformed. Ordinary `N=0` dedupe key
 is `{network, full origin AdvA, node_sequence, T=0}`; targeted request and
 response keys are respectively `{network, full origin AdvA, node_sequence,
 final_target, subject, Q=1}` and `{network, full origin AdvA, node_sequence,
@@ -588,7 +607,7 @@ SYNC_PULL is exactly 22 bytes:
 | PDU offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 5 | common prefix |
-| 5 | 1 | flags, MUST be zero |
+| 5 | 1 | flags: bit 0 `RFI`; bits 7..1 MUST be zero |
 | 6 | 6 | mentee full AdvA, MUST equal outer AdvA |
 | 12 | 6 | selected mentor full AdvA (immediate/final receiver) |
 | 18 | 2 | `snapshot_id` |
@@ -601,6 +620,18 @@ repeats the same tuple. SYNC_PULL is not HACKable: the bootstrap FSM waits
 `timer.mentor_page_timeout_ms` and permits `timer.mentor_page_attempts` for the
 same tuple, then clears the mentor and restarts full-identity HELLO (BALANCED:
 2400 ms and three attempts). No metadata fits.
+
+`RFI=1` is reserved for the V2.3 private active-GTT-repair request. It is legal
+only on index/page zero and only after the `GOSSIP-02` direct post-admission
+trigger; its requested count remains exactly one. On accepting it, the selected
+mentor freezes one bounded canonical snapshot for the supplied transaction
+`snapshot_id`, returns its first contiguous existing SYNC_DATA page, and serves
+subsequent ordinary `RFI=0` pulls for that same correlation until completion or
+bounded abort. RFI therefore uses no SYNC_OFFER and no public bootstrap state.
+The initiating peer remains the outer transmitter/mentee field and the selected
+mentor remains the receiver field. An RFI flag on any nonzero page, an RFI
+continuation, or any reserved flag bit is malformed. SYNC_OFFER flags remain
+zero; no RFI semantics are assigned to that message.
 
 ### 6.4 SYNC_DATA (`type=07`)
 
@@ -707,8 +738,9 @@ using one ambiguous `src` field.
 | E_RERR SID16 | 12 + 4D | `D=1..3` | 24 | 31 |
 | E_RERR SID8 | 11 + 3D | `D=1..4`, conditional metadata table above | 24 | 31 |
 | E_RREP_ACK SID16 / SID8 | 16 / 13 | none | 16 / 13 | 23 / 20 |
-| HELLO SID16 | 19 | no metadata | 19 | 26 |
-| HELLO SID8 | 17 | targeted freshness request or response metadata exactly 1 | 20 | 27 |
+| HELLO SID16 bootstrap | 19 | no metadata | 19 | 26 |
+| HELLO SID8 ordinary | 20 | count plus two reserved-zero bytes | 20 | 27 |
+| HELLO SID8 targeted | 20 | targeted freshness request or response metadata exactly 1 | 20 | 27 |
 | SYNC_OFFER | exact 24 | zero entries inline; snapshot count only | 24 | 31 |
 | SYNC_PULL | exact 22 | requested count fixed at 1 | 22 | 29 |
 | SYNC_DATA | 15 empty / 24 present | zero or one full entry | 24 | 31 |
@@ -736,6 +768,8 @@ _Static_assert(RREP_ACK16_LEN == 16u && RREP_ACK8_LEN == 13u,
                "RREP ACK includes destination sequence correlation");
 _Static_assert(HELLO8_BASE + META_HEADER + META_ENTRY == 20u,
                 "targeted HELLO carries exactly one freshness entry");
+_Static_assert(HELLO8_BASE + 3u == 20u,
+                "ordinary HELLO carries count and reserved trailer");
 _Static_assert(SYNC_DATA_BASE + SYNC_DATA_ENTRY == PDU_MAX,
                "one full bootstrap entry");
 _Static_assert(SYNC_OFFER_LEN == PDU_MAX, "full bootstrap identities");
@@ -797,6 +831,12 @@ merely because no full AdvA is known for it. Semantic validation occurs before
 inserting a dedupe key. Duplicate committed DATA is the one deliberate special
 case after validation: it emits no candidate and performs no second
 custody/application action, but generates a fresh DUPLICATE HACK.
+
+For V2.3 FULL ordinary HELLO, exact 20-byte validation, count range, and both
+reserved-zero bytes occur before identity admission, ordinary HELLO dedupe, GTT
+observation, or active-RFI triggering. A received 17-byte ordinary SID8 HELLO is
+the explicit mixed-version rejection, not a valid old peer and not a reason to
+fall back.
 
 ### 9.1 Dedupe retention
 
@@ -914,6 +954,18 @@ PDU=13, AdvData=20.
 
 PDU=19, AdvData=26.
 
+### Fixed-k ordinary HELLO8 with two known remote members
+
+Board A sends ordinary node sequence `0001`, count two, and zero reserved bytes:
+
+```text
+02 01 06 17 ff ff ff 54 52 02 2a 04 80 10 ff ff 18 42 de 52
+4a dd 01 00 02 00 00
+```
+
+PDU=20, AdvData=27. Count equality with a receiving peer makes no table-equality
+or consensus claim.
+
 ### Fixed-k targeted freshness request HELLO8
 
 ```text
@@ -957,6 +1009,19 @@ PDU=24, AdvData=31.
 ```
 
 PDU=22, AdvData=29.
+
+### Active-RFI SYNC_PULL page 0
+
+The same direct B-to-A pull becomes the private active-repair request by setting
+only the reserved `RFI` flag:
+
+```text
+02 01 06 19 ff ff ff 54 52 02 2a 06 01 dc 4b 0a 06 03 f8
+18 42 de 52 4a dd 44 33 00 01
+```
+
+PDU=22, AdvData=29. The responder freezes snapshot `3344`; later contiguous
+pages use the ordinary zero-flags SYNC_PULL representation.
 
 ### SYNC_DATA one-entry final page
 

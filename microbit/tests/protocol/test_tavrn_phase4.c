@@ -3,6 +3,7 @@
 #include "tavrn_full.h"
 #include "tavrn_gtt.h"
 #include "tavrn_link_v2.h"
+#include "tavrn_maintenance.h"
 #include "tavrn_phase4_esc_mentor_contract.h"
 #include "tavrn_router.h"
 #include "tavrn_wire_v2.h"
@@ -260,6 +261,29 @@ static int setup_fixture(phase4_fixture_t *fixture, uint32_t now_ms)
 {
     return setup_fixture_for_local(fixture, adva_a, now_ms);
 }
+
+#if defined(TAVRN_ESC_MENTORSHIP_API)
+static int bind_phase4_tc_metadata(phase4_fixture_t *fixture,
+                                   tavrn_tc_metadata_state_t *metadata)
+{
+    tavrn_tc_metadata_config_t config;
+
+    if (fixture == NULL || metadata == NULL) return 0;
+    memset(&config, 0, sizeof(config));
+    config.local_identity = fixture->gtt.config.local_identity;
+    config.initial_tc_sequence = 1u;
+    config.tc_uuid_ms = 100u;
+    config.tc_subject_ms = 100u;
+    config.metadata_cooldown_ms = 10u;
+    config.network_id = TEST_NETWORK_ID;
+    return tavrn_maintenance_tc_metadata_init(metadata, &config) ==
+               TAVRN_TC_METADATA_OK &&
+        tavrn_maintenance_tc_metadata_bind_gtt(metadata, &fixture->gtt) ==
+               TAVRN_TC_METADATA_OK &&
+        tavrn_mentorship_bind_tc_metadata(&fixture->mentorship, metadata) ==
+               TAVRN_MENTORSHIP_OK;
+}
+#endif
 
 static int remove_queued_control(phase4_fixture_t *fixture,
                                  tavrn_wire_type_t type);
@@ -1005,8 +1029,8 @@ static int test_boot_01_full_identity_and_real_composed_admission(void)
     tavrn_router_phase_trace_t dispatch_trace;
     tavrn_adva_t peer = make_adva(adva_b);
     tavrn_gtt_snapshot_t peer_snapshot;
-    tavrn_mentorship_state_snapshot_t state;
     tavrn_mentorship_status_t hello_status;
+    tavrn_mentorship_state_snapshot_t state;
     int ok = 1;
 
     ok &= setup_fixture(&fixture, 0u);
@@ -1264,13 +1288,13 @@ static int test_boot_05_production_exchange(void)
     tavrn_validated_control_t false_final;
     tavrn_validated_control_t wrong_mentor;
     tavrn_validated_control_t timeout_page;
-    tavrn_mentorship_state_snapshot_t state;
     tavrn_mentorship_status_t transfer_status;
     tavrn_mentorship_offer_t timeout_offer;
     tavrn_gtt_storage_t mentee_storage_before_page;
     tavrn_gtt_storage_t timeout_storage_before_page;
     tavrn_gtt_counters_t mentee_counters_before_page;
     tavrn_gtt_counters_t timeout_counters_before_page;
+    tavrn_mentorship_state_snapshot_t state;
     uint16_t snapshot_id;
     int ok = 1;
 
@@ -1386,6 +1410,205 @@ static int test_boot_05_production_exchange(void)
                sizeof(timeout_mentee.gtt_storage)) == 0;
     return ok;
 }
+
+static int test_boot_05_active_gtt_repair(void)
+{
+    phase4_fixture_t mentor;
+    phase4_fixture_t mentee;
+    tavrn_mentorship_state_snapshot_t before;
+    tavrn_mentorship_state_snapshot_t after;
+    tavrn_mentorship_status_t status;
+    int ok = 1;
+
+    ok &= setup_fixture_for_local(&mentor, adva_b, 0u) &&
+        setup_fixture(&mentee, 0u) &&
+        tavrn_mentorship_tick(&mentor.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&mentor.mentorship, 51u) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentee.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&mentee.mentorship, 51u) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentor.mentorship, 52u) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentee.mentorship, 52u) == TAVRN_MENTORSHIP_OK &&
+        ble_mesh_tx_queue_remove(&mentor.scheduler.routed_tx_queue, 0u, NULL) &&
+        ble_mesh_tx_queue_remove(&mentee.scheduler.routed_tx_queue, 0u, NULL) &&
+        observe_member(&mentor, adva_c, 1u, 1u, TAVRN_GTT_EVIDENCE_LIVENESS, 52u) &&
+        tavrn_mentorship_state_snapshot(&mentee.mentorship, &before) ==
+            TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_begin_active_sync(&mentee.mentorship,
+                                            &mentor.gtt.config.local_identity,
+                                            2u, 60u) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_state_snapshot(&mentee.mentorship, &after) ==
+            TAVRN_MENTORSHIP_OK &&
+        after.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+        after.active_width == TAVRN_IDENTITY_SID8 &&
+        after.ordinary_traffic_gated == 0u && after.active_sync_in_progress != 0u &&
+        tavrn_mentorship_tick(&mentee.mentorship, 61u) == TAVRN_MENTORSHIP_OK &&
+        transfer_queued_control(&mentee, &mentor, TAVRN_WIRE_SYNC_PULL, 62u,
+                                &status) && status == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentor.mentorship, 63u) == TAVRN_MENTORSHIP_OK &&
+        transfer_queued_control(&mentor, &mentee, TAVRN_WIRE_SYNC_DATA, 64u,
+                                &status) && status == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentee.mentorship, 65u) == TAVRN_MENTORSHIP_OK &&
+        transfer_queued_control(&mentee, &mentor, TAVRN_WIRE_SYNC_PULL, 66u,
+                                &status) && status == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&mentor.mentorship, 67u) == TAVRN_MENTORSHIP_OK &&
+        transfer_queued_control(&mentor, &mentee, TAVRN_WIRE_SYNC_DATA, 68u,
+                                &status) && status == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_state_snapshot(&mentee.mentorship, &after) ==
+            TAVRN_MENTORSHIP_OK &&
+        after.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+        after.active_width == TAVRN_IDENTITY_SID8 &&
+        after.ordinary_traffic_gated == 0u && after.active_sync_in_progress == 0u &&
+        gtt_identity_count(&mentee.gtt_storage, adva_c) == 1u &&
+        tavrn_mentorship_counters(&mentee.mentorship)->active_sync_trigger == 1u &&
+        tavrn_mentorship_counters(&mentee.mentorship)->active_sync_pages == 2u &&
+        tavrn_mentorship_counters(&mentee.mentorship)->active_sync_success == 1u &&
+        tavrn_mentorship_begin_active_sync(&mentee.mentorship,
+                                            &mentor.gtt.config.local_identity,
+                                            3u, 69u) == TAVRN_MENTORSHIP_BUSY &&
+        tavrn_mentorship_counters(&mentee.mentorship)->
+            active_sync_cooldown_suppressed == 1u;
+    return ok;
+}
+
+static int test_boot_05_active_gtt_repair_ownership_and_collision(void)
+{
+    phase4_fixture_t requester;
+    phase4_fixture_t responder;
+    phase4_fixture_t bootstrap;
+    phase4_fixture_t collision;
+    tavrn_validated_control_t pull;
+    tavrn_validated_control_t page0;
+    tavrn_validated_control_t page1;
+    tavrn_adva_t mentor_b = make_adva(adva_b);
+    tavrn_adva_t mentee_a = make_adva(adva_a);
+    tavrn_mentorship_offer_t offer;
+    uint8_t collision_a[TAVRN_ADVA_LEN] = {
+        0x7au, 0x01u, 0x02u, 0x03u, 0x04u, 0x05u,
+    };
+    uint8_t collision_b[TAVRN_ADVA_LEN] = {
+        0x7au, 0x11u, 0x12u, 0x13u, 0x14u, 0x15u,
+    };
+    int ok = 1;
+
+    /* A queued requester pull remains independently cancellable when a real
+     * bootstrap transition preempts it. */
+    ok &= setup_fixture(&requester, 0u) &&
+        tavrn_mentorship_tick(&requester.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&requester.mentorship, 51u) == TAVRN_MENTORSHIP_OK &&
+        ble_mesh_tx_queue_remove(&requester.scheduler.routed_tx_queue, 0u, NULL) &&
+        tavrn_mentorship_begin_active_sync(&requester.mentorship, &mentor_b,
+                                            1u, 60u) == TAVRN_MENTORSHIP_OK &&
+        tavrn_mentorship_tick(&requester.mentorship, 61u) == TAVRN_MENTORSHIP_OK &&
+        queued_control_count(&requester, TAVRN_WIRE_SYNC_PULL) == 1u &&
+        tavrn_mentorship_note_real_tc_accepted(&requester.mentorship, 62u) ==
+            TAVRN_MENTORSHIP_OK &&
+        queued_control_count(&requester, TAVRN_WIRE_SYNC_PULL) == 0u &&
+        requester.mentorship.active_sync.valid == 0u &&
+        tavrn_mentorship_counters(&requester.mentorship)->active_sync_preempt == 1u;
+
+    /* A responder cannot take RFI while bootstrap ownership is live. */
+    ok &= setup_fixture_for_local(&responder, adva_b, 0u) &&
+        tavrn_mentorship_tick(&responder.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&responder.mentorship, 51u) == TAVRN_MENTORSHIP_OK &&
+        ble_mesh_tx_queue_remove(&responder.scheduler.routed_tx_queue, 0u, NULL) &&
+        (responder.mentorship.active_sync.valid = 1u,
+         responder.mentorship.state.active_sync_in_progress = 1u, 1) &&
+        tavrn_mentorship_build_sync_pull(&mentee_a, &mentor_b,
+                                         0x1234u, 0u, &pull) == TAVRN_MENTORSHIP_OK &&
+        (pull.pdu[5] = 0x01u, 1) &&
+        deliver_control(&responder, &pull, adva_a, TAVRN_IDENTITY_SID8, 61u, NULL) ==
+            TAVRN_MENTORSHIP_BUSY &&
+        responder.mentorship.serving_session_valid == 0u;
+
+    /* A pending JOIN retains its bootstrap obligation; later triggers are
+     * counted and are not retained for catch-up. */
+    ok &= setup_fixture(&bootstrap, 0u) &&
+        tavrn_mentorship_tick(&bootstrap.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        bootstrap.mentorship.join_obligations[0].valid != 0u &&
+        tavrn_mentorship_begin_active_sync(&bootstrap.mentorship, &mentor_b,
+                                            2u, 51u) == TAVRN_MENTORSHIP_BUSY &&
+        tavrn_mentorship_counters(&bootstrap.mentorship)->active_sync_busy == 1u &&
+        bootstrap.mentorship.active_sync.valid == 0u;
+
+    /* Both bootstrap and active atomic merge share the staged-set validator.
+     * Two unknown staged live identities with one SID8 must conflict before
+     * either record is merged. */
+    memset(&offer, 0, sizeof(offer));
+    offer.mentor = mentor_b;
+    offer.mentee = mentee_a;
+    offer.snapshot_id = 0x5b01u;
+    offer.boot_nonce = 0x5a01u;
+    offer.snapshot_count = 2u;
+    offer.rssi_magnitude_db = 40u;
+    page0 = make_sync_data(adva_a, offer.snapshot_id, 0u, collision_a, 1u,
+                           0x11u, 0u);
+    page1 = make_sync_data(adva_a, offer.snapshot_id, 1u, collision_b, 1u,
+                           0x11u, 1u);
+    ok &= setup_fixture(&collision, 0u) &&
+        begin_sync_page_wait(&collision, &offer, 1u) &&
+        tavrn_mentorship_ingest_sync_data(&collision.mentorship, &mentor_b,
+                                          &page0, 23u) == TAVRN_MENTORSHIP_OK &&
+        (collision.mentorship.page_deadline_ms = 100u,
+         collision.mentorship.page_deadline_valid = 1u, 1) &&
+        tavrn_mentorship_ingest_sync_data(&collision.mentorship, &mentor_b,
+                                          &page1, 24u) == TAVRN_MENTORSHIP_COLLISION &&
+        gtt_identity_count(&collision.gtt_storage, collision_a) == 0u &&
+        gtt_identity_count(&collision.gtt_storage, collision_b) == 0u;
+    return ok;
+}
+
+#if defined(TAVRN_ESC_MENTORSHIP_API)
+static int test_boot_05_rfi_retained_tc_backlog_gate(void)
+{
+    phase4_fixture_t origin_fixture;
+    phase4_fixture_t overflow_fixture;
+    tavrn_tc_metadata_state_t origin_metadata;
+    tavrn_tc_metadata_state_t overflow_metadata;
+    tavrn_adva_t mentor = make_adva(adva_b);
+    int ok = 1;
+
+    /* Origin facts are a retained local TC backlog even before their first
+     * action has a chance to enter the link. */
+    ok &= setup_fixture(&origin_fixture, 0u) &&
+        tavrn_mentorship_tick(&origin_fixture.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&origin_fixture.mentorship, 51u) ==
+            TAVRN_MENTORSHIP_OK &&
+        remove_queued_control(&origin_fixture, TAVRN_WIRE_TC_UPDATE) &&
+        bind_phase4_tc_metadata(&origin_fixture, &origin_metadata);
+    memset(&origin_metadata.origin_facts[0], 0,
+           sizeof(origin_metadata.origin_facts[0]));
+    origin_metadata.origin_facts[0].subject = make_adva(adva_c);
+    origin_metadata.origin_facts[0].event = TAVRN_TC_EVENT_LEAVE;
+    origin_metadata.origin_facts[0].valid = 1u;
+    origin_metadata.origin_fact_count = 1u;
+    ok &= tavrn_mentorship_begin_active_sync(&origin_fixture.mentorship, &mentor,
+                                             1u, 60u) == TAVRN_MENTORSHIP_BUSY &&
+        tavrn_mentorship_counters(&origin_fixture.mentorship)->active_sync_busy == 1u;
+
+    /* The retry-exhausted overflow is an independently retained local LEAVE,
+     * not an ignorable seventeenth queue entry. */
+    ok &= setup_fixture(&overflow_fixture, 0u) &&
+        tavrn_mentorship_tick(&overflow_fixture.mentorship, 50u) ==
+            TAVRN_MENTORSHIP_SELF_BOOTSTRAPPED &&
+        tavrn_mentorship_tick(&overflow_fixture.mentorship, 51u) ==
+            TAVRN_MENTORSHIP_OK &&
+        remove_queued_control(&overflow_fixture, TAVRN_WIRE_TC_UPDATE) &&
+        bind_phase4_tc_metadata(&overflow_fixture, &overflow_metadata);
+    overflow_metadata.retry_exhausted_leave_overflow.failed_next_hop =
+        make_adva(adva_d);
+    overflow_metadata.retry_exhausted_leave_overflow.valid = 1u;
+    ok &= tavrn_mentorship_begin_active_sync(&overflow_fixture.mentorship, &mentor,
+                                             1u, 60u) == TAVRN_MENTORSHIP_BUSY &&
+        tavrn_mentorship_counters(&overflow_fixture.mentorship)->active_sync_busy == 1u;
+    return ok;
+}
+#endif
 
 /* BOOT-05 broadcast contract: all three controls are copied from the real
  * queued advertisement and heard by a third board.  The listener must never
@@ -2487,9 +2710,15 @@ int main(int argc, char **argv)
         CHECK("BOOT-03", test_boot_03_total_offer_selection_order() &&
               test_boot_03_offer_capacity_retention());
         CHECK("BOOT-04", test_boot_04_immutable_canonical_snapshot());
-        CHECK("BOOT-05", test_boot_05_one_entry_pages_and_fresh_merge() &&
-              test_boot_05_broadcast_production_exchange() &&
-              test_boot_05_deadlines_ttl_and_sync_dedupe());
+        CHECK("BOOT-05A", test_boot_05_production_exchange());
+        CHECK("BOOT-05B", test_boot_05_active_gtt_repair());
+        CHECK("BOOT-05C", test_boot_05_active_gtt_repair_ownership_and_collision());
+        CHECK("BOOT-05D", test_boot_05_one_entry_pages_and_fresh_merge());
+        CHECK("BOOT-05E", test_boot_05_broadcast_production_exchange());
+        CHECK("BOOT-05F", test_boot_05_deadlines_ttl_and_sync_dedupe());
+#if defined(TAVRN_ESC_MENTORSHIP_API)
+        CHECK("BOOT-05G", test_boot_05_rfi_retained_tc_backlog_gate());
+#endif
         CHECK("BOOT-06", test_boot_06_gates_recovery_and_join_convergence() &&
                test_boot_06_known_peer_reboot_after_sid8_activation() &&
                test_boot_06_single_serving_session() &&

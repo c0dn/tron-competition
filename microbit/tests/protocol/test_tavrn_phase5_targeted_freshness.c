@@ -374,7 +374,7 @@ static tavrn_validated_control_t ordinary_hello(const uint8_t origin[TAVRN_ADVA_
 
     memset(&control, 0, sizeof(control));
     control.type = TAVRN_WIRE_HELLO;
-    control.pdu_len = 17u;
+    control.pdu_len = 20u;
     control.pdu[0] = 0x54u;
     control.pdu[1] = 0x52u;
     control.pdu[2] = 0x02u;
@@ -422,10 +422,10 @@ static const uint8_t targeted_response[] = {
     0x03u, 0x00u, 0x01u, 0xdcu, 0xf0u,
 };
 static const uint8_t ordinary_vector[] = {
-    0x02u, 0x01u, 0x06u, 0x14u, 0xffu, 0xffu, 0xffu,
+    0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
     0x54u, 0x52u, 0x02u, NETWORK_ID, 0x04u, 0x80u, 0x10u,
     0xffu, 0xffu, 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu,
-    0x34u, 0x12u,
+    0x34u, 0x12u, 0x00u, 0x00u, 0x00u,
 };
 
 static tavrn_validated_control_t control_from_adv(const uint8_t *adv, size_t length)

@@ -78,6 +78,7 @@
 #define TAVRN_WIRE_HELLO8_VERIFICATION_LEN \
     (TAVRN_WIRE_HELLO8_BASE_LEN + TAVRN_WIRE_META_HEADER_LEN + \
      TAVRN_WIRE_META_ENTRY_LEN)
+#define TAVRN_WIRE_HELLO8_ORDINARY_LEN 20u
 
 #define TAVRN_WIRE_SYNC_OFFER_LEN      24u
 #define TAVRN_WIRE_SYNC_PULL_LEN       22u
@@ -125,6 +126,8 @@ typedef char tavrn_wire_v2_rrep_ack_guard[
         1 : -1];
 typedef char tavrn_wire_v2_hello8_verification_guard[
     (TAVRN_WIRE_HELLO8_VERIFICATION_LEN == 20u) ? 1 : -1];
+typedef char tavrn_wire_v2_hello8_ordinary_guard[
+    (TAVRN_WIRE_HELLO8_ORDINARY_LEN == 20u) ? 1 : -1];
 typedef char tavrn_wire_v2_hello16_base_guard[
     (TAVRN_WIRE_HELLO16_BASE_LEN == 19u) ? 1 : -1];
 typedef char tavrn_wire_v2_sync_data_entry_guard[
@@ -595,6 +598,11 @@ static tavrn_codec_result_t validate_hello_pdu(const uint8_t *pdu, size_t pdu_le
         return TAVRN_CODEC_OK;
     }
     if (!metadata) {
+        if (pdu[5] == 0x80u) {
+            return pdu_len == TAVRN_WIRE_HELLO8_ORDINARY_LEN &&
+                    pdu[17] <= 15u && pdu[18] == 0u && pdu[19] == 0u ?
+                TAVRN_CODEC_OK : TAVRN_CODEC_MALFORMED_FIELD;
+        }
         return pdu_len == base_len ? TAVRN_CODEC_OK :
             TAVRN_CODEC_MALFORMED_EXACT_LENGTH;
     }
@@ -637,11 +645,13 @@ static tavrn_codec_result_t validate_sync_pull_pdu(const uint8_t *pdu,
     if (pdu_len != TAVRN_WIRE_SYNC_PULL_LEN) {
         return TAVRN_CODEC_MALFORMED_EXACT_LENGTH;
     }
-    if (pdu[5] != 0u) {
+    if ((pdu[5] != 0u && pdu[5] != 0x01u) ||
+        (pdu[5] == 0x01u && pdu[20] != 0u)) {
         return TAVRN_CODEC_MALFORMED_FLAGS;
     }
     if (!is_valid_adva(&pdu[6]) || !is_valid_adva(&pdu[12]) ||
-        !ids_equal(&pdu[6], outer_adva) || pdu[21] != 1u) {
+        !ids_equal(&pdu[6], outer_adva) || pdu[21] != 1u ||
+        (pdu[5] == 0x01u && get_u16_le(&pdu[18]) == 0u)) {
         return TAVRN_CODEC_MALFORMED_FIELD;
     }
     return TAVRN_CODEC_OK;

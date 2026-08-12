@@ -2179,12 +2179,13 @@ static int ordinary_hello_router_ready(const tavrn_router_t *router)
 }
 
 static void build_ordinary_hello(tavrn_validated_control_t *control,
-                                 const tavrn_router_t *router,
-                                 uint16_t node_sequence)
+                                  const tavrn_router_t *router,
+                                  uint16_t node_sequence,
+                                  uint8_t known_remote_count)
 {
     memset(control, 0, sizeof(*control));
     control->type = TAVRN_WIRE_HELLO;
-    control->pdu_len = 17u;
+    control->pdu_len = 20u;
     control->pdu[0] = 0x54u;
     control->pdu[1] = 0x52u;
     control->pdu[2] = 0x02u;
@@ -2198,6 +2199,7 @@ static void build_ordinary_hello(tavrn_validated_control_t *control,
            TAVRN_ADVA_LEN);
     control->pdu[15] = (uint8_t)node_sequence;
     control->pdu[16] = (uint8_t)(node_sequence >> 8);
+    control->pdu[17] = known_remote_count;
 }
 
 static int ordinary_hello_matches_router(const tavrn_router_t *router,
@@ -2207,17 +2209,20 @@ static int ordinary_hello_matches_router(const tavrn_router_t *router,
     uint16_t node_sequence;
 
     if (router == NULL || router->link == NULL || control == NULL ||
-        control->type != TAVRN_WIRE_HELLO || control->pdu_len != 17u) {
+        control->type != TAVRN_WIRE_HELLO || control->pdu_len != 20u ||
+        control->pdu[17] > 15u || control->pdu[18] != 0u ||
+        control->pdu[19] != 0u) {
         return 0;
     }
     node_sequence = (uint16_t)control->pdu[15] |
         ((uint16_t)control->pdu[16] << 8);
-    build_ordinary_hello(&expected, router, node_sequence);
+    build_ordinary_hello(&expected, router, node_sequence, control->pdu[17]);
     return memcmp(control, &expected, sizeof(expected)) == 0;
 }
 
 tavrn_router_hello_status_t tavrn_router_build_ordinary_hello(
     const tavrn_router_t *router, uint16_t node_sequence,
+    uint8_t known_remote_count,
     tavrn_validated_control_t *control_out)
 {
     if (control_out != NULL) {
@@ -2226,10 +2231,11 @@ tavrn_router_hello_status_t tavrn_router_build_ordinary_hello(
     if (control_out == NULL || router == NULL || router->link == NULL) {
         return TAVRN_ROUTER_HELLO_INVALID;
     }
-    if (!ordinary_hello_router_ready(router)) {
+    if (!ordinary_hello_router_ready(router) ||
+        known_remote_count > 15u) {
         return TAVRN_ROUTER_HELLO_GATED;
     }
-    build_ordinary_hello(control_out, router, node_sequence);
+    build_ordinary_hello(control_out, router, node_sequence, known_remote_count);
     return TAVRN_ROUTER_HELLO_OK;
 }
 

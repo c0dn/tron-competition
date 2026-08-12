@@ -1634,6 +1634,311 @@ static void test_serial_04_incarnation_destination_reset_and_relearn(void)
                                peer_b.logical_id.value);
 }
 
+static void test_aodv_08_terminal_discovery_release(void)
+{
+    aodv_core_t core;
+    aodv_core_t full_core;
+    aodv_core_t expiry_core;
+    aodv_core_config_t config;
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tavrn_logical_id_t unrelated_destination;
+    tron_application_data_t application = make_application(peer_c.logical_id);
+    tron_application_data_t unrelated;
+    aodv_action_t action;
+    aodv_data_input_t local_input;
+    uint32_t first_correlation;
+    uint32_t wrap_start = UINT32_MAX - 2000u;
+    uint8_t i;
+
+    /* Multiple matching pending entries are released by one terminal action.
+     * Equality works across wrap, and the unrelated discovery remains live. */
+    config = make_core_config(adva_a, 1u);
+    config.rreq_retries = 0u;
+    if (aodv_core_init(&core, &config, wrap_start) != AODV_INIT_OK) {
+        return;
+    }
+    CHECK("AODV-08", aodv_core_submit_application(&core, &application, wrap_start) ==
+                         AODV_STATUS_QUEUED &&
+                         aodv_core_submit_application(&core, &application,
+                                                      wrap_start + 1u) ==
+                             AODV_STATUS_QUEUED &&
+                         aodv_core_submit_application(&core, &application,
+                                                      wrap_start + 2u) ==
+                             AODV_STATUS_QUEUED &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action));
+    first_correlation = action.detail.control.rreq_attempt.discovery_correlation;
+    for (i = 1u; i < 5u; i++) {
+        CHECK("AODV-08", aodv_core_tick(&core,
+                                         wrap_start + (uint32_t)i * 600u) ==
+                             AODV_STATUS_OK &&
+                             poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                          &action));
+    }
+    unrelated_destination.width = TAVRN_IDENTITY_SID16;
+    unrelated_destination.value = 0x6901u;
+    unrelated = make_application(unrelated_destination);
+    CHECK("AODV-08", aodv_core_submit_application(&core, &unrelated,
+                                                   wrap_start + 2401u) ==
+                             AODV_STATUS_QUEUED &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         action.detail.control.rreq_attempt.destination.value ==
+                             unrelated_destination.value &&
+                         aodv_core_tick(&core, wrap_start + 3000u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &core,
+                                      AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                         action.detail.failure.destination.width ==
+                             peer_c.logical_id.width &&
+                         action.detail.failure.destination.value ==
+                             peer_c.logical_id.value &&
+                         action.type != AODV_ACTION_SEND_RERR &&
+                         aodv_core_counters(&core)->terminal_discovery_released == 1u &&
+                         aodv_core_poll_action(&core, &action) ==
+                             AODV_ACTION_POLL_EMPTY &&
+                         aodv_core_submit_application(&core, &unrelated,
+                                                      wrap_start + 3001u) ==
+                             AODV_STATUS_QUEUED &&
+                         aodv_core_submit_application(&core, &application,
+                                                      wrap_start + 3001u) ==
+                             AODV_STATUS_QUEUED &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         action.detail.control.rreq_attempt.destination.value ==
+                             peer_c.logical_id.value &&
+                         action.detail.control.rreq_attempt.discovery_correlation !=
+                             first_correlation &&
+                         aodv_core_tick(&core, wrap_start + 3001u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         action.detail.control.rreq_attempt.destination.value ==
+                             unrelated_destination.value);
+
+    /* Scoped discovery terminal exhaustion follows the same single-action
+     * release after its full-diameter fallback. */
+    if (aodv_core_init(&core, &config, 0u) != AODV_INIT_OK) {
+        return;
+    }
+    CHECK("AODV-08", aodv_core_submit_application_scoped(&core, &application, 4u,
+                                                           0u) == AODV_STATUS_QUEUED &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         (action.detail.control.control.pdu[6] >> 4) == 4u &&
+                         aodv_core_tick(&core, 600u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         (action.detail.control.control.pdu[6] >> 4) == 15u &&
+                         aodv_core_tick(&core, 1200u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &core,
+                                      AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                         action.detail.failure.destination.value ==
+                             peer_c.logical_id.value &&
+                         aodv_core_counters(&core)->terminal_discovery_released == 1u &&
+                         aodv_core_poll_action(&core, &action) ==
+                             AODV_ACTION_POLL_EMPTY);
+
+    /* Independent pending-data deadlines retain their existing per-item
+     * expiration behavior instead of using terminal discovery release. */
+    config.pending_data_ms = 100u;
+    if (aodv_core_init(&expiry_core, &config, 0u) != AODV_INIT_OK) {
+        return;
+    }
+    CHECK("AODV-08", aodv_core_submit_application(&expiry_core, &application, 0u) ==
+                             AODV_STATUS_QUEUED &&
+                         poll_control("AODV-08", &expiry_core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         aodv_core_tick(&expiry_core, 100u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &expiry_core,
+                                      AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                         action.detail.failure.destination.value ==
+                             peer_c.logical_id.value &&
+                         aodv_core_counters(&expiry_core)->pending_expired == 1u &&
+                         aodv_core_counters(&expiry_core)->terminal_discovery_released ==
+                             0u);
+
+    /* A terminal release that was blocked keeps every matching pending entry.
+     * Once one slot opens at the matching deadline, it wins over per-item
+     * expiry and clears the destination with exactly one failure action. */
+    {
+        aodv_core_t ordering_core;
+        tavrn_logical_id_t ordering_unrelated_destination;
+        tron_application_data_t ordering_unrelated;
+
+        config = make_core_config(adva_a, 1u);
+        config.rreq_retries = 0u;
+        config.pending_data_ms = 1200u;
+        ordering_unrelated_destination.width = TAVRN_IDENTITY_SID16;
+        ordering_unrelated_destination.value = 0x6901u;
+        ordering_unrelated = make_application(ordering_unrelated_destination);
+        if (aodv_core_init(&ordering_core, &config, 0u) != AODV_INIT_OK ||
+            aodv_core_submit_application_scoped(&ordering_core, &application, 4u,
+                                                0u) != AODV_STATUS_QUEUED ||
+            aodv_core_submit_application(&ordering_core, &application, 0u) !=
+                AODV_STATUS_QUEUED ||
+            !poll_control("AODV-08", &ordering_core, AODV_ACTION_SEND_RREQ,
+                          &action) ||
+            aodv_core_submit_application(&ordering_core, &ordering_unrelated, 1u) !=
+                AODV_STATUS_QUEUED ||
+            !poll_control("AODV-08", &ordering_core, AODV_ACTION_SEND_RREQ,
+                          &action)) {
+            return;
+        }
+        CHECK("AODV-08", aodv_core_tick(&ordering_core, 600u) == AODV_STATUS_OK &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_SEND_RREQ, &action) &&
+                             action.detail.control.rreq_attempt.destination.value ==
+                                 peer_c.logical_id.value &&
+                             aodv_core_tick(&ordering_core, 601u) == AODV_STATUS_OK &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_SEND_RREQ, &action) &&
+                             action.detail.control.rreq_attempt.destination.value ==
+                                 ordering_unrelated_destination.value);
+        memset(&local_input, 0, sizeof(local_input));
+        local_input.transmitter = peer_c;
+        local_input.data = make_link_data(peer_c.logical_id,
+                                          make_peer(adva_a).logical_id, 0x6b07u);
+        for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY; i++) {
+            CHECK("AODV-08", aodv_core_ingest_data(&ordering_core, &local_input,
+                                                     1000u) == AODV_STATUS_OK);
+        }
+        CHECK("AODV-08", aodv_core_tick(&ordering_core, 1200u) == AODV_STATUS_OK &&
+                             aodv_core_counters(&ordering_core)->action_backpressure >=
+                                 1u &&
+                             aodv_core_counters(&ordering_core)->
+                                 terminal_discovery_released == 0u &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_DELIVER_DATA, &action) &&
+                             aodv_core_tick(&ordering_core, 1201u) == AODV_STATUS_OK &&
+                             aodv_core_counters(&ordering_core)->pending_expired == 0u &&
+                             aodv_core_counters(&ordering_core)->
+                                 terminal_discovery_released == 1u);
+        for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY - 2u; i++) {
+            CHECK("AODV-08", poll_control("AODV-08", &ordering_core,
+                                             AODV_ACTION_DELIVER_DATA, &action));
+        }
+        CHECK("AODV-08", poll_control("AODV-08", &ordering_core,
+                                         AODV_ACTION_DELIVER_DATA, &action) &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                             action.detail.failure.destination.value ==
+                                 peer_c.logical_id.value &&
+                             aodv_core_poll_action(&ordering_core, &action) ==
+                                 AODV_ACTION_POLL_EMPTY &&
+                             aodv_core_tick(&ordering_core, 1202u) == AODV_STATUS_OK &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_SEND_RREQ, &action) &&
+                             action.detail.control.rreq_attempt.destination.value ==
+                                 ordering_unrelated_destination.value &&
+                             aodv_core_tick(&ordering_core, 1203u) == AODV_STATUS_OK &&
+                             poll_control("AODV-08", &ordering_core,
+                                          AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                             action.detail.failure.destination.value ==
+                                 ordering_unrelated_destination.value &&
+                             aodv_core_counters(&ordering_core)->pending_expired == 1u &&
+                             aodv_core_counters(&ordering_core)->
+                                 terminal_discovery_released == 1u &&
+                             aodv_core_poll_action(&ordering_core, &action) ==
+                                 AODV_ACTION_POLL_EMPTY);
+    }
+
+    /* A full action queue leaves terminal discovery and pending data intact.
+     * The next tick after any dequeue releases it exactly once. */
+    config = make_core_config(adva_a, 1u);
+    if (aodv_core_init(&full_core, &config, 0u) != AODV_INIT_OK ||
+        aodv_core_submit_application(&full_core, &application, 0u) !=
+            AODV_STATUS_QUEUED ||
+        !poll_control("AODV-08", &full_core, AODV_ACTION_SEND_RREQ, &action)) {
+        return;
+    }
+    for (i = 1u; i < 7u; i++) {
+        CHECK("AODV-08", aodv_core_tick(&full_core, (uint32_t)i * 600u) ==
+                             AODV_STATUS_OK &&
+                             poll_control("AODV-08", &full_core, AODV_ACTION_SEND_RREQ,
+                                          &action));
+    }
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY - 1u; i++) {
+        tavrn_logical_id_t destination;
+        tron_application_data_t queued;
+
+        destination.width = TAVRN_IDENTITY_SID16;
+        destination.value = (uint16_t)(0x6a00u + i);
+        queued = make_application(destination);
+        CHECK("AODV-08", aodv_core_submit_application(&full_core, &queued, 3601u) ==
+                             AODV_STATUS_QUEUED);
+    }
+    memset(&local_input, 0, sizeof(local_input));
+    local_input.transmitter = peer_c;
+    local_input.data = make_link_data(peer_c.logical_id, make_peer(adva_a).logical_id,
+                                      0x6a07u);
+    CHECK("AODV-08", aodv_core_ingest_data(&full_core, &local_input, 3601u) ==
+                             AODV_STATUS_OK &&
+                         aodv_core_tick(&full_core, 4200u) == AODV_STATUS_OK &&
+                         aodv_core_counters(&full_core)->action_backpressure == 1u &&
+                         aodv_core_counters(&full_core)->terminal_discovery_released ==
+                             0u &&
+                         poll_control("AODV-08", &full_core, AODV_ACTION_SEND_RREQ,
+                                      &action) &&
+                         aodv_core_tick(&full_core, 4201u) == AODV_STATUS_OK &&
+                         aodv_core_counters(&full_core)->terminal_discovery_released ==
+                             1u);
+    for (i = 0u; i < TAVRN_AODV_ACTION_CAPACITY - 2u; i++) {
+        CHECK("AODV-08", poll_control("AODV-08", &full_core, AODV_ACTION_SEND_RREQ,
+                                        &action));
+    }
+    CHECK("AODV-08", poll_control("AODV-08", &full_core, AODV_ACTION_DELIVER_DATA,
+                                   &action) &&
+                         poll_control("AODV-08", &full_core,
+                                   AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                         action.detail.failure.destination.width ==
+                             peer_c.logical_id.width &&
+                         action.detail.failure.destination.value ==
+                             peer_c.logical_id.value &&
+                         action.type != AODV_ACTION_SEND_RERR &&
+                         aodv_core_counters(&full_core)->terminal_discovery_released ==
+                             1u &&
+                         aodv_core_poll_action(&full_core, &action) ==
+                             AODV_ACTION_POLL_EMPTY);
+}
+
+static void test_aodv_08_tick_expiry_precedes_route_release(void)
+{
+    aodv_core_t core;
+    aodv_core_config_t config = make_core_config(adva_a, 1u);
+    tavrn_codec_config_t codec = make_codec_config(adva_a);
+    tavrn_validated_control_t reply_template;
+    tavrn_validated_control_t reply;
+    tavrn_direct_peer_t peer_a = make_peer(adva_a);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c);
+    tron_application_data_t application = make_application(peer_c.logical_id);
+    aodv_action_t request;
+    aodv_action_t action;
+    aodv_control_input_t input;
+
+    config.pending_data_ms = 100u;
+    if (aodv_core_init(&core, &config, 0u) != AODV_INIT_OK ||
+        !decode_control("AODV-08", &codec, adva_c, rrep16, sizeof(rrep16),
+                        TAVRN_WIRE_E_RREP, &reply_template) ||
+        aodv_core_submit_application(&core, &application, 0u) !=
+            AODV_STATUS_QUEUED ||
+        !poll_control("AODV-08", &core, AODV_ACTION_SEND_RREQ, &request)) {
+        return;
+    }
+    make_matching_rrep(&reply, &reply_template, &peer_a, peer_c.logical_id,
+                       0x0801u, &request);
+    input = make_control_input(&peer_c, &reply);
+    CHECK("AODV-08", aodv_core_ingest_rrep_for_attempt(
+                         &core, &input, &request.detail.control.rreq_attempt,
+                         100u) == AODV_STATUS_OK &&
+                         aodv_core_tick(&core, 100u) == AODV_STATUS_OK &&
+                         poll_control("AODV-08", &core,
+                                      AODV_ACTION_PENDING_DATA_FAILED, &action) &&
+                         action.detail.failure.destination.value ==
+                             peer_c.logical_id.value &&
+                         aodv_core_counters(&core)->pending_expired == 1u &&
+                         aodv_core_poll_action(&core, &action) ==
+                             AODV_ACTION_POLL_EMPTY);
+}
+
 int main(void)
 {
     test_serial_freshness_and_exact_half();
@@ -1658,6 +1963,8 @@ int main(void)
     test_blocker_failure_rediscovery_resumes_data();
     test_blocker_eight_pending_with_rrep_ack_drains();
     test_serial_04_incarnation_destination_reset_and_relearn();
+    test_aodv_08_terminal_discovery_release();
+    test_aodv_08_tick_expiry_precedes_route_release();
     if (failures != 0u) {
         printf("tavrn_aodv RED tests failed: %u assertion(s)\n", failures);
         return 1;

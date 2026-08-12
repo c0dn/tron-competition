@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 2,
+  "id": "tavrn-v23-bounded-gossip",
+  "kind": "software-engineering",
+  "title": "TAVRN-BLE-V2.3 bounded GTT gossip",
+  "goal": "Replace benchmark-introduced periodic JOIN floods with HELLO-count-triggered bounded active GTT synchronization, resolve terminal discovery pending-data stalls, update the V2.3 specification, and prove the result in six-board HIL before a matched 1200-second comparison.",
+  "scope": [
+    "Extend FULL ordinary HELLO with bounded known remote-node count",
+    "Trigger targeted active GTT synchronization only when a direct neighbor advertises more known remote nodes",
+    "Reuse bounded SYNC_OFFER/PULL/DATA transfer without gating ordinary application traffic",
+    "Remove periodic self-JOIN reannouncement; preserve one-shot bootstrap and real JOIN/LEAVE TC behavior",
+    "Release destination-scoped pending DATA when route discovery reaches terminal exhaustion",
+    "Update normative V2.3 profile, wire, identity, deviations, and test-matrix documentation",
+    "Run software/resource review, short six-board HIL gate, then matched AODV/FULL 1200-second captures"
+  ],
+  "nonGoals": [
+    "General equal-cardinality GTT reconciliation",
+    "Digest/Merkle consensus",
+    "Changing RF PHY, advertising channels, or frozen radio/scheduler modules",
+    "One-hour benchmark run",
+    "Unbounded queues, heap allocation, or background flooding"
+  ],
+  "constraints": [
+    "No heap and fixed capacities",
+    "24-byte maximum control PDU",
+    "Homogeneous V2.3 fleet for the HELLO wire update",
+    "Count excludes self and departed entries and saturates at GTT capacity",
+    "One active anti-entropy session at a time with cooldown and no catch-up",
+    "Active repair must not set public REJOINING/SYNCING state or gate application submissions",
+    "Initial one-shot JOIN and real membership-change TC remain unchanged",
+    "Frozen files microbit/app/drivers/ble_radio.{c,h} and microbit/app/protocol/ble_mesh_scheduler.{c,h} remain untouched",
+    "Flash/settle time remains outside measured capture duration"
+  ],
+  "relevantFiles": [
+    "microbit/app/protocol/tavrn_router.{c,h}",
+    "microbit/app/protocol/tavrn_maintenance.{c,h}",
+    "microbit/app/protocol/tavrn_mentorship.{c,h}",
+    "microbit/app/protocol/tavrn_gtt.{c,h}",
+    "microbit/app/protocol/tavrn_wire_v2.{c,h}",
+    "microbit/app/protocol/aodv_core.{c,h}",
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_wire_v2.md",
+    "microbit/docs/tavrn_ble_identity.md",
+    "microbit/docs/tavrn_ble_deviations.md",
+    "microbit/docs/tavrn_ble_test_matrix.md",
+    "microbit/app/tavrn_routed_node/src/main.c",
+    "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
+    "microbit/scripts/run_tavrn_benchmark.py",
+    "microbit/scripts/summarize_tavrn_benchmark.py",
+    "microbit/tests/protocol/test_tavrn_phase5_maintenance.c",
+    "microbit/tests/protocol/test_tavrn_phase5_tc_metadata.c",
+    "microbit/tests/protocol/test_tavrn_router.c",
+    "microbit/tests/protocol/test_tavrn_aodv.c"
+  ],
+  "planFile": ".opencode/workplan/tavrn-v23-bounded-gossip.md",
+  "specFiles": [
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_wire_v2.md",
+    "microbit/docs/tavrn_ble_identity.md",
+    "microbit/docs/tavrn_ble_deviations.md",
+    "microbit/docs/tavrn_ble_architecture.md",
+    "microbit/docs/tavrn_ble_test_matrix.md"
+  ],
+  "phases": [
+    {
+      "id": "phase-lively-anchor-133762",
+      "title": "Specify bounded gossip and discovery cleanup",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-cedar-orbit-254365",
+          "title": "Define HELLO count semantics and wire layout",
+          "target": "tavrn_wire_v2/router/maintenance/GTT/specs",
+          "action": "Define a breaking homogeneous-V2.3 20-byte ordinary SID8 HELLO: existing 17-byte base, occupied nonself nondeparted known count at byte 17 (0..15; hard-expired retained members count), bytes 18..19 reserved zero. Targeted HELLO forms remain unchanged; legacy 17-byte ordinary FULL HELLO is rejected.",
+          "validation": "Golden vectors; 0/15 bounds; >15/nonzero-reserved rejection; legacy/new mixed-version rejection; BUSY retains exact bytes",
+          "status": "completed"
+        },
+        {
+          "id": "step-spruce-stream-007650",
+          "title": "Define active GTT repair FSM",
+          "target": "mentorship private active-repair FSM plus main RX handoff",
+          "action": "After maintenance accepts a direct HELLO as RX_UNIQUE and post-admission local count is lower, first eligible neighbor starts one private active RFI transaction. Use reserved SYNC_PULL RFI flag on page 0 to make neighbor freeze a snapshot and answer contiguous existing SYNC_DATA pages. Keep public SID8_ACTIVE, active width, incarnation, and application ungated; never activate/recover/originate JOIN. Existing sync retry/page bounds apply; mentor_sync_dedupe_ms is cooldown after success/abort; later triggers while active/cooling are counted and ignored; rejoin/conflict/bootstrap/real TC obligations preempt.",
+          "validation": "Trigger-after-unique-only, public-state invariant, page/retry/BUSY/wrap/cooldown, preemption, collision and no-catch-up tests",
+          "status": "completed"
+        },
+        {
+          "id": "step-swift-path-178796",
+          "title": "Define terminal discovery release",
+          "target": "aodv_core terminal discovery",
+          "action": "At terminal discovery exhaustion require one action slot, enqueue exactly one PENDING_DATA_FAILED carrying destination, then clear all destination-matching pending DATA and discovery. If action queue is full retain all state and retry next tick. Preserve independent per-item deadline expiry elsewhere and originate no TC/LEAVE.",
+          "validation": "Full-action retry; multiple same-destination release; ordinary/scoped discovery; wrap/equality; fresh rediscovery; no TC/LEAVE",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-maple-bridge-583899",
+      "title": "Implement protocol and documentation",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-wild-reef-302969",
+          "title": "Implement HELLO count encode/ingest",
+          "target": "wire/router/maintenance/GTT",
+          "action": "Build, validate, and consume count-bearing 20-byte ordinary FULL HELLO.",
+          "validation": "Wire, router, maintenance, and profile suites",
+          "status": "completed"
+        },
+        {
+          "id": "step-cobalt-orbit-992324",
+          "title": "Implement active bounded GTT sync",
+          "target": "mentorship",
+          "action": "Remove periodic JOIN deadline/state and add one active repair transaction/cooldown using bounded sync transfer.",
+          "validation": "Mentorship bootstrap plus active-repair regressions",
+          "status": "completed"
+        },
+        {
+          "id": "step-nimble-pine-004904",
+          "title": "Implement discovery pending release",
+          "target": "aodv_core/router",
+          "action": "Resolve buffered destination packets on terminal discovery failure.",
+          "validation": "AODV/router regressions",
+          "status": "completed"
+        },
+        {
+          "id": "step-amber-signal-350013",
+          "title": "Update V2.3 specs",
+          "target": "microbit/docs",
+          "action": "Normatively document count gossip, RFI-style active sync, one-shot JOIN semantics, limits, and discovery cleanup.",
+          "validation": "Requirement/test traceability review",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-gentle-lantern-945520",
+      "title": "Verify and hardware-prove",
+      "status": "in_progress",
+      "steps": [
+        {
+          "id": "step-young-comet-084158",
+          "title": "Run software/resource matrix",
+          "target": "microbit tests/build",
+          "action": "Run focused suites, profiles, resource gates, and code-checker review.",
+          "validation": "No blocker/major findings; stack/RAM gates pass",
+          "status": "completed"
+        },
+        {
+          "id": "step-steady-pine-124221",
+          "title": "Run short HIL gate",
+          "target": "six boards",
+          "action": "From a clean reviewed checkpoint publish six UID-bound FULL candidates. Deterministic gate: hold F, allow A-E bootstrap; hold A, release/reset F so B learns F; resume A and prove a larger-count direct HELLO triggers exactly one bounded active repair, A remains SID8_ACTIVE/ungated, GTT converges, and stable windows spanning at least two former 30-second refresh intervals add no periodic TC JOIN traffic.",
+          "validation": "No queue/fault/drop health counters; copied active-repair counters prove one trigger/success; GTT six-role recall/precision/agreement 1.0; TC stable-window delta excludes periodic refresh",
+          "status": "in_progress"
+        },
+        {
+          "id": "step-lively-field-230378",
+          "title": "Run matched 1200-second comparison",
+          "target": "six boards",
+          "action": "Publish clean matched AODV/FULL artifacts and run separate 1200-second timed captures with 20-second per-board flash settle outside measurement.",
+          "validation": "completed_by_duration; all six current sessions; final outputs/charts; report strict validity, queue/fault/drop counters, all complete throughput bursts, GTT, control proxies, PDR/latency/goodput",
+          "status": "draft"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [],
+  "notes": [
+    "Count-only gossip intentionally detects missing members (remote_count > local_count); it does not claim equal-count table consensus.",
+    "Existing SYNC wire formats already transfer one full-identity record per page and remain the bounded repair data path.",
+    "Periodic JOIN was a benchmark-derived workaround and will be removed rather than normalized into V2.3.",
+    "Plan review clarified that HELLO bytes 17..19 are a new V2.3 trailer, not pre-existing padding.",
+    "Active repair uses an RFI-marked SYNC_PULL/private FSM rather than bootstrap SYNC_OFFER/public SYNCING.",
+    "Homogeneous V2.3 deployment is required because ordinary FULL HELLO changes from exact 17 to exact 20 bytes.",
+    "Final code-checker result: READY with no blocker/critical/major findings after RFI ownership, cancellation, collision, TC precedence, optional callback composition, and AODV ordering corrections.",
+    "BALANCED repair-on benchmark fixed state 70212 bytes; mesh stack 2968/4096 and logger stack 816/1840; no heap."
+  ],
+  "status": "in_progress",
+  "createdAt": "2026-08-12T13:05:58.807Z",
+  "updatedAt": "2026-08-12T17:19:00.197Z"
+}

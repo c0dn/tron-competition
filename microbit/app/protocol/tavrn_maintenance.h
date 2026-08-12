@@ -329,6 +329,17 @@ typedef enum tavrn_maintenance_status {
     TAVRN_MAINTENANCE_INVALID,
 } tavrn_maintenance_status_t;
 
+/* FULL policy may synchronously preempt a private RFI transaction once a local
+ * TC fact is retained.  Maintenance owns only this copied optional port, never
+ * a mentorship type or symbol; an unbound port deliberately does nothing. */
+typedef void (*tavrn_maintenance_local_tc_retained_fn)(void *context,
+                                                        uint32_t now_ms);
+
+typedef struct tavrn_maintenance_local_tc_retained_port {
+    tavrn_maintenance_local_tc_retained_fn callback;
+    void *context;
+} tavrn_maintenance_local_tc_retained_port_t;
+
 /* The optional repair owner crosses this generic FULL boundary by copied
  * discriminators only.  Maintenance deliberately has no repair dependency and
  * the single registration never creates a second token domain. */
@@ -709,6 +720,7 @@ typedef struct tavrn_maintenance_epoch_entry {
 typedef struct tavrn_maintenance {
     tavrn_router_t *router;
     tavrn_gtt_t *gtt;
+    tavrn_maintenance_local_tc_retained_port_t local_tc_retained;
     tavrn_maintenance_config_t config;
     tavrn_maintenance_counters_t counters;
     tavrn_maintenance_snapshot_t snapshot;
@@ -750,6 +762,11 @@ typedef struct tavrn_maintenance {
 tavrn_maintenance_status_t tavrn_maintenance_init(
     tavrn_maintenance_t *maintenance, tavrn_router_t *router, tavrn_gtt_t *gtt,
     const tavrn_maintenance_config_t *config);
+/* Copies a FULL-owned optional local-TC port.  Passing NULL clears it; a
+ * copied NULL callback is also a valid no-op binding. */
+tavrn_maintenance_status_t tavrn_maintenance_set_local_tc_retained_port(
+    tavrn_maintenance_t *maintenance,
+    const tavrn_maintenance_local_tc_retained_port_t *port_or_null);
 /* Activation is legal only after FULL mentorship has made the router/link local
  * identity SID8 and the common router incarnation established.  It arms exactly
  * one `now + hello_change_ms` deadline and never sends retroactively. */
