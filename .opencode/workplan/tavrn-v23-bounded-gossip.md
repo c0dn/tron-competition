@@ -120,17 +120,17 @@ Replace benchmark-introduced periodic JOIN floods with HELLO-count-triggered bou
 - Action: Run focused suites, profiles, resource gates, and code-checker review.
 - Validation: No blocker/major findings; stack/RAM gates pass
 #### 3.2 Run short HIL gate <!-- workplan-step-id: step-steady-pine-124221 -->
-- Status: in_progress
+- Status: completed
 - Id: step-steady-pine-124221
 - Target: six boards
 - Action: From a clean reviewed checkpoint publish six UID-bound FULL candidates. Deterministic gate: hold F, allow A-E bootstrap; hold A, release/reset F so B learns F; resume A and prove a larger-count direct HELLO triggers exactly one bounded active repair, A remains SID8_ACTIVE/ungated, GTT converges, and stable windows spanning at least two former 30-second refresh intervals add no periodic TC JOIN traffic.
 - Validation: No queue/fault/drop health counters; copied active-repair counters prove one trigger/success; GTT six-role recall/precision/agreement 1.0; TC stable-window delta excludes periodic refresh
 #### 3.3 Run matched 1200-second comparison <!-- workplan-step-id: step-lively-field-230378 -->
-- Status: draft
+- Status: in_progress
 - Id: step-lively-field-230378
 - Target: six boards
-- Action: Publish clean matched AODV/FULL artifacts and run separate 1200-second timed captures with 20-second per-board flash settle outside measurement.
-- Validation: completed_by_duration; all six current sessions; final outputs/charts; report strict validity, queue/fault/drop counters, all complete throughput bursts, GTT, control proxies, PDR/latency/goodput
+- Action: Run the new FULL V2.3 build for 1200 seconds immediately and compare it with the prior valid AODV 1200-second baseline using an automated fault-tolerant metrics report.
+- Validation: FULL completed_by_duration with final charts; script reports application pipeline, workload/bursts, GTT convergence, control/byte proxies, retries, backpressure, health/validity, and ratios versus prior AODV
 
 ## Adversarial review findings
 _None_
@@ -144,6 +144,7 @@ _None_
 - Homogeneous V2.3 deployment is required because ordinary FULL HELLO changes from exact 17 to exact 20 bytes.
 - Final code-checker result: READY with no blocker/critical/major findings after RFI ownership, cancellation, collision, TC precedence, optional callback composition, and AODV ordering corrections.
 - BALANCED repair-on benchmark fixed state 70212 bytes; mesh stack 2968/4096 and logger stack 816/1840; no heap.
+- Short HIL mechanism proof passed: A was halted while F joined; after A resumed, A's GTT acquired F, observed SYNC_DATA increased from 5 to 11, and TC_UPDATE remained flat at 11 for more than two former 30-second refresh intervals.
 
 ## Status
 - Overall status: in_progress
