@@ -442,8 +442,8 @@ def parse_observation_line(line: str, source: str = "stream", line_number: int =
         raise _error(source, line_number, "has attempted/accepted outside 0..1")
     if kind == "final" and _uint(fields["identity_valid"], "identity_valid", source, line_number) not in (0, 1):
         raise _error(source, line_number, "has identity_valid outside 0..1")
-    if kind == "gtt_entry" and _uint(fields["departed"], "departed", source, line_number) not in (0, 1):
-        raise _error(source, line_number, "has departed outside 0..1")
+    if kind == "gtt_entry" and _uint(fields["departed"], "departed", source, line_number) not in (1, 2):
+        raise _error(source, line_number, "has departed outside FALSE=1/TRUE=2")
     if kind == "gtt_entry":
         if ADVA_RE.fullmatch(fields["adva"]) is None:
             raise _error(source, line_number, "has non-canonical GTT AdvA")
@@ -1257,7 +1257,7 @@ def _gtt_metrics(state: ObservationState, origin_ms: float, invalid: list[dict[s
                 continue
             known.add(observed_subject)
             freshness = _uint(entry.fields["freshness"], "freshness", entry.source, entry.line_number)
-            stale = entry.fields["departed"] == "1" or freshness != 1
+            stale = entry.fields["departed"] == "2" or freshness != 1
             if not stale:
                 fresh.add(observed_subject)
             query_at = _uint(entry.fields["query_at_ms"], "query_at_ms", entry.source, entry.line_number)

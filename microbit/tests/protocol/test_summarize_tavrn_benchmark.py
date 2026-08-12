@@ -214,7 +214,7 @@ class ObservationTests(unittest.TestCase):
         def invalid_departed(role: str, payload: str) -> str:
             return payload.replace("departed=1", "departed=0", 1) if role == "A" else payload
 
-        with self.assertRaisesRegex(MODULE.CaptureError, "departed enum"):
+        with self.assertRaisesRegex(MODULE.CaptureError, "departed outside"):
             self.state(transform=invalid_departed)
 
     def test_observer_contract_fields_and_low_record_id_half_are_required(self) -> None:

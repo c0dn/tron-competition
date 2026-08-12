@@ -728,6 +728,28 @@ class RunnerTests(unittest.TestCase):
                                              sleep=lambda _value: None, max_cycles=1, killpg=FakeProcess.killpg)
             self.assertEqual(status, "failed"); self.assertTrue(all(child.process.poll() is not None for child in children))
 
+    def test_live_parse_error_is_best_effort_and_capture_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            folder = pathlib.Path(temp)
+            state = MODULE.analysis.ObservationState(
+                {"boards": [], "profile": "FULL_TAVRN", "observation": {}})
+            children = []
+            for role in MODULE.ROLES:
+                log = folder / f"{role}.log"
+                log.write_text("malformed complete line\n", encoding="utf-8")
+                children.append(MODULE.CaptureChild(
+                    {"role": role}, FakeProcess(), log.open("a", encoding="utf-8"), ["grab"], log))
+            events: list[dict[str, object]] = []
+            with mock.patch.object(state, "feed", side_effect=MODULE.analysis.CaptureError("bad record")):
+                status = MODULE.monitor_captures(
+                    children, state, folder / "outputs", events, 0, False,
+                    sleep=lambda _value: None, max_cycles=1, killpg=FakeProcess.killpg)
+            self.assertEqual(status, "test_stopped")
+            self.assertTrue(all(child.process.poll() is None for child in children))
+            self.assertEqual(sum(event.get("event") == "analysis_warning" for event in events), 6)
+            for child in children:
+                child.handle.close()
+
     def test_ctrl_c_concurrent_with_child_exit_is_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             folder = pathlib.Path(temp); state = MODULE.analysis.ObservationState({"boards": [], "profile": "FULL_TAVRN", "observation": {}})

@@ -651,7 +651,12 @@ def monitor_captures(children: list[CaptureChild], state: Any, output_dir: Path,
             if _unexpected_child_exit(children, events, killpg=killpg):
                 return "failed"
             for child in children:
-                _tail(child, state)
+                try:
+                    _tail(child, state)
+                except analysis.CaptureError as error:
+                    events.append({"at": utc_now(), "event": "analysis_warning",
+                                   "status": "best_effort", "role": child.board["role"],
+                                   "detail": str(error)})
             now = time.monotonic()
             if duration_deadline is not None and now >= duration_deadline:
                 events.append({"at": utc_now(), "event": "capture_duration", "status": "elapsed",
@@ -748,10 +753,18 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
         events.append({"at": utc_now(), "event": "termination_request", "status": "received",
                        "signal": signal.Signals(request.signum).name})
         status = _termination_status(request.signum)
-    except (RunError, analysis.CaptureError) as error:
+    except RunError as error:
         failure = error
         setattr(error, "observation_state", state)
         raise
+    except analysis.CaptureError as error:
+        if _unexpected_child_exit(children, events, killpg=killpg):
+            failure = error
+            setattr(error, "observation_state", state)
+            raise
+        events.append({"at": utc_now(), "event": "analysis_warning", "status": "best_effort",
+                       "detail": str(error)})
+        status = "completed_with_analysis_warnings"
     except KeyboardInterrupt:
         if _unexpected_child_exit(children, events, killpg=killpg):
             status = "failed"
@@ -762,7 +775,8 @@ def execute_capture(plan: dict[str, Any], checked: list[dict[str, Any]], pyocd: 
         try:
             _terminate(children, events, killpg=killpg)
             controlled_boundary = status in {
-                "completed_by_user", "completed_by_duration", "test_stopped"}
+                "completed_by_user", "completed_by_duration", "completed_with_analysis_warnings",
+                "test_stopped"}
             for child in children:
                 _tail(child, state)
                 role = child.board["role"]
@@ -958,7 +972,8 @@ def main(argv: list[str]) -> int:
         chart_renderer = lambda bundle, name: render_pinned_charts(pinned_uv, pinned_analyzer, bundle, name,
                                                                       events, subprocess.run)
         final = _write_snapshot(capture_state, run_dir / "outputs", "final", args.charts, chart_renderer)
-        completed_statuses = {"completed_by_user", "completed_by_duration", "test_stopped"}
+        completed_statuses = {"completed_by_user", "completed_by_duration",
+                              "completed_with_analysis_warnings", "test_stopped"}
         if status in completed_statuses and final["proving_status"] != "VALID":
             status = ("failed_invalid_evidence" if final["proving_status"] == "INVALID"
                       else "failed_incomplete_evidence")
