@@ -2930,7 +2930,8 @@ tavrn_targeted_freshness_status_t tavrn_maintenance_targeted_terminal(
     if (!targeted_owners_valid(maintenance, router, link, maintenance->gtt) ||
         event == NULL ||
         (event->type != BLE_MESH_SCHED_EVENT_TX_DONE &&
-          event->type != BLE_MESH_SCHED_EVENT_TX_FAILED)) {
+         event->type != BLE_MESH_SCHED_EVENT_TX_FAILED &&
+         event->type != BLE_MESH_SCHED_EVENT_TX_EXPIRED)) {
         return TAVRN_TARGETED_FRESHNESS_INVALID;
     }
     if (event->tx_token < 0x8000u) {
@@ -2947,6 +2948,20 @@ tavrn_targeted_freshness_status_t tavrn_maintenance_targeted_terminal(
             continue;
         }
         if (targeted_is_rreq_stage(context->snapshot.stage)) {
+            return TAVRN_TARGETED_FRESHNESS_OK;
+        }
+        if (event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+            context->snapshot.queued = 0u;
+            context->snapshot.in_flight = 0u;
+            context->retry_pending = 0u;
+            if (context->snapshot.stage ==
+                    TAVRN_TARGETED_STAGE_CANCELED_TOMBSTONE ||
+                context->snapshot.work_kind !=
+                    TAVRN_TARGETED_WORK_LOCAL_REQUEST) {
+                targeted_retire(maintenance, context_index);
+            } else {
+                targeted_enter_stage1(context);
+            }
             return TAVRN_TARGETED_FRESHNESS_OK;
         }
         if (context->snapshot.stage == TAVRN_TARGETED_STAGE_CANCELED_TOMBSTONE) {
@@ -2994,7 +3009,8 @@ tavrn_targeted_freshness_status_t tavrn_maintenance_targeted_scheduler_event(
                                                 TAVRN_TARGETED_FRESHNESS_INVALID);
     }
     if (event->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
-        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED) {
+        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED ||
+        event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
         return targeted_record_scheduler_status(
             maintenance, tavrn_maintenance_targeted_terminal(maintenance, router,
                                                                link, event, now_ms));
@@ -3646,14 +3662,14 @@ tavrn_rreq_verification_status_t tavrn_maintenance_verification_terminal(
         completion->token < 0x8000u ||
         (completion->purpose != TAVRN_RREQ_VERIFICATION_PURPOSE_STAGE1_RETAINED_HOP &&
          completion->purpose != TAVRN_RREQ_VERIFICATION_PURPOSE_STAGE2_FULL_DIAMETER) ||
-        completion->kind > TAVRN_RREQ_VERIFICATION_TERMINAL_LOCAL_NOT_ATTEMPTED ||
+        completion->kind > TAVRN_RREQ_VERIFICATION_TERMINAL_EXPIRED ||
         !verification_windows(maintenance, router, &path_discovery_ms,
                               &verification_window_ms)) {
         return TAVRN_RREQ_VERIFICATION_INVALID;
     }
     for (index = 0u; index < TAVRN_TARGETED_FRESHNESS_CONTEXT_CAPACITY; index++) {
         tavrn_targeted_freshness_context_t *context = &maintenance->targeted[index];
-        const aodv_rreq_attempt_t *attempt;
+        aodv_rreq_attempt_t *attempt;
         uint8_t canceled = 0u;
 
         if (context->snapshot.valid == 0u ||
@@ -3663,7 +3679,7 @@ tavrn_rreq_verification_status_t tavrn_maintenance_verification_terminal(
         if (context->verification_purpose != completion->purpose) {
             return TAVRN_RREQ_VERIFICATION_IGNORED;
         }
-        attempt = verification_const_attempt_for(context, completion->purpose);
+        attempt = verification_attempt_for(context, completion->purpose);
         if (!verification_attempt_equal(attempt, &completion->attempt)) {
             return TAVRN_RREQ_VERIFICATION_IGNORED;
         }
@@ -3679,6 +3695,16 @@ tavrn_rreq_verification_status_t tavrn_maintenance_verification_terminal(
         }
         context->snapshot.queued = 0u;
         context->snapshot.in_flight = 0u;
+        if (completion->kind == TAVRN_RREQ_VERIFICATION_TERMINAL_EXPIRED) {
+            /* Preserve the still-valid verification context, but never retry
+             * the expired request id/PDU.  A later owner tick must create a
+             * fresh attempt and token after revalidating current evidence. */
+            memset(attempt, 0, sizeof(*attempt));
+            memset(&context->control, 0, sizeof(context->control));
+            context->verification_purpose = TAVRN_RREQ_VERIFICATION_PURPOSE_NONE;
+            context->snapshot.token = BLE_MESH_TX_TOKEN_NONE;
+            return TAVRN_RREQ_VERIFICATION_OK;
+        }
         if (completion->kind == TAVRN_RREQ_VERIFICATION_TERMINAL_TX_DONE &&
             completion->completed_channel_mask != 0u) {
             if (context->verification_deadline_ms == 0u) {
@@ -3802,7 +3828,8 @@ tavrn_rreq_verification_status_t tavrn_maintenance_verification_scheduler_event(
         return TAVRN_RREQ_VERIFICATION_INVALID;
     }
     if (event->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
-        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED) {
+        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED ||
+        event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
         tavrn_rreq_verification_completion_t completion;
 
         if (event->tx_token < 0x8000u) {
@@ -3830,7 +3857,9 @@ tavrn_rreq_verification_status_t tavrn_maintenance_verification_scheduler_event(
             completion.purpose = context->verification_purpose;
             completion.kind = event->type == BLE_MESH_SCHED_EVENT_TX_DONE ?
                 TAVRN_RREQ_VERIFICATION_TERMINAL_TX_DONE :
-                TAVRN_RREQ_VERIFICATION_TERMINAL_TX_FAILED;
+                event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED ?
+                    TAVRN_RREQ_VERIFICATION_TERMINAL_EXPIRED :
+                    TAVRN_RREQ_VERIFICATION_TERMINAL_TX_FAILED;
             completion.completed_channel_mask = event->tx_completed_channel_mask;
             return tavrn_maintenance_verification_terminal(maintenance, router, link,
                                                             &completion, now_ms);
@@ -3997,11 +4026,14 @@ tavrn_maintenance_high_token_scheduler_event(
         return TAVRN_MAINTENANCE_HIGH_TOKEN_INVALID;
     }
     if (event->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
-        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED) {
+        event->type == BLE_MESH_SCHED_EVENT_TX_FAILED ||
+        event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
         tavrn_maintenance_high_token_completion_kind_t kind =
             event->type == BLE_MESH_SCHED_EVENT_TX_DONE ?
                 TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_DONE :
-                TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_FAILED;
+                event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED ?
+                    TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_EXPIRED :
+                    TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_FAILED;
 
         if (event->tx_token < 0x8000u) {
             return TAVRN_MAINTENANCE_HIGH_TOKEN_OK;

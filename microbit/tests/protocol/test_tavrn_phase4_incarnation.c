@@ -726,6 +726,103 @@ static int queued_wire_type(const incarnation_fixture_t *fixture,
     return 0;
 }
 
+static int queued_wire_not_before(const incarnation_fixture_t *fixture,
+                                  tavrn_wire_type_t type,
+                                  uint32_t not_before_ms)
+{
+    uint8_t index;
+
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &fixture->scheduler.routed_tx_queue.entries[index];
+
+        if (entry->occupied != 0u && entry->item.adv_len > 11u &&
+            entry->item.adv_data[11] == (uint8_t)type &&
+            entry->item.not_before_ms == not_before_ms) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static ble_mesh_tx_token_t queued_wire_token(
+    const incarnation_fixture_t *fixture, tavrn_wire_type_t type)
+{
+    uint8_t index;
+
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &fixture->scheduler.routed_tx_queue.entries[index];
+
+        if (entry->occupied != 0u && entry->item.adv_len > 11u &&
+            entry->item.adv_data[11] == (uint8_t)type) {
+            return entry->item.token;
+        }
+    }
+    return BLE_MESH_TX_TOKEN_NONE;
+}
+
+static int finish_queued_token(incarnation_fixture_t *fixture,
+                               ble_mesh_tx_token_t token,
+                               ble_mesh_sched_event_type_t type,
+                               uint32_t now_ms)
+{
+    ble_mesh_sched_event_t event;
+    ble_radio_tx_result_t result;
+    ble_mesh_tx_terminal_reason_t reason;
+    const ble_mesh_tx_item_t *item;
+    uint8_t sweep;
+    uint8_t index;
+
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &fixture->scheduler.routed_tx_queue.entries[index];
+
+        if (entry->occupied == 0u || entry->item.token != token) {
+            continue;
+        }
+        item = &entry->item;
+        memset(&result, 0, sizeof(result));
+        result.requested_channel_mask = item->channel_mask;
+        result.requested_sweep_count = (uint8_t)item->sweep_count;
+        if (type == BLE_MESH_SCHED_EVENT_TX_DONE) {
+            reason = BLE_MESH_TX_TERMINAL_TX_DONE;
+            result.completed_channel_mask = item->channel_mask;
+            result.attempted_sweep_count = (uint8_t)item->sweep_count;
+            for (sweep = 0u; sweep < result.attempted_sweep_count; sweep++) {
+                result.completed_channel_masks[sweep] = item->channel_mask;
+            }
+            result.fault = BLE_RADIO_OP_OK;
+        } else if (type == BLE_MESH_SCHED_EVENT_TX_FAILED) {
+            reason = BLE_MESH_TX_TERMINAL_TX_FAILED;
+            result.fault = BLE_RADIO_OP_STATE_TIMEOUT;
+        } else if (type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+            reason = BLE_MESH_TX_TERMINAL_EXPIRED;
+        } else {
+            return 0;
+        }
+        if (ble_mesh_tx_queue_retire(
+                &fixture->scheduler.routed_tx_queue, index, reason,
+                type == BLE_MESH_SCHED_EVENT_TX_EXPIRED ? NULL : &result) !=
+            BLE_MESH_TX_RETIRE_OK) {
+            return 0;
+        }
+        memset(&event, 0, sizeof(event));
+        event.type = type;
+        event.tx_token = token;
+        event.tx_requested_channel_mask = result.requested_channel_mask;
+        event.tx_requested_sweep_count = result.requested_sweep_count;
+        if (type == BLE_MESH_SCHED_EVENT_TX_DONE) {
+            event.tx_completed_channel_mask = result.completed_channel_mask;
+            event.tx_attempted_sweep_count = result.attempted_sweep_count;
+        }
+        return tavrn_router_handle_scheduler_event(&fixture->router, &event,
+                                                   now_ms) ==
+            TAVRN_ROUTER_EVENT_OK;
+    }
+    return 0;
+}
+
 static int queued_rerr_has_entries(const incarnation_fixture_t *fixture,
                                    uint16_t first, uint16_t second,
                                    uint16_t third)
@@ -761,10 +858,12 @@ static int queued_bootstrap_hello(const incarnation_fixture_t *fixture)
         if (entry->occupied != 0u && entry->item.adv_len >= 26u &&
             entry->item.adv_data[7] == 0x54u &&
             entry->item.adv_data[8] == 0x52u &&
-            entry->item.adv_data[9] == 0x02u &&
-            entry->item.adv_data[11] == TAVRN_WIRE_HELLO &&
-            entry->item.adv_data[12] == 0x40u &&
-            memcmp(&entry->item.adv_data[18], adva_a, TAVRN_ADVA_LEN) == 0) {
+             entry->item.adv_data[9] == 0x02u &&
+             entry->item.adv_data[11] == TAVRN_WIRE_HELLO &&
+             entry->item.adv_data[12] == 0x40u &&
+             entry->item.sweep_count == BLE_MESH_TX_SWEEP_COUNT_TWO &&
+             entry->item.budget_class == BLE_MESH_TX_BUDGET_GENERAL &&
+             memcmp(&entry->item.adv_data[18], adva_a, TAVRN_ADVA_LEN) == 0) {
             return 1;
         }
     }
@@ -1614,6 +1713,7 @@ static int test_serial_04_rrep_and_ack_cleanup_through_unrelated_next_hop(void)
         adva_b, TAVRN_IDENTITY_SID16, 0x5101u);
     aodv_control_input_t input;
     aodv_action_t action;
+    tavrn_router_dispatch_event_t dispatch_event;
     int ok = 1;
 
     ok &= setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
@@ -1662,8 +1762,11 @@ static int test_serial_04_rrep_and_ack_cleanup_through_unrelated_next_hop(void)
         pdu_u16(&action.detail.control.control, 12u) == peer_b.logical_id.value;
     ack_fixture.router.retained_action = action;
     ack_fixture.router.retained_action_valid = 1u;
+    ok &= tavrn_router_dispatch_ex(&ack_fixture.router, 5u, &dispatch_event) ==
+            TAVRN_ROUTER_EVENT_OK &&
+        queued_wire_not_before(&ack_fixture, TAVRN_WIRE_E_RREP_ACK, 26u);
     hello = make_bootstrap_hello(adva_b, TAVRN_IDENTITY_SID16, 0x5302u);
-    ok &= deliver_control(&ack_fixture, &hello, adva_b, 5u, 0u) ==
+    ok &= deliver_control(&ack_fixture, &hello, adva_b, 6u, 0u) ==
             TAVRN_ROUTER_EVENT_OK &&
         ack_fixture.router.retained_action_valid == 0u;
     return ok;
@@ -1699,14 +1802,97 @@ static int test_serial_04_sent_ack_wait_does_not_blacklist_next_hop(void)
     input.control = make_rrep(local_a, peer_b.logical_id, peer_b.logical_id,
                               0x0300u, 0x5402u, 0u);
     ok &= aodv_core_ingest_control(&fixture.aodv, &input, 4u) == AODV_STATUS_OK &&
-        tavrn_router_dispatch_ex(&fixture.router, 5u, &event) == TAVRN_ROUTER_EVENT_OK;
+        tavrn_router_dispatch_ex(&fixture.router, 5u, &event) == TAVRN_ROUTER_EVENT_OK &&
+        queued_wire_not_before(&fixture, TAVRN_WIRE_E_RREP, 26u);
     hello = make_bootstrap_hello(adva_b, TAVRN_IDENTITY_SID16, 0x5402u);
-    ok &= deliver_control(&fixture, &hello, adva_b, 6u, 0u) == TAVRN_ROUTER_EVENT_OK &&
+    ok &= deliver_control(&fixture, &hello, adva_b, 6u, 0u) ==
+            TAVRN_ROUTER_EVENT_OK &&
+        fixture.router.retained_action_valid == 0u &&
+        fixture.router.incarnation.pending_reset.valid == 0u &&
         tavrn_router_tick(&fixture.router, 300u) == AODV_STATUS_OK &&
         fixture.aodv.counters.rrep_ack_timeout == 0u &&
         fill_rrep_ack_waits_from_c(&fixture, 0x5500u, 301u) &&
         tavrn_router_dispatch_ex(&fixture.router, 310u, &event) == TAVRN_ROUTER_EVENT_OK &&
         event.type != TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR;
+    return ok;
+}
+
+static int test_serial_04_rrep_wait_starts_only_after_tx_done(void)
+{
+    incarnation_fixture_t fixture;
+    incarnation_fixture_t expired_fixture;
+    tavrn_direct_peer_t peer_b = make_peer(adva_b, TAVRN_IDENTITY_SID16);
+    tavrn_direct_peer_t peer_c = make_peer(adva_c, TAVRN_IDENTITY_SID16);
+    tavrn_logical_id_t local_a = make_peer(adva_a, TAVRN_IDENTITY_SID16).logical_id;
+    aodv_control_input_t input;
+    tavrn_router_dispatch_event_t dispatch;
+    ble_mesh_sched_event_t wrong_done;
+    ble_mesh_tx_token_t first_token;
+    ble_mesh_tx_token_t retry_token;
+    ble_mesh_tx_token_t expired_token;
+    int ok = 1;
+
+    ok &= setup_fixture(&fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                        TAVRN_IDENTITY_SID16, 0x5656u, 0u) &&
+        finish_aodv_only_boot(&fixture, 1u);
+    memset(&input, 0, sizeof(input));
+    input.transmitter = peer_c;
+    input.control = make_rreq(peer_b.logical_id, local_a, 0x5601u);
+    ok &= aodv_core_ingest_control(&fixture.aodv, &input, 3u) == AODV_STATUS_OK &&
+        tavrn_router_dispatch_ex(&fixture.router, 4u, &dispatch) ==
+            TAVRN_ROUTER_EVENT_OK &&
+        queued_wire_not_before(&fixture, TAVRN_WIRE_E_RREP, 25u);
+    first_token = queued_wire_token(&fixture, TAVRN_WIRE_E_RREP);
+    ok &= first_token != BLE_MESH_TX_TOKEN_NONE &&
+        fixture.router.retained_action_valid != 0u &&
+        fixture.router.retained_action_tx_token == first_token;
+
+    memset(&wrong_done, 0, sizeof(wrong_done));
+    wrong_done.type = BLE_MESH_SCHED_EVENT_TX_DONE;
+    wrong_done.tx_token = (ble_mesh_tx_token_t)(first_token + 1u);
+    wrong_done.tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    wrong_done.tx_completed_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    ok &= tavrn_router_handle_scheduler_event(&fixture.router, &wrong_done, 299u) ==
+            TAVRN_ROUTER_EVENT_IGNORED &&
+        fixture.router.retained_action_tx_token == first_token &&
+        tavrn_router_tick(&fixture.router, 300u) == AODV_STATUS_OK &&
+        fixture.aodv.counters.rrep_ack_timeout == 0u;
+
+    ok &= finish_queued_token(&fixture, first_token,
+                              BLE_MESH_SCHED_EVENT_TX_FAILED, 301u) &&
+        fixture.router.retained_action_valid != 0u &&
+        fixture.router.retained_action_tx_token == BLE_MESH_TX_TOKEN_NONE &&
+        tavrn_router_dispatch_ex(&fixture.router, 302u, &dispatch) ==
+            TAVRN_ROUTER_EVENT_OK;
+    retry_token = queued_wire_token(&fixture, TAVRN_WIRE_E_RREP);
+    ok &= retry_token != BLE_MESH_TX_TOKEN_NONE && retry_token != first_token &&
+        fixture.router.retained_action_tx_token == retry_token &&
+        finish_queued_token(&fixture, retry_token,
+                            BLE_MESH_SCHED_EVENT_TX_DONE, 500u) &&
+        fixture.router.retained_action_valid == 0u &&
+        fixture.router.retained_action_tx_token == BLE_MESH_TX_TOKEN_NONE &&
+        tavrn_router_tick(&fixture.router, 749u) == AODV_STATUS_OK &&
+        fixture.aodv.counters.rrep_ack_timeout == 0u &&
+        tavrn_router_tick(&fixture.router, 750u) == AODV_STATUS_OK &&
+        fixture.aodv.counters.rrep_ack_timeout == 1u;
+
+    ok &= setup_fixture(&expired_fixture, TAVRN_ROUTER_FEATURE_AODV_ONLY,
+                        TAVRN_IDENTITY_SID16, 0x5757u, 0u) &&
+        finish_aodv_only_boot(&expired_fixture, 1u);
+    input.control = make_rreq(peer_b.logical_id, local_a, 0x5701u);
+    ok &= aodv_core_ingest_control(&expired_fixture.aodv, &input, 3u) ==
+            AODV_STATUS_OK &&
+        tavrn_router_dispatch_ex(&expired_fixture.router, 4u, &dispatch) ==
+            TAVRN_ROUTER_EVENT_OK;
+    expired_token = queued_wire_token(&expired_fixture, TAVRN_WIRE_E_RREP);
+    ok &= expired_token != BLE_MESH_TX_TOKEN_NONE &&
+        finish_queued_token(&expired_fixture, expired_token,
+                            BLE_MESH_SCHED_EVENT_TX_EXPIRED, 100u) &&
+        expired_fixture.router.retained_action_valid == 0u &&
+        expired_fixture.router.retained_action_tx_token == BLE_MESH_TX_TOKEN_NONE &&
+        tavrn_router_tick(&expired_fixture.router, 10000u) == AODV_STATUS_OK &&
+        expired_fixture.aodv.counters.rrep_ack_timeout == 0u &&
+        fill_rrep_ack_waits_from_c(&expired_fixture, 0x5800u, 10001u);
     return ok;
 }
 
@@ -1922,6 +2108,7 @@ int main(void)
     CHECK("SERIAL-04",
           test_serial_04_rrep_and_ack_cleanup_through_unrelated_next_hop());
     CHECK("SERIAL-04", test_serial_04_sent_ack_wait_does_not_blacklist_next_hop());
+    CHECK("SERIAL-04", test_serial_04_rrep_wait_starts_only_after_tx_done());
     CHECK("BOOT-01", test_boot_01_vector_identity_and_ordering());
     CHECK("BOOT-06", test_boot_06_tx_done_establishment());
     CHECK("SERIAL-04", test_rejoining_status_is_distinct_nonterminal());

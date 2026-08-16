@@ -30,6 +30,8 @@ typedef uintptr_t UW;
 #define BLE_RADIO_ADV_CH38  (1u << 1)
 #define BLE_RADIO_ADV_CH39  (1u << 2)
 #define BLE_RADIO_ADV_CH_ALL (BLE_RADIO_ADV_CH37 | BLE_RADIO_ADV_CH38 | BLE_RADIO_ADV_CH39)
+#define BLE_RADIO_REPEATED_ADV_API 1
+#define BLE_RADIO_MAX_ADV_SWEEPS   2u
 
 typedef enum ble_radio_op_result {
     BLE_RADIO_OP_OK = 0,
@@ -42,6 +44,9 @@ typedef enum ble_radio_op_result {
 typedef struct ble_radio_tx_result {
     uint8_t requested_channel_mask;
     uint8_t completed_channel_mask;
+    uint8_t requested_sweep_count;
+    uint8_t attempted_sweep_count;
+    uint8_t completed_channel_masks[BLE_RADIO_MAX_ADV_SWEEPS];
     ble_radio_op_result_t fault;
 } ble_radio_tx_result_t;
 
@@ -52,6 +57,9 @@ ble_radio_op_result_t ble_radio_try_listen_once(UINT channel,
                                                 UINT state_timeout_ms);
 ble_radio_op_result_t ble_radio_try_poll_snapshot(
     UB *buf, UINT *len, UINT *rssi_magnitude_db, UINT state_timeout_ms);
+ble_radio_tx_result_t ble_radio_try_advertise_sweeps(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    uint8_t sweep_count, UINT state_timeout_ms);
 ble_radio_tx_result_t ble_radio_try_advertise_channels(
     const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
     UINT state_timeout_ms);

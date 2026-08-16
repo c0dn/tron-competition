@@ -161,9 +161,10 @@ static int radio_wait_disabled(UINT timeout_ms)
 }
 #endif
 
-static ble_radio_op_result_t radio_try_disable(UINT state_timeout_ms)
+static ble_radio_op_result_t radio_try_disable_with_force(
+    UINT state_timeout_ms, int force_disable)
 {
-    if (in_w(RADIO_STATE) != 0u) {
+    if (force_disable != 0 || in_w(RADIO_STATE) != 0u) {
         out_w(RADIO_TASKS_DISABLE, 1u);
         if (!radio_wait_disabled(state_timeout_ms)) {
             rx_active = 0u;
@@ -173,6 +174,16 @@ static ble_radio_op_result_t radio_try_disable(UINT state_timeout_ms)
     out_w(RADIO_EVENTS_DISABLED, 0u);
     rx_active = 0u;
     return BLE_RADIO_OP_OK;
+}
+
+static ble_radio_op_result_t radio_try_disable(UINT state_timeout_ms)
+{
+    return radio_try_disable_with_force(state_timeout_ms, 0);
+}
+
+static void radio_cleanup_after_tx_timeout(UINT state_timeout_ms)
+{
+    (void)radio_try_disable_with_force(state_timeout_ms, 1);
 }
 
 static void configure_radio(void)
@@ -346,25 +357,26 @@ static int tx_on_channel(INT channel, UINT state_timeout_ms)
     return radio_wait_nonzero(RADIO_EVENTS_DISABLED, state_timeout_ms);
 }
 
-ble_radio_tx_result_t ble_radio_try_advertise_channels(
+ble_radio_tx_result_t ble_radio_try_advertise_sweeps(
     const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
-    UINT state_timeout_ms)
+    uint8_t sweep_count, UINT state_timeout_ms)
 {
-    ble_radio_tx_result_t result;
+    ble_radio_tx_result_t result = { 0 };
     ble_radio_op_result_t idle_result;
+    uint8_t sweep;
     INT channel;
 
-    result.requested_channel_mask = 0u;
-    result.completed_channel_mask = 0u;
     result.fault = BLE_RADIO_OP_INVALID_ARGUMENT;
     if (state_timeout_ms == 0u || adv_len > BLE_ADV_MAX_DATA ||
         (adv == NULL && adv_len != 0u) || addr6 == NULL ||
         channel_mask == 0u ||
-        (channel_mask & ~BLE_RADIO_ADV_CH_ALL) != 0u) {
+        (channel_mask & ~BLE_RADIO_ADV_CH_ALL) != 0u ||
+        sweep_count == 0u || sweep_count > BLE_RADIO_MAX_ADV_SWEEPS) {
         return result;
     }
 
     result.requested_channel_mask = (uint8_t)channel_mask;
+    result.requested_sweep_count = sweep_count;
     idle_result = radio_try_disable(state_timeout_ms);
     if (idle_result != BLE_RADIO_OP_OK) {
         result.fault = idle_result;
@@ -372,21 +384,33 @@ ble_radio_tx_result_t ble_radio_try_advertise_channels(
     }
 
     prepare_adv_packet(adv, adv_len, addr6);
-    for (channel = 0; channel < 3; channel++) {
-        uint8_t channel_bit = (uint8_t)(1u << channel);
+    for (sweep = 0u; sweep < sweep_count; sweep++) {
+        result.attempted_sweep_count++;
+        for (channel = 0; channel < 3; channel++) {
+            uint8_t channel_bit = (uint8_t)(1u << channel);
 
-        if ((channel_mask & channel_bit) == 0u) {
-            continue;
+            if ((channel_mask & channel_bit) == 0u) {
+                continue;
+            }
+            if (!tx_on_channel(channel, state_timeout_ms)) {
+                radio_cleanup_after_tx_timeout(state_timeout_ms);
+                result.fault = BLE_RADIO_OP_STATE_TIMEOUT;
+                return result;
+            }
+            result.completed_channel_masks[sweep] |= channel_bit;
+            result.completed_channel_mask |= channel_bit;
         }
-        if (!tx_on_channel(channel, state_timeout_ms)) {
-            (void)radio_try_disable(state_timeout_ms);
-            result.fault = BLE_RADIO_OP_STATE_TIMEOUT;
-            return result;
-        }
-        result.completed_channel_mask |= channel_bit;
     }
     result.fault = BLE_RADIO_OP_OK;
     return result;
+}
+
+ble_radio_tx_result_t ble_radio_try_advertise_channels(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    UINT state_timeout_ms)
+{
+    return ble_radio_try_advertise_sweeps(
+        adv, adv_len, addr6, channel_mask, 1u, state_timeout_ms);
 }
 
 ble_radio_op_result_t ble_radio_try_poll_snapshot(

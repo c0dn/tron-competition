@@ -7,10 +7,12 @@
 #pragma weak ble_radio_try_listen_once
 #pragma weak ble_radio_try_poll_snapshot
 #pragma weak ble_radio_try_advertise_channels
+#pragma weak ble_radio_try_advertise_sweeps
 #pragma weak ble_mesh_tx_queue_init
 #pragma weak ble_mesh_tx_queue_enqueue
 #pragma weak ble_mesh_tx_queue_select_due
-#pragma weak ble_mesh_tx_queue_complete
+#pragma weak ble_mesh_tx_queue_collect_due_expiry
+#pragma weak ble_mesh_tx_queue_retire
 #endif
 
 static const uint8_t ble_mesh_sched_channels[3] = { 37u, 38u, 39u };
@@ -21,14 +23,18 @@ static const uint8_t ble_mesh_sched_channels[3] = { 37u, 38u, 39u };
 #define BLE_MESH_SCHED_ROUTED_FAULT_REPORTED  3u
 #define BLE_MESH_SCHED_ROUTED_INVALID         4u
 
+#define BLE_MESH_SCHED_BUDGET_WINDOW_MS       1000u
+#define BLE_MESH_SCHED_BUDGET_GENERAL_MAX_BU  32u
+#define BLE_MESH_SCHED_BUDGET_CRITICAL_MAX_BU 8u
+
 static void routed_start_rx(ble_mesh_scheduler_t *sched, uint32_t now_ms);
 static int routed_emit_fault(ble_mesh_scheduler_t *sched,
                              ble_mesh_sched_event_t *event);
 static void routed_pack_fault_diagnostic(ble_mesh_scheduler_t *sched,
-                                         ble_mesh_tx_token_t token,
-                                         uint8_t requested_mask,
-                                         uint8_t completed_mask,
-                                         int has_tx_diagnostic);
+                                          ble_mesh_tx_token_t token,
+                                          uint8_t requested_mask,
+                                          uint8_t completed_mask,
+                                          int has_tx_diagnostic);
 static void legacy_latch_fault(ble_mesh_scheduler_t *sched,
                                ble_mesh_sched_fault_t fault,
                                uint8_t requested_mask,
@@ -36,6 +42,13 @@ static void legacy_latch_fault(ble_mesh_scheduler_t *sched,
                                int has_tx_diagnostic);
 static int local_adva_is_valid(const uint8_t adva[6]);
 static ble_mesh_sched_fault_t routed_fault_from_radio(ble_radio_op_result_t result);
+static void routed_latch_fault(ble_mesh_scheduler_t *sched,
+                               ble_mesh_sched_fault_t fault,
+                               ble_mesh_tx_token_t token,
+                               uint8_t requested_mask,
+                               uint8_t completed_mask,
+                               int has_tx_diagnostic);
+static void routed_clear_custody_hold(ble_mesh_scheduler_t *sched);
 
 static void clear_bytes(void *dst, size_t len)
 {
@@ -66,6 +79,18 @@ static int time_reached(uint32_t now_ms, uint32_t deadline_ms)
 static int elapsed_less_than(uint32_t now_ms, uint32_t then_ms, uint32_t interval_ms)
 {
     return (uint32_t)(now_ms - then_ms) < interval_ms;
+}
+
+static int ordinal_is_older(ble_mesh_tx_ordinal_t left,
+                            ble_mesh_tx_ordinal_t right)
+{
+    return left != right && (uint32_t)(left - right) >= 0x80000000UL;
+}
+
+static int time_is_earlier(uint32_t left_ms, uint32_t right_ms)
+{
+    return left_ms != right_ms &&
+        (uint32_t)(left_ms - right_ms) >= 0x80000000UL;
 }
 
 static uint8_t current_channel(const ble_mesh_scheduler_t *sched)
@@ -274,6 +299,11 @@ static int transmit_pos(ble_mesh_scheduler_t *sched, uint8_t pos,
         event->tx_token = BLE_MESH_TX_TOKEN_NONE;
         event->tx_requested_channel_mask = tx_result.requested_channel_mask;
         event->tx_completed_channel_mask = tx_result.completed_channel_mask;
+        event->tx_requested_sweep_count = tx_result.requested_sweep_count;
+        event->tx_attempted_sweep_count = tx_result.attempted_sweep_count;
+        copy_bytes(event->tx_completed_channel_masks,
+                   tx_result.completed_channel_masks,
+                   sizeof(event->tx_completed_channel_masks));
         event->fault = tx_result.fault == BLE_RADIO_OP_OK ?
             BLE_MESH_SCHED_FAULT_NONE : routed_fault_from_radio(tx_result.fault);
     }
@@ -513,7 +543,7 @@ static int routed_radio_api_available(void)
 {
     return ble_radio_try_listen_once != NULL &&
            ble_radio_try_poll_snapshot != NULL &&
-           ble_radio_try_advertise_channels != NULL;
+           ble_radio_try_advertise_sweeps != NULL;
 }
 
 static int routed_queue_api_available(void)
@@ -521,7 +551,8 @@ static int routed_queue_api_available(void)
     return ble_mesh_tx_queue_init != NULL &&
            ble_mesh_tx_queue_enqueue != NULL &&
            ble_mesh_tx_queue_select_due != NULL &&
-           ble_mesh_tx_queue_complete != NULL;
+           ble_mesh_tx_queue_collect_due_expiry != NULL &&
+           ble_mesh_tx_queue_retire != NULL;
 }
 
 static int local_adva_is_valid(const uint8_t adva[6])
@@ -589,13 +620,16 @@ static void routed_latch_fault(ble_mesh_scheduler_t *sched,
         return;
     }
 
-    routed_pack_fault_diagnostic(sched, token, requested_mask, completed_mask,
-                                 has_tx_diagnostic);
+    /* A selected TX can fault while RX is restored. Its event evidence is
+     * staged before the restore attempt, so retain that selected diagnostic
+     * rather than replacing it with the follow-up RX failure's empty masks. */
+    if (has_tx_diagnostic || sched->relay_last_tx_valid == 0u) {
+        routed_pack_fault_diagnostic(sched, token, requested_mask, completed_mask,
+                                      has_tx_diagnostic);
+    }
     sched->latched_fault = fault;
     sched->routed_started = BLE_MESH_SCHED_ROUTED_FAULT_PENDING;
     sched->rx_started = 0u;
-    clear_bytes(&sched->routed_tx_queue, sizeof(sched->routed_tx_queue));
-    sched->custody_bypass_count = 0u;
 }
 
 static void legacy_latch_fault(ble_mesh_scheduler_t *sched,
@@ -690,6 +724,237 @@ static int routed_hop_rx_channel(ble_mesh_scheduler_t *sched, uint32_t now_ms)
         return 0;
     }
     sched->hop_at_ms = now_ms + sched->dwell_ms;
+    return 1;
+}
+
+static uint8_t routed_budget_ring_index(const ble_mesh_scheduler_t *sched,
+                                        uint8_t position)
+{
+    return (uint8_t)((sched->budget_head + position) %
+                     BLE_MESH_SCHED_BUDGET_RING_CAPACITY);
+}
+
+static int routed_budget_state_is_consistent(const ble_mesh_scheduler_t *sched)
+{
+    uint8_t position;
+    uint8_t general_bu = 0u;
+    uint8_t critical_bu = 0u;
+
+    if (sched == NULL || sched->budget_head >= BLE_MESH_SCHED_BUDGET_RING_CAPACITY ||
+        sched->budget_count > BLE_MESH_SCHED_BUDGET_RING_CAPACITY ||
+        sched->budget_general_bu > BLE_MESH_SCHED_BUDGET_GENERAL_MAX_BU ||
+        sched->budget_critical_bu > BLE_MESH_SCHED_BUDGET_RING_CAPACITY ||
+        sched->custody_hold > 1u ||
+        (sched->custody_hold == 0u &&
+         sched->custody_hold_token != BLE_MESH_TX_TOKEN_NONE) ||
+        (sched->custody_hold != 0u &&
+         sched->custody_hold_token == BLE_MESH_TX_TOKEN_NONE)) {
+        return 0;
+    }
+
+    for (position = 0u; position < sched->budget_count; position++) {
+        uint8_t budget_class =
+            sched->budget_classes[routed_budget_ring_index(sched, position)];
+
+        if (budget_class == BLE_MESH_TX_BUDGET_GENERAL) {
+            general_bu++;
+        } else if (budget_class == BLE_MESH_TX_BUDGET_CRITICAL) {
+            critical_bu++;
+        } else {
+            return 0;
+        }
+    }
+    return general_bu == sched->budget_general_bu &&
+        critical_bu == sched->budget_critical_bu &&
+        (uint8_t)(general_bu + critical_bu) == sched->budget_count;
+}
+
+static int routed_budget_charge_is_live(uint32_t now_ms, uint32_t charged_at_ms)
+{
+    return !time_reached(now_ms, charged_at_ms + BLE_MESH_SCHED_BUDGET_WINDOW_MS);
+}
+
+static int routed_budget_purge(ble_mesh_scheduler_t *sched, uint32_t now_ms)
+{
+    if (!routed_budget_state_is_consistent(sched)) {
+        return 0;
+    }
+
+    while (sched->budget_count != 0u &&
+           !routed_budget_charge_is_live(
+               now_ms, sched->budget_timestamps[sched->budget_head])) {
+        uint8_t budget_class = sched->budget_classes[sched->budget_head];
+
+        if (budget_class == BLE_MESH_TX_BUDGET_GENERAL) {
+            if (sched->budget_general_bu == 0u) {
+                return 0;
+            }
+            sched->budget_general_bu--;
+        } else if (budget_class == BLE_MESH_TX_BUDGET_CRITICAL) {
+            if (sched->budget_critical_bu == 0u) {
+                return 0;
+            }
+            sched->budget_critical_bu--;
+        } else {
+            return 0;
+        }
+        sched->budget_head = (uint8_t)((sched->budget_head + 1u) %
+                                       BLE_MESH_SCHED_BUDGET_RING_CAPACITY);
+        sched->budget_count--;
+    }
+    if (sched->budget_count == 0u) {
+        sched->budget_head = 0u;
+    }
+    return routed_budget_state_is_consistent(sched);
+}
+
+/* Returns one when the complete operation was reserved, zero when it does not
+ * fit, and -1 only for an internal fixed-state inconsistency. */
+static int routed_budget_reserve(ble_mesh_scheduler_t *sched, uint32_t now_ms,
+                                 const ble_mesh_tx_item_t *item,
+                                 int reserve_critical_lane)
+{
+    uint8_t cost;
+    uint8_t index;
+
+    if (sched == NULL || item == NULL || !routed_budget_purge(sched, now_ms)) {
+        return -1;
+    }
+    cost = (uint8_t)item->sweep_count;
+    if (cost != BLE_MESH_TX_SWEEP_COUNT_ONE &&
+        cost != BLE_MESH_TX_SWEEP_COUNT_TWO) {
+        return -1;
+    }
+    if (sched->budget_count >
+        (uint8_t)(BLE_MESH_SCHED_BUDGET_RING_CAPACITY - cost)) {
+        return 0;
+    }
+    if (item->budget_class == BLE_MESH_TX_BUDGET_GENERAL) {
+        if (sched->budget_general_bu >
+            (uint8_t)(BLE_MESH_SCHED_BUDGET_GENERAL_MAX_BU - cost)) {
+            return 0;
+        }
+    } else if (item->budget_class == BLE_MESH_TX_BUDGET_CRITICAL) {
+        if (reserve_critical_lane != 0 && sched->budget_critical_bu >
+            (uint8_t)(BLE_MESH_SCHED_BUDGET_CRITICAL_MAX_BU - cost)) {
+            return 0;
+        }
+    } else {
+        return -1;
+    }
+
+    for (index = 0u; index < cost; index++) {
+        uint8_t ring_index = routed_budget_ring_index(sched, sched->budget_count);
+
+        sched->budget_timestamps[ring_index] = now_ms;
+        sched->budget_classes[ring_index] = (uint8_t)item->budget_class;
+        sched->budget_count++;
+    }
+    if (item->budget_class == BLE_MESH_TX_BUDGET_GENERAL) {
+        sched->budget_general_bu = (uint8_t)(sched->budget_general_bu + cost);
+    } else {
+        sched->budget_critical_bu = (uint8_t)(sched->budget_critical_bu + cost);
+    }
+    return routed_budget_state_is_consistent(sched) ? 1 : -1;
+}
+
+static void routed_clear_custody_hold(ble_mesh_scheduler_t *sched)
+{
+    sched->custody_hold = 0u;
+    sched->custody_hold_token = BLE_MESH_TX_TOKEN_NONE;
+}
+
+static void routed_enter_custody_hold(ble_mesh_scheduler_t *sched,
+                                      ble_mesh_tx_token_t token)
+{
+    if (token != BLE_MESH_TX_TOKEN_NONE) {
+        sched->custody_hold = 1u;
+        sched->custody_hold_token = token;
+    }
+}
+
+/* A hold is established only from a due item. A waiting entry cannot normally
+ * occur afterwards, but keeping it distinct avoids treating a malformed
+ * external mutation as a terminal condition. */
+static int routed_held_custody_status(const ble_mesh_scheduler_t *sched,
+                                      uint32_t now_ms,
+                                      ble_mesh_tx_selection_t *selection_out)
+{
+    uint8_t index;
+
+    if (sched == NULL || selection_out == NULL || sched->custody_hold == 0u ||
+        sched->custody_hold_token == BLE_MESH_TX_TOKEN_NONE) {
+        return -1;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &sched->routed_tx_queue.entries[index];
+
+        if (entry->occupied == 0u ||
+            entry->item.token != sched->custody_hold_token) {
+            continue;
+        }
+        if (entry->item.service_class != BLE_MESH_TX_SERVICE_CUSTODY_DATA) {
+            return -1;
+        }
+        if (time_reached(now_ms, entry->item.expiry_ms)) {
+            return 0;
+        }
+        if (!time_reached(now_ms, entry->item.not_before_ms)) {
+            return 2;
+        }
+        clear_bytes(selection_out, sizeof(*selection_out));
+        selection_out->status = BLE_MESH_TX_SELECT_OK;
+        selection_out->index = index;
+        selection_out->item = entry->item;
+        return 1;
+    }
+    return 0;
+}
+
+static int routed_select_held_critical(
+    const ble_mesh_scheduler_t *sched, uint32_t now_ms,
+    const ble_mesh_tx_item_t *held_custody,
+    ble_mesh_tx_selection_t *selection_out)
+{
+    uint8_t index;
+    uint8_t selected_index = BLE_MESH_TX_QUEUE_CAPACITY;
+
+    if (sched == NULL || held_custody == NULL || selection_out == NULL) {
+        return -1;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry =
+            &sched->routed_tx_queue.entries[index];
+        const ble_mesh_tx_queue_entry_t *selected;
+
+        if (entry->occupied == 0u ||
+            entry->item.budget_class != BLE_MESH_TX_BUDGET_CRITICAL ||
+            entry->item.priority <= held_custody->priority ||
+            time_reached(now_ms, entry->item.expiry_ms) ||
+            !time_reached(now_ms, entry->item.not_before_ms)) {
+            continue;
+        }
+        if (selected_index == BLE_MESH_TX_QUEUE_CAPACITY) {
+            selected_index = index;
+            continue;
+        }
+        selected = &sched->routed_tx_queue.entries[selected_index];
+        if (entry->item.priority > selected->item.priority ||
+            (entry->item.priority == selected->item.priority &&
+             (time_is_earlier(entry->item.expiry_ms, selected->item.expiry_ms) ||
+              (entry->item.expiry_ms == selected->item.expiry_ms &&
+               ordinal_is_older(entry->ordinal, selected->ordinal))))) {
+            selected_index = index;
+        }
+    }
+    if (selected_index == BLE_MESH_TX_QUEUE_CAPACITY) {
+        return 0;
+    }
+    clear_bytes(selection_out, sizeof(*selection_out));
+    selection_out->status = BLE_MESH_TX_SELECT_OK;
+    selection_out->index = selected_index;
+    selection_out->item = sched->routed_tx_queue.entries[selected_index].item;
     return 1;
 }
 
@@ -819,6 +1084,70 @@ ble_mesh_sched_enqueue_result_t ble_mesh_scheduler_enqueue_ex(
     return result;
 }
 
+static int routed_send_reserved_selection(ble_mesh_scheduler_t *sched,
+                                          const ble_mesh_tx_selection_t *selection,
+                                          uint32_t now_ms,
+                                          ble_mesh_sched_event_t *event)
+{
+    ble_radio_tx_result_t tx_result;
+    uint8_t requested_channel_mask;
+    ble_mesh_sched_fault_t fault;
+
+    tx_result = ble_radio_try_advertise_sweeps(
+        selection->item.adv_data, selection->item.adv_len, sched->local_adva,
+        selection->item.channel_mask, (uint8_t)selection->item.sweep_count,
+        (UINT)sched->timers->radio_state_timeout_ms);
+    sched->rx_started = 0u;
+    if (ble_mesh_tx_queue_retire(
+            &sched->routed_tx_queue, selection->index,
+            tx_result.completed_channel_mask == 0u ?
+                BLE_MESH_TX_TERMINAL_TX_FAILED : BLE_MESH_TX_TERMINAL_TX_DONE,
+            &tx_result) != BLE_MESH_TX_RETIRE_OK) {
+        routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+                            BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+        return routed_emit_fault(sched, event);
+    }
+    sched->custody_bypass_count = sched->routed_tx_queue.custody_bypass_count;
+
+    requested_channel_mask = tx_result.requested_channel_mask;
+    fault = tx_result.fault == BLE_RADIO_OP_OK ? BLE_MESH_SCHED_FAULT_NONE :
+        routed_fault_from_radio(tx_result.fault);
+    if (event != NULL) {
+        event->type = tx_result.completed_channel_mask == 0u ?
+            BLE_MESH_SCHED_EVENT_TX_FAILED : BLE_MESH_SCHED_EVENT_TX_DONE;
+        event->tx_token = selection->item.token;
+        event->tx_requested_channel_mask = requested_channel_mask;
+        event->tx_completed_channel_mask = tx_result.completed_channel_mask;
+        event->tx_requested_sweep_count = tx_result.requested_sweep_count;
+        event->tx_attempted_sweep_count = tx_result.attempted_sweep_count;
+        copy_bytes(event->tx_completed_channel_masks,
+                   tx_result.completed_channel_masks,
+                   sizeof(event->tx_completed_channel_masks));
+        event->fault = fault;
+    }
+    if (tx_result.completed_channel_mask != 0u) {
+        sched->counters.tx_ok++;
+    }
+    if (tx_result.fault != BLE_RADIO_OP_OK) {
+        routed_latch_fault(sched, fault, selection->item.token,
+                            requested_channel_mask,
+                            tx_result.completed_channel_mask, 1);
+        return 1;
+    }
+    /* Preserve this selected TX if restoring RX is what fails next. */
+    routed_pack_fault_diagnostic(sched, selection->item.token,
+                                 requested_channel_mask,
+                                 tx_result.completed_channel_mask, 1);
+    if (!routed_restore_rx_or_hop(sched, now_ms)) {
+        if (event != NULL) {
+            event->fault = sched->latched_fault;
+        }
+        return 1;
+    }
+    routed_pack_fault_diagnostic(sched, BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+    return 1;
+}
+
 static int routed_poll(ble_mesh_scheduler_t *sched, uint32_t now_ms,
                        ble_mesh_sched_event_t *event)
 {
@@ -828,9 +1157,11 @@ static int routed_poll(ble_mesh_scheduler_t *sched, uint32_t now_ms,
     UINT adv_len;
     ble_radio_op_result_t radio_result;
     ble_mesh_tx_selection_t selection;
+    ble_mesh_tx_expiry_result_t expiry;
     ble_mesh_tx_token_t promoted_token;
     ble_mesh_tx_select_status_t select_status;
-    ble_radio_tx_result_t tx_result;
+    int budget_result;
+    int held_status;
 
     if (sched->routed_started == BLE_MESH_SCHED_ROUTED_FAULT_PENDING) {
         return routed_emit_fault(sched, event);
@@ -844,10 +1175,104 @@ static int routed_poll(ble_mesh_scheduler_t *sched, uint32_t now_ms,
         return routed_emit_fault(sched, event);
     }
 
-    if (sched->rx_started == 0u) {
-        routed_start_rx(sched, now_ms);
-        if (sched->routed_started != BLE_MESH_SCHED_ROUTED_HEALTHY) {
+    clear_bytes(&expiry, sizeof(expiry));
+    if (ble_mesh_tx_queue_collect_due_expiry(
+            &sched->routed_tx_queue, now_ms, BLE_MESH_TX_QUEUE_CAPACITY,
+            &expiry) != BLE_MESH_TX_EXPIRY_OK) {
+        routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+                            BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+        return routed_emit_fault(sched, event);
+    }
+    sched->counters.tx_expired_anonymous += expiry.anonymous_purged_count;
+    sched->custody_bypass_count = sched->routed_tx_queue.custody_bypass_count;
+    if (expiry.tracked_due != 0u) {
+        if (event == NULL) {
+            goto poll_rx;
+        }
+        if (ble_mesh_tx_queue_retire(
+                &sched->routed_tx_queue, expiry.tracked_index,
+                BLE_MESH_TX_TERMINAL_EXPIRED, NULL) != BLE_MESH_TX_RETIRE_OK) {
+            routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+                                BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
             return routed_emit_fault(sched, event);
+        }
+        if (sched->custody_hold != 0u &&
+            sched->custody_hold_token == expiry.tracked_item.token) {
+            routed_clear_custody_hold(sched);
+        }
+        sched->custody_bypass_count = sched->routed_tx_queue.custody_bypass_count;
+        sched->counters.tx_expired_tracked++;
+        event->type = BLE_MESH_SCHED_EVENT_TX_EXPIRED;
+        event->tx_token = expiry.tracked_item.token;
+        event->tx_requested_channel_mask = expiry.tracked_item.channel_mask;
+        event->tx_requested_sweep_count = (uint8_t)expiry.tracked_item.sweep_count;
+        return 1;
+    }
+
+    if (!routed_budget_purge(sched, now_ms)) {
+        routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_INTERNAL_STATE,
+                            BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+        return routed_emit_fault(sched, event);
+    }
+
+    if (sched->custody_hold != 0u) {
+        if (routed_find_promoted_token(sched, &promoted_token) != 0) {
+            routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+                                BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+            return routed_emit_fault(sched, event);
+        }
+        if (promoted_token != sched->custody_hold_token) {
+            routed_clear_custody_hold(sched);
+        } else {
+            held_status = routed_held_custody_status(sched, now_ms, &selection);
+            if (held_status < 0) {
+                routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+                                    BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+                return routed_emit_fault(sched, event);
+            }
+            if (held_status == 0) {
+                /* The exact custody token expired or was terminally removed. */
+                routed_clear_custody_hold(sched);
+            } else if (held_status == 2) {
+                goto poll_rx;
+            } else {
+                budget_result = routed_budget_reserve(sched, now_ms,
+                                                       &selection.item, 0);
+                if (budget_result < 0) {
+                    routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_INTERNAL_STATE,
+                                        BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+                    return routed_emit_fault(sched, event);
+                }
+                if (budget_result > 0) {
+                    routed_clear_custody_hold(sched);
+                    return routed_send_reserved_selection(sched, &selection,
+                                                          now_ms, event);
+                }
+
+                held_status = routed_select_held_critical(
+                    sched, now_ms, &selection.item, &selection);
+                if (held_status < 0) {
+                    routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_INTERNAL_STATE,
+                                        BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+                    return routed_emit_fault(sched, event);
+                }
+                if (held_status == 0) {
+                    goto poll_rx;
+                }
+                budget_result = routed_budget_reserve(sched, now_ms,
+                                                       &selection.item, 1);
+                if (budget_result < 0) {
+                    routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_INTERNAL_STATE,
+                                        BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
+                    return routed_emit_fault(sched, event);
+                }
+                if (budget_result == 0) {
+                    /* A blocked critical selection is never bypassed. */
+                    goto poll_rx;
+                }
+                return routed_send_reserved_selection(sched, &selection,
+                                                      now_ms, event);
+            }
         }
     }
 
@@ -865,49 +1290,33 @@ static int routed_poll(ble_mesh_scheduler_t *sched, uint32_t now_ms,
                             BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
         return routed_emit_fault(sched, event);
     }
+    sched->custody_bypass_count = sched->routed_tx_queue.custody_bypass_count;
     if (select_status == BLE_MESH_TX_SELECT_OK) {
-        tx_result = ble_radio_try_advertise_channels(
-            selection.item.adv_data, selection.item.adv_len, sched->local_adva,
-            selection.item.channel_mask, (UINT)sched->timers->radio_state_timeout_ms);
-        sched->rx_started = 0u;
-        if (!ble_mesh_tx_queue_complete(&sched->routed_tx_queue, selection.index,
-                                        tx_result.completed_channel_mask,
-                                        promoted_token)) {
-            routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_QUEUE_CORRUPT,
+        budget_result = routed_budget_reserve(sched, now_ms, &selection.item, 0);
+        if (budget_result < 0) {
+            routed_latch_fault(sched, BLE_MESH_SCHED_FAULT_INTERNAL_STATE,
                                 BLE_MESH_TX_TOKEN_NONE, 0u, 0u, 0);
             return routed_emit_fault(sched, event);
         }
-        sched->custody_bypass_count =
-            sched->routed_tx_queue.custody_bypass_count;
-
-        event->type = tx_result.completed_channel_mask == 0u ?
-            BLE_MESH_SCHED_EVENT_TX_FAILED : BLE_MESH_SCHED_EVENT_TX_DONE;
-        event->tx_token = selection.item.token;
-        event->tx_requested_channel_mask =
-            tx_result.requested_channel_mask != 0u ?
-            tx_result.requested_channel_mask : selection.item.channel_mask;
-        event->tx_completed_channel_mask = tx_result.completed_channel_mask;
-        event->fault = tx_result.fault == BLE_RADIO_OP_OK ?
-            BLE_MESH_SCHED_FAULT_NONE : routed_fault_from_radio(tx_result.fault);
-        if (tx_result.completed_channel_mask != 0u) {
-            sched->counters.tx_ok++;
+        if (budget_result > 0) {
+            return routed_send_reserved_selection(sched, &selection, now_ms, event);
         }
-        if (tx_result.fault != BLE_RADIO_OP_OK) {
-            routed_latch_fault(sched, event->fault, event->tx_token,
-                                event->tx_requested_channel_mask,
-                                event->tx_completed_channel_mask, 1);
-            return 1;
+        if (selection.item.service_class == BLE_MESH_TX_SERVICE_CUSTODY_DATA &&
+            selection.item.budget_class == BLE_MESH_TX_BUDGET_GENERAL &&
+            selection.item.token == promoted_token &&
+            sched->routed_tx_queue.custody_bypass_count >=
+                tron_timer_config.scheduler_custody_bypass_max) {
+            routed_enter_custody_hold(sched, selection.item.token);
         }
-        if (!routed_restore_rx_or_hop(sched, now_ms)) {
-            event->fault = sched->latched_fault;
-            routed_pack_fault_diagnostic(sched, event->tx_token,
-                                         event->tx_requested_channel_mask,
-                                         event->tx_completed_channel_mask, 1);
-            return 1;
-        }
-        return 1;
     }
 
+poll_rx:
+    if (sched->rx_started == 0u) {
+        routed_start_rx(sched, now_ms);
+        if (sched->routed_started != BLE_MESH_SCHED_ROUTED_HEALTHY) {
+            return routed_emit_fault(sched, event);
+        }
+    }
     radio_result = ble_radio_try_poll_snapshot(
         pdu, &pdu_len, &rssi_dbm, (UINT)sched->timers->radio_state_timeout_ms);
     if (radio_result == BLE_RADIO_OP_NO_EVENT) {
@@ -960,6 +1369,34 @@ int ble_mesh_scheduler_poll(ble_mesh_scheduler_t *sched, uint32_t now_ms,
         return ble_mesh_scheduler_poll_legacy(sched, now_ms, event);
     }
     return routed_poll(sched, now_ms, event);
+}
+
+int ble_mesh_scheduler_get_budget_snapshot(
+    const ble_mesh_scheduler_t *sched, uint32_t now_ms,
+    ble_mesh_sched_budget_snapshot_t *snapshot_out)
+{
+    uint8_t position;
+
+    if (snapshot_out == NULL || !routed_budget_state_is_consistent(sched)) {
+        return 0;
+    }
+    clear_bytes(snapshot_out, sizeof(*snapshot_out));
+    for (position = 0u; position < sched->budget_count; position++) {
+        uint8_t ring_index = routed_budget_ring_index(sched, position);
+
+        if (!routed_budget_charge_is_live(now_ms,
+                                          sched->budget_timestamps[ring_index])) {
+            continue;
+        }
+        snapshot_out->live_total_bu++;
+        if (sched->budget_classes[ring_index] == BLE_MESH_TX_BUDGET_GENERAL) {
+            snapshot_out->live_general_bu++;
+        } else {
+            snapshot_out->live_critical_bu++;
+        }
+    }
+    snapshot_out->custody_hold = sched->custody_hold;
+    return 1;
 }
 
 const ble_mesh_sched_counters_t *ble_mesh_scheduler_counters(const ble_mesh_scheduler_t *sched)

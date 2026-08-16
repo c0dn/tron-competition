@@ -20,6 +20,9 @@ target_compile_definitions(ble_mesh_node PRIVATE
   TRON_NODE_ID=${TRON_NODE_ID}
   TRON_NODE_BLOCK_DIRECT_PEER_ID=${TRON_TEST_RX_BLOCK_PEER_ID_EFFECTIVE}
 )
+target_compile_options(ble_mesh_node PRIVATE
+  "SHELL:-include ${TRON_BLE_MESH_NODE_GENERATED_DIR}/tron_build_config.h"
+)
 
 target_include_directories(ble_mesh_node PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src

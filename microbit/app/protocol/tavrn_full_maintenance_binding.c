@@ -193,7 +193,8 @@ static tavrn_router_control_augmentation_status_t full_metadata_completed(
 
     if (maintenance == NULL || event == NULL ||
         (event->type != BLE_MESH_SCHED_EVENT_TX_DONE &&
-         event->type != BLE_MESH_SCHED_EVENT_TX_FAILED)) {
+         event->type != BLE_MESH_SCHED_EVENT_TX_FAILED &&
+         event->type != BLE_MESH_SCHED_EVENT_TX_EXPIRED)) {
         return TAVRN_ROUTER_CONTROL_AUGMENTATION_INVALID;
     }
     pending = &maintenance->metadata_pending;
@@ -211,6 +212,13 @@ static tavrn_router_control_augmentation_status_t full_metadata_completed(
             return TAVRN_ROUTER_CONTROL_AUGMENTATION_INVALID;
         }
         maintenance->metadata_completion_commit_count++;
+        memset(pending, 0, sizeof(*pending));
+        return TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
+    }
+    if (event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+        /* The attached entries were never committed.  Drop only this stale
+         * base/control transaction so a future fresh control may select them. */
+        maintenance->metadata_completion_failure_count++;
         memset(pending, 0, sizeof(*pending));
         return TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
     }

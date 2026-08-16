@@ -303,6 +303,23 @@ static int targeted_control_send_shape_valid(
                TAVRN_ADVA_LEN) == 0;
 }
 
+static void apply_control_bearer_policy(
+    const tavrn_validated_control_t *control, ble_mesh_tx_item_t *item)
+{
+    int bootstrap;
+
+    bootstrap = control->type == TAVRN_WIRE_HELLO &&
+        control->pdu_len > 5u && control->pdu[5] == 0x40u;
+    item->sweep_count = control->type == TAVRN_WIRE_E_RREQ ||
+            control->type == TAVRN_WIRE_E_RREP || bootstrap ?
+        BLE_MESH_TX_SWEEP_COUNT_TWO : BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item->budget_class = control->type == TAVRN_WIRE_E_RREP ||
+            control->type == TAVRN_WIRE_E_RREP_ACK ||
+            control->type == TAVRN_WIRE_SYNC_OFFER ||
+            control->type == TAVRN_WIRE_SYNC_DATA ?
+        BLE_MESH_TX_BUDGET_CRITICAL : BLE_MESH_TX_BUDGET_GENERAL;
+}
+
 static tavrn_codec_config_t codec_config(const tavrn_link_v2_t *link)
 {
     tavrn_codec_config_t config;
@@ -438,6 +455,22 @@ static ble_mesh_tx_token_t allocate_scheduler_token(tavrn_link_v2_t *link)
         }
     }
     return BLE_MESH_TX_TOKEN_NONE;
+}
+
+/* Token-bearing work uses checked retirement; anonymous work emits no token
+ * terminal and keeps the simple removal path. */
+static int retire_queued_entry(ble_mesh_tx_queue_t *queue, uint8_t index,
+                               ble_mesh_tx_terminal_reason_t reason)
+{
+    if (queue == NULL || index >= BLE_MESH_TX_QUEUE_CAPACITY ||
+        queue->entries[index].occupied == 0u) {
+        return 0;
+    }
+    if (queue->entries[index].item.token == BLE_MESH_TX_TOKEN_NONE) {
+        return ble_mesh_tx_queue_remove(queue, index, NULL);
+    }
+    return ble_mesh_tx_queue_retire(queue, index, reason, NULL) ==
+        BLE_MESH_TX_RETIRE_OK;
 }
 
 int tavrn_link_v2_tracked_token_in_use(const tavrn_link_v2_t *link,
@@ -788,10 +821,40 @@ static int terminal_evicted_token(tavrn_link_v2_t *link,
     return 0;
 }
 
+static int pending_hack_exists(const ble_mesh_tx_queue_t *queue,
+                               const ble_mesh_tx_item_t *candidate)
+{
+    uint8_t index;
+
+    if (queue == NULL || candidate == NULL || candidate->adv_len == 0u) {
+        return 0;
+    }
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        const ble_mesh_tx_queue_entry_t *entry = &queue->entries[index];
+
+        /* Canonical HACK encoding places status last. Matching the preceding
+         * bytes preserves the first pending reply's status and release time. */
+        if (entry->occupied != 0u &&
+            entry->item.adv_len == candidate->adv_len &&
+            memcmp(entry->item.adv_data, candidate->adv_data,
+                   (size_t)candidate->adv_len - 1u) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint32_t repeated_response_due_ms(const tavrn_link_v2_t *link,
+                                         uint32_t first_rx_ms)
+{
+    return first_rx_ms + tron_timer_config.radio_tx_repeated_event_bound_ms +
+        link->config.hack_turnaround_ms;
+}
+
 static int enqueue_hack(tavrn_link_v2_t *link,
                         const tavrn_direct_peer_t *transmitter,
                         const tavrn_link_data_t *data,
-                        tavrn_hack_status_t status, uint32_t now_ms,
+                        tavrn_hack_status_t status, uint32_t first_rx_ms,
                         tavrn_link_event_t *output)
 {
     tavrn_codec_config_t config;
@@ -825,11 +888,17 @@ static int enqueue_hack(tavrn_link_v2_t *link,
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
 #if defined(TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK)
     /* Host-only turnaround RED mode: restore the superseded immediate due time. */
-    item.not_before_ms = now_ms;
+    item.not_before_ms = first_rx_ms;
 #else
-    item.not_before_ms = now_ms + link->config.hack_turnaround_ms;
+    item.not_before_ms = repeated_response_due_ms(link, first_rx_ms);
 #endif
+    item.expiry_ms = first_rx_ms + link->config.hack_response_ms;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_CRITICAL;
     item.token = BLE_MESH_TX_TOKEN_NONE;
+    if (pending_hack_exists(&link->scheduler->routed_tx_queue, &item)) {
+        return 0;
+    }
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
         link->counters.hack_enqueue_failed++;
@@ -885,13 +954,16 @@ static tavrn_link_step_status_t handle_flood(tavrn_link_v2_t *link,
     item.priority = BLE_MESH_TX_PRIORITY_RELAY;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms + flood_jitter(link, flood);
+    item.expiry_ms = now_ms + link->config.flood_dedupe_ms;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     item.token = BLE_MESH_TX_TOKEN_NONE;
     (void)ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     return TAVRN_LINK_STEP_NO_EVENT;
 }
 
 static void latch_fault(tavrn_link_v2_t *link,
-                        const ble_mesh_sched_event_t *input)
+                         const ble_mesh_sched_event_t *input)
 {
     uint8_t i;
 
@@ -1024,7 +1096,10 @@ tavrn_link_init_status_t tavrn_link_v2_init(
         !time_value_valid(config->flood_dedupe_ms) ||
         !time_value_valid(config->flood_jitter_min_ms) ||
         !time_value_valid(config->flood_jitter_max_ms) ||
-        config->flood_jitter_min_ms > config->flood_jitter_max_ms) {
+        config->flood_jitter_min_ms > config->flood_jitter_max_ms ||
+        !tron_timer_config_is_valid(&tron_timer_config) ||
+        config->hack_turnaround_ms > UINT32_C(0x7fffffff) -
+            tron_timer_config.radio_tx_repeated_event_bound_ms) {
         return TAVRN_LINK_INIT_INVALID_CONFIG;
     }
     link->scheduler = sched;
@@ -1146,6 +1221,9 @@ tavrn_link_send_status_t tavrn_link_v2_send_flood(
     item.priority = BLE_MESH_TX_PRIORITY_RELAY;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms;
+    item.expiry_ms = now_ms + link->config.flood_dedupe_ms;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     item.token = BLE_MESH_TX_TOKEN_NONE;
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
@@ -1162,15 +1240,38 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome)
 {
-    return tavrn_link_v2_send_control_tracked(link, control, next_hop_or_null,
-                                               controlled_flood, now_ms,
-                                               local_outcome, NULL);
+    return tavrn_link_v2_send_control_at(link, control, next_hop_or_null,
+                                          controlled_flood, now_ms, now_ms,
+                                          local_outcome);
+}
+
+tavrn_link_send_status_t tavrn_link_v2_send_control_at(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, uint32_t not_before_ms,
+    tavrn_link_event_t *local_outcome)
+{
+    return tavrn_link_v2_send_control_tracked_at(
+        link, control, next_hop_or_null, controlled_flood, now_ms,
+        not_before_ms, local_outcome, NULL);
 }
 
 tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
     tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome,
+    ble_mesh_tx_token_t *scheduler_token_out)
+{
+    return tavrn_link_v2_send_control_tracked_at(
+        link, control, next_hop_or_null, controlled_flood, now_ms, now_ms,
+        local_outcome, scheduler_token_out);
+}
+
+tavrn_link_send_status_t tavrn_link_v2_send_control_tracked_at(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, uint32_t not_before_ms,
+    tavrn_link_event_t *local_outcome,
     ble_mesh_tx_token_t *scheduler_token_out)
 {
     tavrn_codec_config_t config;
@@ -1209,19 +1310,23 @@ tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
-    item.not_before_ms = now_ms;
+    item.not_before_ms = not_before_ms;
     item.token = scheduler_token_out == NULL ? BLE_MESH_TX_TOKEN_NONE :
         allocate_scheduler_token(link);
     if (scheduler_token_out != NULL && item.token == BLE_MESH_TX_TOKEN_NONE) {
         return TAVRN_LINK_SEND_BUSY;
     }
+    /* TODO(BEARER-06): replace this bounded generic-control deadline with each
+     * concrete producer's owner deadline when its typed terminal is wired. */
+    item.expiry_ms = now_ms + link->config.data_forward_deadline_ms;
+    apply_control_bearer_policy(control, &item);
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
         return TAVRN_LINK_SEND_BUSY;
     }
-    /* The control is admitted even if it synchronously evicts DATA.  Preserve
-     * that separate DATA ownership outcome without treating the control as
-     * unsent, so a tracked RREP wait starts exactly after successful enqueue. */
+    /* The control is admitted even if it synchronously evicts DATA. Preserve
+     * that separate DATA outcome; the router starts a tracked RREP wait only
+     * after this token later reports physical TX_DONE. */
     (void)terminal_evicted_token(link, result.evicted_token, local_outcome);
     if (scheduler_token_out != NULL) {
         *scheduler_token_out = result.accepted_token;
@@ -1270,6 +1375,10 @@ tavrn_link_send_status_t tavrn_link_v2_send_tracked_control(
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms;
     item.token = token;
+    /* TODO(BEARER-06): router-owned controls need their concrete producer
+     * deadline before their transitional ROUTER/HIGH ownership can retire. */
+    item.expiry_ms = now_ms + link->config.data_forward_deadline_ms;
+    apply_control_bearer_policy(control, &item);
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
     if (result.status != BLE_MESH_SCHED_ENQUEUE_OK) {
         return TAVRN_LINK_SEND_BUSY;
@@ -1310,8 +1419,8 @@ tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_control(
             memcmp(entry->item.adv_data, encoded, encoded_len) != 0) {
             continue;
         }
-        if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
-                                      NULL)) {
+        if (!retire_queued_entry(&link->scheduler->routed_tx_queue, index,
+                                  BLE_MESH_TX_TERMINAL_CANCELED)) {
             return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
         }
     }
@@ -1357,8 +1466,8 @@ tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_control(
             memcmp(entry->item.adv_data, encoded, encoded_len) != 0) {
             continue;
         }
-        if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
-                                      NULL)) {
+        if (!retire_queued_entry(&link->scheduler->routed_tx_queue, index,
+                                  BLE_MESH_TX_TERMINAL_CANCELED)) {
             return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
         }
         *canceled_out = 1u;
@@ -1401,8 +1510,8 @@ tavrn_link_resolve_status_t tavrn_link_v2_cancel_queued_tracked_token(
     if (matched_index == BLE_MESH_TX_QUEUE_CAPACITY) {
         return TAVRN_LINK_RESOLVE_OK;
     }
-    if (!ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, matched_index,
-                                   NULL)) {
+    if (!retire_queued_entry(&link->scheduler->routed_tx_queue, matched_index,
+                              BLE_MESH_TX_TERMINAL_CANCELED)) {
         return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
     }
     *canceled_out = 1u;
@@ -1442,15 +1551,21 @@ tavrn_link_resolve_status_t tavrn_link_v2_resolve_rx(
         commit_data_dedupe(link, &candidate.data, now_ms);
         link->counters.rx_candidate_accepted++;
         (void)enqueue_hack(link, &candidate.transmitter, &candidate.data,
-                           TAVRN_HACK_ACCEPTED, now_ms, local_outcome);
+                           TAVRN_HACK_ACCEPTED,
+                           candidate.deadline_ms - link->config.candidate_resolve_ms,
+                           local_outcome);
     } else if (decision == TAVRN_RX_BUSY) {
         link->counters.rx_candidate_busy++;
         (void)enqueue_hack(link, &candidate.transmitter, &candidate.data,
-                           TAVRN_HACK_BUSY, now_ms, local_outcome);
+                           TAVRN_HACK_BUSY,
+                           candidate.deadline_ms - link->config.candidate_resolve_ms,
+                           local_outcome);
     } else {
         link->counters.rx_candidate_rejected++;
         (void)enqueue_hack(link, &candidate.transmitter, &candidate.data,
-                           TAVRN_HACK_REJECTED, now_ms, local_outcome);
+                           TAVRN_HACK_REJECTED,
+                           candidate.deadline_ms - link->config.candidate_resolve_ms,
+                           local_outcome);
     }
     return TAVRN_LINK_RESOLVE_OK;
 }
@@ -1498,7 +1613,6 @@ tavrn_link_resolve_status_t tavrn_link_v2_transfer_rx_custody_to_external(
     }
     entry = find_data_dedupe_exact(link, data);
     if (entry == NULL || entry->custody_pinned == 0u ||
-        entry->external_custody_owner != 0u ||
         !logical_id_equal(&entry->final_destination, &data->final_destination)) {
         return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
     }
@@ -1508,6 +1622,10 @@ tavrn_link_resolve_status_t tavrn_link_v2_transfer_rx_custody_to_external(
             return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
         }
     }
+    /* Local repair may reforward an externally owned packet through link
+     * custody and reacquire the same exact pin after another retry terminal.
+     * With no live internal copy, repeating this single-owner mark is
+     * idempotent rather than an ownership split. */
     entry->external_custody_owner = 1u;
     return TAVRN_LINK_RESOLVE_OK;
 }
@@ -1561,7 +1679,8 @@ tavrn_link_step_status_t tavrn_link_v2_on_scheduler_event(
         return TAVRN_LINK_STEP_NO_EVENT;
     }
     if (input->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
-        input->type == BLE_MESH_SCHED_EVENT_TX_FAILED) {
+        input->type == BLE_MESH_SCHED_EVENT_TX_FAILED ||
+        input->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
         if (link->active_custody_index >= TAVRN_LINK_CUSTODY_CAPACITY) {
             return TAVRN_LINK_STEP_NO_EVENT;
         }
@@ -1591,6 +1710,15 @@ tavrn_link_step_status_t tavrn_link_v2_on_scheduler_event(
                 link->counters.tx_partial_done++;
             }
             return TAVRN_LINK_STEP_NO_EVENT;
+        }
+        if (input->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+            slot->attempt_requested_channel_mask = input->tx_requested_channel_mask;
+            slot->attempt_completed_channel_mask = 0u;
+            terminal_owned(link, index, output,
+                           TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED,
+                           TAVRN_LOCAL_TX_DEADLINE_EXPIRED,
+                           TAVRN_MESH_FAULT_NONE);
+            return TAVRN_LINK_STEP_EVENT;
         }
         link->counters.tx_failed++;
         slot->attempt_requested_channel_mask = input->tx_requested_channel_mask;
@@ -1653,6 +1781,15 @@ tavrn_link_step_status_t tavrn_link_v2_on_scheduler_event(
                 TAVRN_LINK_STEP_NO_EVENT : TAVRN_LINK_STEP_EVENT;
         }
         if (link->candidate_valid != 0u) {
+            /* A repeated physical copy of the unresolved first DATA is not a
+             * competing candidate. Keep the original token, decision, and
+             * response anchor so a later BUSY HACK cannot suppress it. */
+            if (direct_peer_equal(&link->candidate.transmitter,
+                                  &frame.transmitter) &&
+                link_data_equal(&link->candidate.data,
+                                &frame.detail.data.data)) {
+                return TAVRN_LINK_STEP_NO_EVENT;
+            }
             link->counters.rx_additional_data_busy++;
             (void)enqueue_hack(link, &frame.transmitter, &frame.detail.data.data,
                                TAVRN_HACK_BUSY, now_ms, output);
@@ -1723,7 +1860,9 @@ tavrn_link_step_status_t tavrn_link_v2_tick(
         link->candidate_valid = 0u;
         link->counters.rx_candidate_timeout_busy++;
         (void)enqueue_hack(link, &candidate.transmitter, &candidate.data,
-                           TAVRN_HACK_BUSY, now_ms, output);
+                           TAVRN_HACK_BUSY,
+                           candidate.deadline_ms - link->config.candidate_resolve_ms,
+                           output);
         return TAVRN_LINK_STEP_CANDIDATE_TIMEOUT_BUSY;
     }
     for (i = 0u; i < TAVRN_LINK_CUSTODY_CAPACITY; i++) {
@@ -1837,6 +1976,9 @@ tavrn_link_step_status_t tavrn_link_v2_dispatch(
         BLE_MESH_TX_PRIORITY_RETRY;
     item.service_class = BLE_MESH_TX_SERVICE_CUSTODY_DATA;
     item.not_before_ms = now_ms;
+    item.expiry_ms = slot->transaction_deadline_ms;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_TWO;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     item.token = slot->scheduler_token;
     memcpy(item.adv_data, slot->adv_data, slot->adv_len);
     result = ble_mesh_scheduler_enqueue_ex(link->scheduler, &item);
@@ -1990,8 +2132,8 @@ static int remove_queued_peer_work(tavrn_link_v2_t *link,
             &link->scheduler->routed_tx_queue.entries[index];
 
         if (entry->occupied != 0u && queued_item_has_peer_id(&entry->item, peer) &&
-            !ble_mesh_tx_queue_remove(&link->scheduler->routed_tx_queue, index,
-                                      NULL)) {
+            !retire_queued_entry(&link->scheduler->routed_tx_queue, index,
+                                  BLE_MESH_TX_TERMINAL_PEER_RESET)) {
             return 0;
         }
     }
@@ -2166,6 +2308,7 @@ tavrn_link_resolve_status_t tavrn_link_v2_reconfigure_identity(
 {
     tavrn_link_config_t config;
     ble_mesh_scheduler_t *scheduler;
+    uint8_t index;
 
     if (link == NULL || local_peer == NULL || !direct_peer_valid(local_peer) ||
         link->scheduler == NULL) {
@@ -2175,8 +2318,15 @@ tavrn_link_resolve_status_t tavrn_link_v2_reconfigure_identity(
     scheduler = link->scheduler;
     config.local_peer = *local_peer;
     /* No old-width control or DATA may survive to be transmitted after the
-     * new logical namespace becomes visible. */
-    ble_mesh_tx_queue_init(&scheduler->routed_tx_queue);
+     * new logical namespace becomes visible. Keep the scheduler's temporary
+     * bridge installed while each tracked entry is terminalized. */
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        if (scheduler->routed_tx_queue.entries[index].occupied != 0u &&
+            !retire_queued_entry(&scheduler->routed_tx_queue, index,
+                                  BLE_MESH_TX_TERMINAL_IDENTITY_RESET)) {
+            return TAVRN_LINK_RESOLVE_TOKEN_INVALID;
+        }
+    }
     return tavrn_link_v2_init(link, scheduler, &config, now_ms) ==
             TAVRN_LINK_INIT_OK ? TAVRN_LINK_RESOLVE_OK :
             TAVRN_LINK_RESOLVE_TOKEN_INVALID;

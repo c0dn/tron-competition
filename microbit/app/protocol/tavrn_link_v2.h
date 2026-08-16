@@ -321,12 +321,24 @@ tavrn_link_send_status_t tavrn_link_v2_send_control(
     tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome);
+/* Preserves a producer-fixed release time, including a wrap-to-zero deadline. */
+tavrn_link_send_status_t tavrn_link_v2_send_control_at(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, uint32_t not_before_ms,
+    tavrn_link_event_t *local_outcome);
 /* As above, but returns the scheduler token assigned to an accepted control.
  * Router bootstrap uses it to accept only a matching scheduler TX_DONE. */
 tavrn_link_send_status_t tavrn_link_v2_send_control_tracked(
     tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
     const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
     uint32_t now_ms, tavrn_link_event_t *local_outcome,
+    ble_mesh_tx_token_t *scheduler_token_out);
+tavrn_link_send_status_t tavrn_link_v2_send_control_tracked_at(
+    tavrn_link_v2_t *link, const tavrn_validated_control_t *control,
+    const tavrn_direct_peer_t *next_hop_or_null, uint8_t controlled_flood,
+    uint32_t now_ms, uint32_t not_before_ms,
+    tavrn_link_event_t *local_outcome,
     ble_mesh_tx_token_t *scheduler_token_out);
 /* Caller-owned tracked control admits only an exact SID8 targeted HELLO or an
  * exact SID8 controlled-flood E_RREQ.  The caller supplies a high-domain token

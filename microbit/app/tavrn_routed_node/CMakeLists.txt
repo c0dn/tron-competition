@@ -28,10 +28,13 @@ target_compile_definitions(tavrn_routed_node PRIVATE
   INITTASK_STKSZ=${TRON_ROUTED_INITIAL_TASK_STACK_BYTES}
   TRON_ROUTED_LOGGER_TASK_STACK_BYTES=${TRON_ROUTED_LOGGER_TASK_STACK_BYTES}
 )
+target_compile_options(tavrn_routed_node PRIVATE
+  "SHELL:-include ${TRON_BLE_ROUTED_GENERATED_DIR}/tron_build_config.h"
+)
 target_compile_definitions(mtkernel3_microbit_kernel_tavrn_routed_node PRIVATE
   INITTASK_STKSZ=${TRON_ROUTED_INITIAL_TASK_STACK_BYTES}
 )
-target_compile_options(tavrn_routed_node PRIVATE -include tk/tkernel.h)
+target_compile_options(tavrn_routed_node PRIVATE "SHELL:-include tk/tkernel.h")
 
 if(TRON_STACK_USAGE STREQUAL "ON")
   target_compile_options(tavrn_routed_node PRIVATE -fstack-usage)

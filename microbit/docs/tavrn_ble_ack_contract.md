@@ -1,8 +1,14 @@
 # TAVRN-BLE hop-custody ACK and failure contract
 
-Status: **frozen Phase 0 proof-of-concept contract**. This document defines
-link-v2 ownership transfer. Frame bytes and identity modes are frozen in
-`tavrn_ble_wire_v2.md` and `tavrn_ble_identity.md`.
+Status: **implemented Phase 0 proof-of-concept contract**, amended with the
+budgeted repeated bearer. This document defines link-v2 ownership transfer.
+Frame bytes and identity modes are frozen in `tavrn_ble_wire_v2.md` and
+`tavrn_ble_identity.md`.
+
+The bearer budget, EDF, repeated-operation, fixed-response, and token-expiry
+software gates are implemented. Capacity selection and hardware acceptance
+remain pending; no queue owner domain or global owner reset is part of the
+implemented contract.
 
 Profile mapping: this document derives `LINK-01` through `LINK-05`,
 `AODV-06`, `AODV-07`, `REPAIR-02`, and serial deadline behavior in
@@ -26,24 +32,24 @@ retain enough decoded context and payload to either:
 2. deliver exactly once at the final destination; or
 3. report a typed local failure without silently discarding it.
 
-One multi-channel advertisement TX event over selected primary channels
-37/38/39 is one **attempt**, not one per channel. An attempt is counted exactly
-when the scheduler reports TX_DONE with a nonzero intersection of selected and
-completed channel masks.
+One ordered 37/38/39 sweep is one physical advertisement attempt, not one per
+channel. A future one- or two-sweep bearer operation is counted once for its
+owning action when its scheduler result contains TX_DONE with a nonzero completed
+mask; a two-sweep operation is repeated transmission, not FEC. A zero-complete
+operation is TX_FAILED. If any channel in an operation completed before a later
+fault, the owner receives TX_DONE evidence and the fault; later fault recovery
+MUST NOT relabel it as not attempted.
 
-### HACK turnaround correction (`DEV-023`, extending `DEV-006`)
+### Fixed first-copy HACK release (`DEV-030`, superseding `DEV-023` timing)
 
-Every generated DATA HACK is scheduler-ineligible until
-`now + config.hack_turnaround_ms`, where `now` is the receiver-side time of the
-ACCEPTED, DUPLICATE, explicit BUSY, REJECTED, additional-DATA BUSY,
-candidate-timeout BUSY, or dedupe-capacity BUSY decision. For a scheduler RX
-event, that decision time is the observed event time captured immediately after
-the synchronous scheduler poll returns, not the pre-poll scheduler-selection
-time. The generated config sources this field directly from the existing
-`timer.radio_tx_event_bound_ms=8`; it is not a 72nd timer key. This lets a
-sender finish the bounded synchronous 37→38→39 TX event and restore RX before a
-receiver's HACK can be selected. The delay applies with normal wrap-safe
-deadline arithmetic and does not change HACK priority once due.
+The first DATA-copy RX timestamp fixes one canonical pending HACK. Its release is
+`first_rx + 14 ms` for the repeated request operation plus
+`config.hack_turnaround_ms=8`, exactly `first_rx + 22 ms`. Candidate resolution
+latency and later duplicate copies cannot move that release or replace the first
+status. Resolution after the fixed release makes the HACK immediately eligible.
+After the pending HACK transmits or expires, a later DATA retry may create the
+normal duplicate HACK. The generated config still sources the 8 ms guard from
+`timer.radio_tx_event_bound_ms`; it is not a separate timer key.
 
 ## 2. Exact HACK correlation
 
@@ -209,8 +215,10 @@ selected-next-hop deadline    = timer.link_data_deadline_ms
 
 BALANCED examples are three attempts, 250 ms response, zero retry backoff,
 500 ms BUSY backoff, three BUSY responses, and a 5000 ms transaction deadline.
-`hack_turnaround_ms=8` is a link-config field sourced from the existing radio
-TX-event bound, not a separately manifested timer.
+`hack_turnaround_ms=8` remains a link-config field sourced from the existing
+radio TX-event bound, not a separately manifested timer. It is the guard
+component of the fixed HACK release `first DATA RX + 14 ms + 8 ms = +22 ms`;
+candidate decision latency and duplicate copies do not move that release.
 
 The canonical hardware/manifest keys and values are exactly:
 
@@ -219,10 +227,10 @@ The canonical hardware/manifest keys and values are exactly:
 | `timer.scheduler_custody_bypass_max` | 2 | At most two higher-priority custody/HACK bypasses before a due tracked DATA receives scheduler service. |
 | `timer.scheduler_poll_max_ms` | 2 | Maximum scheduler poll/service gap used in the attempt bound. |
 | `timer.radio_state_timeout_ms` | 2 | Bound for each required RADIO state transition. |
-| `timer.radio_tx_event_bound_ms` | 8 | Bound for the selected advertising TX event. |
-| `timer.link_tx_scheduler_attempt_bound_ms` | 30 | Bound from one attempt becoming eligible through valid TX_DONE. |
+| `timer.radio_tx_event_bound_ms` | 8 | One-sweep success bound; two-sweep repeated success is 14 ms and fault cleanup plus RX restore is 18 ms. |
+| `timer.link_tx_scheduler_attempt_bound_ms` | 3048 | Conservative eligible-custody attempt bound under the 1000 ms rolling budget. |
 | `timer.link_response_window_sum_ms` | 750 | Three 250 ms HACK response windows; not scheduler/radio wall time. |
-| `timer.link_no_response_wall_bound_ms` | 840 | Complete no-BUSY, no-response hardware wall bound. |
+| `timer.link_no_response_wall_bound_ms` | 9894 | Unconstrained three-attempt wall; the absolute 5000 ms custody deadline can truncate it. |
 | `timer.link_candidate_resolve_ms` | 10 | Defensive unresolved-candidate BUSY timeout. |
 
 These names are canonical; ACK-only aliases for manifested timing keys are not
@@ -256,11 +264,14 @@ simultaneous attempt-wall guarantees.
    no-response attempt count.
 5. Matching REJECTED stops unchanged retransmission immediately.
 6. At an unmatched response deadline, retransmit the exact same DATA PDU if
-   attempt count is below `timer.link_max_attempts`. DATA carries no topology
-   metadata and no repair-only wire field.
+    attempt count is below `timer.link_max_attempts` **and** the absolute
+    transaction deadline still permits the retry. DATA carries no topology
+    metadata and no repair-only wire field.
 7. After `timer.link_max_attempts` actual TX completions, if the final
-   `timer.link_hack_timeout_ms` deadline expires with no matching HACK, emit
-   `RETRY_EXHAUSTED` exactly once.
+    `timer.link_hack_timeout_ms` deadline expires with no matching HACK, emit
+    `RETRY_EXHAUSTED` exactly once. Expiry of the absolute transaction deadline
+    before that condition is a typed local custody deadline terminal, not a
+    fabricated third attempt or `RETRY_EXHAUSTED`.
 
 Retries become due at the expired response deadline. If local scheduler failure
 prevents an intended retry from becoming an actual TX, the terminal result is
@@ -268,10 +279,10 @@ prevents an intended retry from becoming an actual TX, the terminal result is
 
 Every mesh radio state operation--init, idle/disable, listen, RX restore,
 snapshot, and TX--uses a bounded typed seam. Each state wait is bounded by
-`timer.radio_state_timeout_ms=2`; a selected multi-channel TX event is bounded
-by `timer.radio_tx_event_bound_ms=8`. Scheduler evidence includes the
-requested/selected channel mask, `completed_channel_mask`, fault operation or
-channel when available, and typed fault/result.
+`timer.radio_state_timeout_ms=2`; one ordered sweep succeeds within 8 ms, a
+two-sweep repeated operation within 14 ms, and its fault cleanup plus RX restore
+within 18 ms. Scheduler evidence includes each sweep's requested/completed mask,
+fault operation or channel when available, and typed result.
 
 - If no selected channel completed, the scheduler emits TX_FAILED. Tracked DATA
   receives `LOCAL_TX_NOT_ATTEMPTED`, attempt count is unchanged, and no HACK
@@ -289,33 +300,34 @@ Bounded init/idle/listen/snapshot/restore failures outside a completed tracked
 TX remain typed radio/scheduler failures and leave the system schedulable; they
 never fabricate TX_DONE or partial RX identity/data.
 
-The 750 ms value is only `timer.link_response_window_sum_ms`. The complete
-no-BUSY hardware wall bound from first-attempt eligibility is exactly:
+The 750 ms value is only `timer.link_response_window_sum_ms`. Under the
+approved future rolling-budget contract, the conservative eligible-custody
+attempt and unconstrained three-attempt bounds are exactly:
 
 ```text
-timer.link_no_response_wall_bound_ms
-    = timer.link_response_window_sum_ms
-    + timer.link_max_attempts * timer.link_tx_scheduler_attempt_bound_ms
-    = 750 + 3 * 30
-    = 840
-```
+one sweep success                    = (1 + 3) * 2 = 8 ms
+two-sweep repeated success           = (1 + 6) * 2 = 14 ms
+two-sweep fault cleanup + RX restore = (1 + 6 + 2) * 2 = 18 ms
 
-Acceptance evidence uses the manifested 840 ms bound, never a bare 750 ms
-claim. `timer.scheduler_custody_bypass_max=2` is part of proving each 30 ms
-attempt-service bound. The 30 ms derived bound is exactly:
-
-```text
 timer.link_tx_scheduler_attempt_bound_ms
     = (timer.scheduler_custody_bypass_max + 1)
-    * (timer.radio_tx_event_bound_ms + timer.scheduler_poll_max_ms)
-    = (2 + 1) * (8 + 2)
-    = 30
+    * (1000 + two_sweep_success + timer.scheduler_poll_max_ms)
+    = (2 + 1) * (1000 + 14 + 2)
+    = 3048 ms
+
+timer.link_no_response_wall_bound_ms
+    = 3 * timer.link_tx_scheduler_attempt_bound_ms
+    + timer.link_response_window_sum_ms
+    = 3 * 3048 + 750
+    = 9894 ms
 ```
 
-The 840 ms no-response wall starts when the first attempt becomes physically
-eligible, not when the application initially submits DATA or when it first
-occupies one of the four custody slots. Pre-eligibility waiting remains covered
-only by `timer.link_data_deadline_ms`.
+The 5000 ms `timer.link_data_deadline_ms` is the absolute custody terminal bound.
+It truncates a saturated-budget retry sequence, so `timer.link_max_attempts=3`
+is a ceiling, not a guarantee. The generated timer config emits the canonical
+formula values; separate future-bearer code and evidence gates remain pending.
+The 9894 ms calculation begins at the first eligible attempt, not application
+submission or custody-slot occupancy.
 
 `timer.link_busy_max_responses` correlated BUSY responses or expiry of
 `timer.link_data_deadline_ms` while busy/deferred emits
@@ -362,6 +374,16 @@ custody. Unresolved or ambiguous context fails closed through the router's
 normal unresolved/identity-conflict handling, which must explicitly accept and
 dispose/retain event ownership; link-v2 never manufactures full identities to
 make transfer succeed. SID16 remains standalone logical context.
+
+### 5.2 Routed bearer expiry
+
+Every routed queue item has a mandatory expiry. Token-zero work is purged and
+counted anonymously. At most one nonzero-token item is retired per poll as
+`TX_EXPIRED`; the event carries its token, requested mask, and requested sweep
+count with zero attempted/completed evidence and no fault. Custody DATA maps
+that event to `LOCAL_TX_NOT_ATTEMPTED/DEADLINE_EXPIRED`, preserving the copied
+DATA context. The queue has no owner kind/domain, terminal callback, or global
+owner-reset path; existing protocol consumers correlate only their own token.
 
 ## 6. The only link-v2 break event
 
@@ -480,9 +502,11 @@ At minimum, later red/green tests must prove:
 18. one completed channel followed by later-channel/restore timeout emits
     TX_DONE, increments one attempt, arms HACK, and preserves completed-mask and
     fault evidence without LOCAL_TX_NOT_ATTEMPTED;
-19. exact manifest timing keys equal `2,2,2,8,30,750,840,10` as declared,
-    zero-channel bounded radio failure never emits TX_DONE, and no-response
-    hardware completes by 840 ms from first-attempt eligibility;
+19. future generated timing/manifest evidence proves the declared `2,2,2,8,14,
+    18,3048,750,9894,5000` bounds and formulas; zero-channel bounded radio
+    failure never emits TX_DONE, while a partial physical TX emits TX_DONE plus
+    fault, and the 5000 ms absolute custody deadline truncates a saturated
+    retry sequence;
 20. exactly one custody attempt is physically eligible at once while four slots
     can wait under `timer.link_data_deadline_ms`;
 21. every terminal event carries exact failed-next-hop `{logical ID,full AdvA}`
@@ -497,7 +521,9 @@ At minimum, later red/green tests must prove:
     due-1/due selection and `UINT32_MAX` wrap; a future high-priority HACK does
     not block due lower-priority work;
 26. TX_DONE sets `response_deadline_ms` exactly 250 ms later, including wrap,
-    while the 250/750/840 values and formulas remain unchanged.
+    while the 250 ms response window, 750 ms response sum, 3048 ms conservative
+    attempt bound, 9894 ms unconstrained wall, and 5000 ms absolute deadline
+    formulas remain consistent.
 
 The ACCEPTED golden vector for the wire document's patient DATA is:
 

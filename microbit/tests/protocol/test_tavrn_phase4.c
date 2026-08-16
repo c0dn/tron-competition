@@ -2293,6 +2293,7 @@ static int test_boot_06_single_serving_session(void)
     tavrn_mentorship_offer_t pending_offer_before;
     uint32_t serving_deadline_before;
     uint32_t offer_suppressed_until_before;
+    uint32_t pending_offer_due_before;
     uint16_t serving_nonce_before;
     uint8_t pending_offer_valid_before;
     int ok = 1;
@@ -2310,11 +2311,13 @@ static int test_boot_06_single_serving_session(void)
     pending_offer_before = mentor.mentorship.pending_offer;
     serving_deadline_before = mentor.mentorship.serving_deadline_ms;
     offer_suppressed_until_before = mentor.mentorship.offer_suppressed_until_ms;
+    pending_offer_due_before = mentor.mentorship.pending_offer_due_ms;
     serving_nonce_before = mentor.mentorship.serving_boot_nonce;
     pending_offer_valid_before = mentor.mentorship.pending_offer_valid;
 
     ok &= mentor.mentorship.serving_session_valid != 0u &&
         adva_equal(&mentor.mentorship.serving_mentee, adva_a) &&
+        pending_offer_due_before == 91u &&
         deliver_control(&mentor, &second_hello, adva_d, TAVRN_IDENTITY_SID16,
                         53u, NULL) == TAVRN_MENTORSHIP_BUSY &&
         memcmp(&mentor.mentorship.serving_snapshot, &serving_snapshot_before,
@@ -2330,6 +2333,7 @@ static int test_boot_06_single_serving_session(void)
         memcmp(&mentor.mentorship.pending_offer, &pending_offer_before,
                sizeof(pending_offer_before)) == 0 &&
         mentor.mentorship.pending_offer_valid == pending_offer_valid_before &&
+        mentor.mentorship.pending_offer_due_ms == pending_offer_due_before &&
         mentor.mentorship.offer_suppressed_until_ms == offer_suppressed_until_before;
     ok &= deliver_control(&mentor, &first_hello, adva_a, TAVRN_IDENTITY_SID16,
                           54u, NULL) == TAVRN_MENTORSHIP_BOOTSTRAP_ADMITTED &&
@@ -2346,6 +2350,7 @@ static int test_boot_06_single_serving_session(void)
         memcmp(&mentor.mentorship.pending_control, &pending_control_before,
                sizeof(pending_control_before)) == 0 &&
         mentor.mentorship.pending_offer_valid == pending_offer_valid_before &&
+        mentor.mentorship.pending_offer_due_ms == pending_offer_due_before &&
         mentor.mentorship.offer_suppressed_until_ms == offer_suppressed_until_before;
     ok &= deliver_control(&mentor, &second_hello, adva_d, TAVRN_IDENTITY_SID16,
                           serving_deadline_before, NULL) ==

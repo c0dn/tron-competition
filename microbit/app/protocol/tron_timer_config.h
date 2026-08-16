@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define TRON_TIMER_FUTURE_BEARER_API 1
+
 /*
  * The selected profile is represented by exactly one immutable object.  Timer
  * consumers receive a pointer to this value when they initialize; algorithm
@@ -15,6 +17,8 @@ typedef struct tron_timer_config {
     uint32_t scheduler_poll_max_ms;
     uint32_t radio_state_timeout_ms;
     uint32_t radio_tx_event_bound_ms;
+    uint32_t radio_tx_repeated_event_bound_ms;
+    uint32_t radio_tx_fault_cleanup_bound_ms;
     uint32_t legacy_relay_min_ms;
     uint32_t legacy_relay_max_ms;
     uint32_t legacy_dedupe_ms;
@@ -90,6 +94,12 @@ extern const tron_timer_config_t tron_timer_config;
 
 static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
 {
+    uint64_t expected_radio_tx_event_bound_ms;
+    uint64_t expected_radio_tx_repeated_event_bound_ms;
+    uint64_t expected_radio_tx_fault_cleanup_bound_ms;
+    uint64_t expected_link_tx_scheduler_attempt_bound_ms;
+    uint64_t expected_link_response_window_sum_ms;
+    uint64_t expected_link_no_response_wall_bound_ms;
     uint64_t expected_verification_window_ms;
 
     if (config == 0 || config->scheduler_dwell_ms == 0u ||
@@ -117,10 +127,63 @@ static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
         config->hello_snap_ratio <= 0.0f || config->hello_snap_ratio > 1.0f) {
         return 0;
     }
+    /* Check every bearer-formula input before evaluating it so the uint64_t
+     * products below remain exact for every accepted configuration. */
+    if (config->scheduler_custody_bypass_max >= 0x80000000UL ||
+        config->scheduler_poll_max_ms >= 0x80000000UL ||
+        config->radio_state_timeout_ms >= 0x80000000UL ||
+        config->radio_tx_event_bound_ms >= 0x80000000UL ||
+        config->radio_tx_repeated_event_bound_ms >= 0x80000000UL ||
+        config->radio_tx_fault_cleanup_bound_ms >= 0x80000000UL ||
+        config->link_hack_timeout_ms >= 0x80000000UL ||
+        config->link_max_attempts >= 0x80000000UL ||
+        config->link_tx_scheduler_attempt_bound_ms >= 0x80000000UL ||
+        config->link_response_window_sum_ms >= 0x80000000UL ||
+        config->link_no_response_wall_bound_ms >= 0x80000000UL ||
+        config->link_data_deadline_ms >= 0x80000000UL) {
+        return 0;
+    }
+    expected_radio_tx_event_bound_ms =
+        (uint64_t)(1u + 3u) * (uint64_t)config->radio_state_timeout_ms;
+    expected_radio_tx_repeated_event_bound_ms =
+        (uint64_t)(1u + 6u) * (uint64_t)config->radio_state_timeout_ms;
+    expected_radio_tx_fault_cleanup_bound_ms =
+        (uint64_t)(1u + 6u + 2u) * (uint64_t)config->radio_state_timeout_ms;
+    expected_link_tx_scheduler_attempt_bound_ms =
+        ((uint64_t)config->scheduler_custody_bypass_max + 1u) *
+        (1000u + (uint64_t)config->radio_tx_repeated_event_bound_ms +
+         (uint64_t)config->scheduler_poll_max_ms);
+    expected_link_response_window_sum_ms =
+        (uint64_t)config->link_max_attempts *
+        (uint64_t)config->link_hack_timeout_ms;
+    expected_link_no_response_wall_bound_ms =
+        (uint64_t)config->link_response_window_sum_ms +
+        (uint64_t)config->link_max_attempts *
+        (uint64_t)config->link_tx_scheduler_attempt_bound_ms;
     expected_verification_window_ms =
         (uint64_t)config->aodv_net_traversal_ms +
         2u * (uint64_t)config->aodv_path_discovery_ms;
-    if (config->verification_window_ms >= 0x80000000UL ||
+    if (expected_radio_tx_event_bound_ms >= 0x80000000ULL ||
+        expected_radio_tx_repeated_event_bound_ms >= 0x80000000ULL ||
+        expected_radio_tx_fault_cleanup_bound_ms >= 0x80000000ULL ||
+        expected_link_tx_scheduler_attempt_bound_ms >= 0x80000000ULL ||
+        expected_link_response_window_sum_ms >= 0x80000000ULL ||
+        expected_link_no_response_wall_bound_ms >= 0x80000000ULL ||
+        expected_radio_tx_event_bound_ms !=
+            (uint64_t)config->radio_tx_event_bound_ms ||
+        expected_radio_tx_repeated_event_bound_ms !=
+            (uint64_t)config->radio_tx_repeated_event_bound_ms ||
+        expected_radio_tx_fault_cleanup_bound_ms !=
+            (uint64_t)config->radio_tx_fault_cleanup_bound_ms ||
+        expected_link_tx_scheduler_attempt_bound_ms !=
+            (uint64_t)config->link_tx_scheduler_attempt_bound_ms ||
+        expected_link_response_window_sum_ms !=
+            (uint64_t)config->link_response_window_sum_ms ||
+        expected_link_no_response_wall_bound_ms !=
+            (uint64_t)config->link_no_response_wall_bound_ms ||
+        config->link_data_deadline_ms >=
+            config->link_no_response_wall_bound_ms ||
+        config->verification_window_ms >= 0x80000000UL ||
         expected_verification_window_ms >= 0x80000000ULL ||
         expected_verification_window_ms !=
             (uint64_t)config->verification_window_ms) {
@@ -128,15 +191,11 @@ static inline int tron_timer_config_is_valid(const tron_timer_config_t *config)
     }
     return config->scheduler_dwell_ms < 0x80000000UL &&
         config->scheduler_relay_spacing_ms < 0x80000000UL &&
-        config->scheduler_poll_max_ms < 0x80000000UL &&
-        config->radio_state_timeout_ms < 0x80000000UL &&
         config->legacy_relay_max_ms < 0x80000000UL &&
         config->legacy_dedupe_ms < 0x80000000UL &&
         config->legacy_ping_interval_ms < 0x80000000UL &&
         config->legacy_ping_timeout_ms < 0x80000000UL &&
-        config->link_hack_timeout_ms < 0x80000000UL &&
         config->link_retry_backoff_ms < 0x80000000UL &&
-        config->link_data_deadline_ms < 0x80000000UL &&
         config->freshness_response_min_ms < 0x80000000UL &&
         config->freshness_response_max_ms < 0x80000000UL &&
         config->stats_ms < 0x80000000UL &&

@@ -24,7 +24,19 @@ set(TRON_ROUTED_LOGGER_TASK_STACK_BYTES 1840)
 set(TRON_ROUTED_INITIAL_TASK_STACK_BYTES 4096)
 set(TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES 12592)
 set(TRON_ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024)
-
+# The routed scheduler is the only target permitted to vary this fixed storage.
+# Keep the control value as the cache default so every existing configuration is
+# capacity four unless it opts into one of the benchmark variants explicitly.
+set(TRON_ROUTED_TX_QUEUE_CAPACITY "4" CACHE STRING
+    "ROUTED TX queue capacity: 4, 8, 16, or 40")
+set_property(CACHE TRON_ROUTED_TX_QUEUE_CAPACITY PROPERTY STRINGS 4 8 16 40)
+if(NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "4" AND
+   NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "8" AND
+   NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "16" AND
+   NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "40")
+  message(FATAL_ERROR
+      "TRON_ROUTED_TX_QUEUE_CAPACITY must be exactly 4, 8, 16, or 40")
+endif()
 set(TRON_PHASE1_TARGET "LEGACY" CACHE STRING
     "Selected firmware target: LEGACY, LINK, or ROUTED")
 set_property(CACHE TRON_PHASE1_TARGET PROPERTY STRINGS LEGACY LINK ROUTED)
@@ -402,7 +414,6 @@ if(TRON_BENCHMARK_MODE STREQUAL "ON")
     message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_TIMER_PROFILE=BALANCED")
   endif()
 endif()
-
 # The selected Phase 1 target is the authority for which inputs can have an
 # effect.  CMake configures only that target, and contamination is fatal rather
 # than merely manifested as unused state.
@@ -475,7 +486,7 @@ if(TRON_STACK_USAGE STREQUAL "ON" AND
     NOT TAVRN_FEATURE_LEVEL STREQUAL "FULL_TAVRN"))
   message(FATAL_ERROR "TRON_STACK_USAGE=ON requires ROUTED FULL_TAVRN")
 endif()
-# The exact 73-key profile registry.  Values and derivations are from the
+# The exact 75-key profile registry.  Values and derivations are from the
 # normative profile, not duplicated in firmware sources.
 tron_ble_timer(scheduler_dwell_ms 50 50 50)
 tron_ble_timer(scheduler_relay_spacing_ms 200 200 200)
@@ -483,6 +494,8 @@ tron_ble_timer(scheduler_custody_bypass_max 2 2 2)
 tron_ble_timer(scheduler_poll_max_ms 2 2 2)
 tron_ble_timer(radio_state_timeout_ms 2 2 2)
 tron_ble_timer(radio_tx_event_bound_ms 8 8 8)
+tron_ble_timer(radio_tx_repeated_event_bound_ms 14 14 14)
+tron_ble_timer(radio_tx_fault_cleanup_bound_ms 18 18 18)
 tron_ble_timer(legacy_relay_min_ms 20 20 20)
 tron_ble_timer(legacy_relay_max_ms 120 120 120)
 tron_ble_timer(legacy_dedupe_ms 10000 10000 10000)
@@ -491,9 +504,9 @@ tron_ble_timer(legacy_ping_timeout_ms 1500 1500 1500)
 tron_ble_timer(link_hack_timeout_ms 250 250 250)
 tron_ble_timer(link_max_attempts 3 3 3)
 tron_ble_timer(link_retry_backoff_ms 0 0 0)
-tron_ble_timer(link_tx_scheduler_attempt_bound_ms 30 30 30)
+tron_ble_timer(link_tx_scheduler_attempt_bound_ms 3048 3048 3048)
 tron_ble_timer(link_response_window_sum_ms 750 750 750)
-tron_ble_timer(link_no_response_wall_bound_ms 840 840 840)
+tron_ble_timer(link_no_response_wall_bound_ms 9894 9894 9894)
 tron_ble_timer(link_candidate_resolve_ms 10 10 10)
 tron_ble_timer(link_busy_backoff_ms 500 500 500)
 tron_ble_timer(link_busy_max_responses 3 3 3)
@@ -553,16 +566,18 @@ tron_ble_timer(loop_delay_ms 2 2 2)
 
 list(REMOVE_AT TRON_BLE_TIMER_KEYS 0)
 list(LENGTH TRON_BLE_TIMER_KEYS TRON_BLE_TIMER_KEY_COUNT)
-if(NOT TRON_BLE_TIMER_KEY_COUNT EQUAL 73)
-  message(FATAL_ERROR "Internal error: expected exactly 73 timer keys, found ${TRON_BLE_TIMER_KEY_COUNT}")
+if(NOT TRON_BLE_TIMER_KEY_COUNT EQUAL 75)
+  message(FATAL_ERROR "Internal error: expected exactly 75 timer keys, found ${TRON_BLE_TIMER_KEY_COUNT}")
 endif()
 list(REMOVE_DUPLICATES TRON_BLE_TIMER_KEYS)
 list(LENGTH TRON_BLE_TIMER_KEYS _tron_ble_unique_timer_count)
-if(NOT _tron_ble_unique_timer_count EQUAL 73)
+if(NOT _tron_ble_unique_timer_count EQUAL 75)
   message(FATAL_ERROR "Timer registry contains duplicate keys")
 endif()
 
-math(EXPR _radio_tx "4 * ${TRON_TIMER_RADIO_STATE_TIMEOUT_MS}")
+math(EXPR _radio_tx "(1 + 3) * ${TRON_TIMER_RADIO_STATE_TIMEOUT_MS}")
+math(EXPR _radio_tx_repeated "(1 + 6) * ${TRON_TIMER_RADIO_STATE_TIMEOUT_MS}")
+math(EXPR _radio_tx_fault_cleanup "(1 + 6 + 2) * ${TRON_TIMER_RADIO_STATE_TIMEOUT_MS}")
 math(EXPR _net_traversal "2 * ${TRON_TIMER_AODV_NET_DIAMETER} * ${TRON_TIMER_AODV_NODE_TRAVERSAL_MS}")
 math(EXPR _path_discovery "2 * ${TRON_TIMER_AODV_NET_TRAVERSAL_MS}")
 math(EXPR _blacklist "2 * ${TRON_TIMER_AODV_NET_TRAVERSAL_MS}")
@@ -577,10 +592,12 @@ math(EXPR _mentor_page "2 * ${TRON_TIMER_AODV_NET_TRAVERSAL_MS}")
 math(EXPR TRON_MENTOR_FAILURE_PROTOCOL_BOUND_MS
      "${TRON_TIMER_MENTOR_RSSI_WEAK_DELAY_MS} + ${TRON_TIMER_MENTOR_JITTER_MAX_MS} + ${TRON_TIMER_MENTOR_OFFER_WINDOW_MS} + ${TRON_TIMER_MENTOR_PAGE_ATTEMPTS} * ${TRON_TIMER_MENTOR_PAGE_TIMEOUT_MS} + ${TRON_TIMER_MENTOR_SELF_BOOTSTRAP_MS}")
 math(EXPR _repair "2 * ${TRON_TIMER_AODV_PATH_DISCOVERY_MS} + 500")
-math(EXPR _attempt_bound "(${TRON_TIMER_SCHEDULER_CUSTODY_BYPASS_MAX} + 1) * (${TRON_TIMER_RADIO_TX_EVENT_BOUND_MS} + ${TRON_TIMER_SCHEDULER_POLL_MAX_MS})")
+math(EXPR _attempt_bound "(${TRON_TIMER_SCHEDULER_CUSTODY_BYPASS_MAX} + 1) * (1000 + ${TRON_TIMER_RADIO_TX_REPEATED_EVENT_BOUND_MS} + ${TRON_TIMER_SCHEDULER_POLL_MAX_MS})")
 math(EXPR _response_sum "${TRON_TIMER_LINK_MAX_ATTEMPTS} * ${TRON_TIMER_LINK_HACK_TIMEOUT_MS}")
 math(EXPR _no_response_wall "${TRON_TIMER_LINK_RESPONSE_WINDOW_SUM_MS} + ${TRON_TIMER_LINK_MAX_ATTEMPTS} * ${TRON_TIMER_LINK_TX_SCHEDULER_ATTEMPT_BOUND_MS}")
 if(NOT TRON_TIMER_RADIO_TX_EVENT_BOUND_MS EQUAL _radio_tx OR
+    NOT TRON_TIMER_RADIO_TX_REPEATED_EVENT_BOUND_MS EQUAL _radio_tx_repeated OR
+    NOT TRON_TIMER_RADIO_TX_FAULT_CLEANUP_BOUND_MS EQUAL _radio_tx_fault_cleanup OR
    NOT TRON_TIMER_AODV_NET_TRAVERSAL_MS EQUAL _net_traversal OR
    NOT TRON_TIMER_AODV_PATH_DISCOVERY_MS EQUAL _path_discovery OR
    NOT TRON_TIMER_AODV_BLACKLIST_MS EQUAL _blacklist OR
@@ -592,7 +609,7 @@ if(NOT TRON_TIMER_RADIO_TX_EVENT_BOUND_MS EQUAL _radio_tx OR
    NOT TRON_TIMER_REPAIR_TIMEOUT_MS EQUAL _repair OR
    NOT TRON_TIMER_LINK_TX_SCHEDULER_ATTEMPT_BOUND_MS EQUAL _attempt_bound OR
    NOT TRON_TIMER_LINK_RESPONSE_WINDOW_SUM_MS EQUAL _response_sum OR
-   NOT TRON_TIMER_LINK_NO_RESPONSE_WALL_BOUND_MS EQUAL _no_response_wall)
+    NOT TRON_TIMER_LINK_NO_RESPONSE_WALL_BOUND_MS EQUAL _no_response_wall)
   message(FATAL_ERROR "Timer profile derived-value validation failed")
 endif()
 if(TRON_TIMER_LINK_FLOOD_JITTER_MIN_MS GREATER TRON_TIMER_LINK_FLOOD_JITTER_MAX_MS OR
@@ -896,18 +913,18 @@ function(tron_ble_configure_phase1_target)
          ${TRON_BLE_LINK_SOURCES})
    else()
      set(TRON_BUILD_RUNTIME_POC "tavrn_routed_node")
-        if(TAVRN_FEATURE_LEVEL STREQUAL "FULL_TAVRN")
+       if(TAVRN_FEATURE_LEVEL STREQUAL "FULL_TAVRN")
              set(TRON_BUILD_BEHAVIOR "TAVRN_ROUTED_FULL_TAVRN_ESC_K1_MENTORSHIP_ADAPTIVE_HELLO_LOCAL_EXPIRY_TARGETED_FRESHNESS_RREQ_VERIFICATION_TC_METADATA")
           set(TRON_BUILD_FEATURE "FULL_TAVRN")
               set(TRON_BUILD_IMPLEMENTED_CAPABILITIES "wire-v2,link-v2,custody,aodv,esc-k1,sid8-identity-context,mentorship-bootstrap,passive-gtt,smart-ttl,adaptive-sid8-hello,hello-ema-snap,hello-topology-reset,hello-broadcast-suppression,hello-liveness-hysteresis,hello-equality-dedupe,hello-gtt-liveness,local-expiry-demand,targeted-freshness-stage0,targeted-hello-request-response,targeted-runtime-binding,retained-hop-full-diameter-rreq-verification,tc-join-leave,general-route-metadata,maintenance-telemetry,tc-metadata-telemetry,typed-runtime-observability,rreq-scope-telemetry,gtt-snapshot")
          set(TRON_BUILD_ROUTED_FULL_TAVRN 1)
-         if(TAVRN_ENABLE_LOCAL_REPAIR STREQUAL "ON")
+          if(TAVRN_ENABLE_LOCAL_REPAIR STREQUAL "ON")
            set(TRON_BUILD_LOCAL_REPAIR 1)
            set(TRON_BUILD_BEHAVIOR "${TRON_BUILD_BEHAVIOR}_LOCAL_REPAIR")
            set(TRON_BUILD_IMPLEMENTED_CAPABILITIES "${TRON_BUILD_IMPLEMENTED_CAPABILITIES},local-repair")
-         else()
-           set(TRON_BUILD_LOCAL_REPAIR 0)
-         endif()
+          else()
+            set(TRON_BUILD_LOCAL_REPAIR 0)
+          endif()
         set(_routed_feature_source_labels ";${TRON_BLE_ROUTED_FULL_SOURCE_LABELS}")
         set(_routed_feature_sources ${TRON_BLE_ROUTED_FULL_SOURCES})
       else()
@@ -954,8 +971,18 @@ function(tron_ble_configure_phase1_target)
           ${TRON_BLE_SHARED_SOURCES}
            ${TRON_BLE_ROUTED_SOURCES}
            ${_routed_feature_sources})
-    endif()
-    # Every firmware target relies on the initial-task default/override
+     endif()
+   if(TRON_TARGET_KIND STREQUAL "ROUTED")
+     set(TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY
+         "${TRON_ROUTED_TX_QUEUE_CAPACITY}")
+   else()
+     if(NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "4")
+       message(FATAL_ERROR
+           "TRON_ROUTED_TX_QUEUE_CAPACITY is available only for ROUTED targets")
+     endif()
+     set(TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY 4)
+   endif()
+     # Every firmware target relies on the initial-task default/override
     # contract, even when it retains the default. Keep it in the selected
     # provenance inventory, never in the compilation source list.
     list(APPEND _source_labels "libs/mtkernel_3/include/sys/inittask.h")

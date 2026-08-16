@@ -723,6 +723,23 @@ static tavrn_router_event_status_t clear_router_peer_work(
     if (router->retained_action_valid != 0u &&
         action_uses_direct_peer(&router->retained_action, peer)) {
         uint16_t token = 0u;
+        uint8_t canceled = 0u;
+
+        if (router->retained_action_tx_token != BLE_MESH_TX_TOKEN_NONE) {
+            if (tavrn_link_v2_cancel_queued_tracked_token(
+                    router->link, router->retained_action_tx_token,
+                    &canceled) != TAVRN_LINK_RESOLVE_OK) {
+                return TAVRN_ROUTER_EVENT_INVALID;
+            }
+            /* Peer quarantine may already have retired this exact token.
+             * Only defer while the token is still live. */
+            if (canceled == 0u &&
+                tavrn_link_v2_tracked_token_in_use(
+                    router->link, router->retained_action_tx_token)) {
+                return TAVRN_ROUTER_EVENT_BUSY;
+            }
+            router->retained_action_tx_token = BLE_MESH_TX_TOKEN_NONE;
+        }
 
         if ((router->retained_action.type == AODV_ACTION_FORWARD_DATA ||
              router->retained_action.type == AODV_ACTION_DELIVER_DATA) &&
@@ -755,6 +772,7 @@ static tavrn_router_event_status_t clear_router_peer_work(
         }
         memset(&router->retained_action, 0, sizeof(router->retained_action));
         router->retained_action_valid = 0u;
+        router->retained_action_tx_token = BLE_MESH_TX_TOKEN_NONE;
     }
     if (router->pending_ingest.valid != 0u &&
         (direct_peer_equal(&router->pending_ingest.input.transmitter, peer) ||
@@ -2574,6 +2592,9 @@ tavrn_router_event_status_t tavrn_router_retry_retained_control(
         if (!action_is_control(router->retained_action.type)) {
             return TAVRN_ROUTER_EVENT_BUSY;
         }
+        if (router->retained_action_tx_token != BLE_MESH_TX_TOKEN_NONE) {
+            return TAVRN_ROUTER_EVENT_BUSY;
+        }
         retained = &router->retained_action.detail.control;
         if (!controls_equal(base, &retained->control) ||
             retained->controlled_flood != controlled_flood ||
@@ -2609,13 +2630,12 @@ tavrn_router_event_status_t tavrn_router_retry_retained_control(
         tavrn_router_note_local_broadcast(router, now_ms);
     }
     if (retained != NULL && retained->token != 0u) {
-        if (aodv_core_mark_action_sent(router->aodv, retained->token, now_ms) !=
-            AODV_STATUS_OK) {
+        if (scheduler_token == BLE_MESH_TX_TOKEN_NONE) {
             latch_router_fault(router, TAVRN_ROUTER_FAULT_CONTROL_CANCEL_INVALID);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
-    }
-    if (retained != NULL) {
+        router->retained_action_tx_token = scheduler_token;
+    } else if (retained != NULL) {
         clear_retained_action(router);
     }
     return outcome_status;
@@ -2805,6 +2825,52 @@ static void capture_scheduler_link_step(tavrn_router_scheduler_trace_t *trace,
     }
 }
 
+static tavrn_router_event_status_t complete_retained_control_tx(
+    tavrn_router_t *router, const ble_mesh_sched_event_t *event,
+    uint32_t now_ms)
+{
+    aodv_status_t status;
+    uint16_t action_token;
+
+    if (event->type != BLE_MESH_SCHED_EVENT_TX_DONE &&
+        event->type != BLE_MESH_SCHED_EVENT_TX_FAILED &&
+        event->type != BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+        return TAVRN_ROUTER_EVENT_IGNORED;
+    }
+    if (router->retained_action_tx_token == BLE_MESH_TX_TOKEN_NONE ||
+        event->tx_token != router->retained_action_tx_token) {
+        return TAVRN_ROUTER_EVENT_IGNORED;
+    }
+    if (router->retained_action_valid == 0u ||
+        !action_is_control(router->retained_action.type) ||
+        router->retained_action.detail.control.token == 0u) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
+    action_token = router->retained_action.detail.control.token;
+    router->retained_action_tx_token = BLE_MESH_TX_TOKEN_NONE;
+    if (event->type == BLE_MESH_SCHED_EVENT_TX_DONE &&
+        event->tx_completed_channel_mask != 0u) {
+        status = aodv_core_mark_action_sent(router->aodv, action_token,
+                                            now_ms);
+        if (status != AODV_STATUS_OK) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+        clear_retained_action(router);
+        return TAVRN_ROUTER_EVENT_OK;
+    }
+    if (event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) {
+        status = aodv_core_cancel_unsent_action(router->aodv, action_token);
+        if (status != AODV_STATUS_OK && status != AODV_STATUS_NOT_FOUND) {
+            return TAVRN_ROUTER_EVENT_INVALID;
+        }
+        clear_retained_action(router);
+        return TAVRN_ROUTER_EVENT_OK;
+    }
+    /* Zero-channel failure consumes no AODV attempt. Retain the exact action
+     * for ordinary router retry or the existing metadata-owner retry path. */
+    return TAVRN_ROUTER_EVENT_OK;
+}
+
 static tavrn_router_event_status_t router_handle_scheduler_event(
     tavrn_router_t *router, const ble_mesh_sched_event_t *event,
     uint32_t now_ms, tavrn_router_scheduler_trace_t *trace)
@@ -2819,6 +2885,7 @@ static tavrn_router_event_status_t router_handle_scheduler_event(
     const tavrn_link_counters_t *counters_after;
     tavrn_router_control_augmentation_status_t completion_status =
         TAVRN_ROUTER_CONTROL_AUGMENTATION_OK;
+    tavrn_router_event_status_t retained_control_status;
     uint8_t data_admitted;
     uint8_t flood_admitted;
     uint8_t data_busy;
@@ -2869,8 +2936,14 @@ static tavrn_router_event_status_t router_handle_scheduler_event(
     link_status = tavrn_link_v2_on_scheduler_event(router->link, event, now_ms,
                                                      &link_event);
     capture_scheduler_link_step(trace, link_status, &link_event);
+    retained_control_status = complete_retained_control_tx(router, event,
+                                                            now_ms);
+    if (retained_control_status == TAVRN_ROUTER_EVENT_INVALID) {
+        return TAVRN_ROUTER_EVENT_INVALID;
+    }
     if ((event->type == BLE_MESH_SCHED_EVENT_TX_DONE ||
-         event->type == BLE_MESH_SCHED_EVENT_TX_FAILED) &&
+         event->type == BLE_MESH_SCHED_EVENT_TX_FAILED ||
+         event->type == BLE_MESH_SCHED_EVENT_TX_EXPIRED) &&
         router->control_augmentation.completed != NULL) {
         completion_status = router->control_augmentation.completed(
             router->control_augmentation.context, event, now_ms);
@@ -2956,6 +3029,9 @@ static tavrn_router_event_status_t router_handle_scheduler_event(
     if (link_event.type != TAVRN_LINK_EVENT_NONE) {
         return output_status == TAVRN_ROUTER_EVENT_IGNORED ?
             TAVRN_ROUTER_EVENT_IGNORED : TAVRN_ROUTER_EVENT_OK;
+    }
+    if (retained_control_status == TAVRN_ROUTER_EVENT_OK) {
+        return TAVRN_ROUTER_EVENT_OK;
     }
     if (data_admitted != 0u || flood_admitted != 0u) {
         return TAVRN_ROUTER_EVENT_OK;
@@ -3105,6 +3181,7 @@ static void clear_retained_action(tavrn_router_t *router)
 {
     memset(&router->retained_action, 0, sizeof(router->retained_action));
     router->retained_action_valid = 0u;
+    router->retained_action_tx_token = BLE_MESH_TX_TOKEN_NONE;
 }
 
 static int action_is_control(aodv_action_type_t type)
@@ -3187,6 +3264,10 @@ static tavrn_router_event_status_t router_dispatch(
     action = router->retained_action;
     capture_dispatch_action(trace, &action);
 
+    if (router->retained_action_tx_token != BLE_MESH_TX_TOKEN_NONE) {
+        return TAVRN_ROUTER_EVENT_BUSY;
+    }
+
     /* A pending reset only quarantines work owned by its barred peer.  Drop one
      * such action and let the next public dispatch drain unrelated work. */
     if (action_uses_barred_peer(router, &action)) {
@@ -3210,6 +3291,10 @@ static tavrn_router_event_status_t router_dispatch(
         const aodv_control_action_t *control = &action.detail.control;
         const tavrn_direct_peer_t *next_hop = control->controlled_flood != 0u ?
             NULL : &control->next_hop;
+        uint32_t not_before_ms = control->response_anchor_valid != 0u ?
+            control->response_anchor_ms +
+                tron_timer_config.radio_tx_repeated_event_bound_ms +
+                router->link->config.hack_turnaround_ms : now_ms;
         tavrn_validated_control_t augmented;
         const tavrn_validated_control_t *control_to_send = &control->control;
         tavrn_router_control_augmentation_status_t admission_status =
@@ -3234,14 +3319,15 @@ static tavrn_router_event_status_t router_dispatch(
         }
 
         memset(&local_outcome, 0, sizeof(local_outcome));
-        if (decorated != 0u) {
-            link_status = tavrn_link_v2_send_control_tracked(
+        if (decorated != 0u || control->token != 0u) {
+            link_status = tavrn_link_v2_send_control_tracked_at(
                 router->link, control_to_send, next_hop, control->controlled_flood,
-                now_ms, &local_outcome, &scheduler_token);
+                now_ms, not_before_ms, &local_outcome, &scheduler_token);
         } else {
-            link_status = tavrn_link_v2_send_control(router->link, control_to_send,
-                                                       next_hop, control->controlled_flood,
-                                                       now_ms, &local_outcome);
+            link_status = tavrn_link_v2_send_control_at(
+                router->link, control_to_send, next_hop,
+                control->controlled_flood, now_ms, not_before_ms,
+                &local_outcome);
         }
         if (router->control_augmentation.admitted != NULL) {
             admission_status = router->control_augmentation.admitted(
@@ -3264,17 +3350,17 @@ static tavrn_router_event_status_t router_dispatch(
                 tavrn_router_note_local_broadcast(router, now_ms);
             }
             if (control->token != 0u) {
-                mark_status = aodv_core_mark_action_sent(router->aodv,
-                                                          control->token, now_ms);
-                if (mark_status != AODV_STATUS_OK) {
+                if (scheduler_token == BLE_MESH_TX_TOKEN_NONE) {
                     clear_retained_action(router);
                     router->counters.permanent_action_disposed++;
                     latch_router_fault(router,
                                        TAVRN_ROUTER_FAULT_CONTROL_CANCEL_INVALID);
                     return TAVRN_ROUTER_EVENT_INVALID;
                 }
+                router->retained_action_tx_token = scheduler_token;
+            } else {
+                clear_retained_action(router);
             }
-            clear_retained_action(router);
             if (admission_status != TAVRN_ROUTER_CONTROL_AUGMENTATION_OK ||
                 outcome_status == TAVRN_ROUTER_EVENT_INVALID) {
                 return TAVRN_ROUTER_EVENT_INVALID;
@@ -3795,6 +3881,7 @@ tavrn_router_incarnation_status_t tavrn_router_reconfigure_identity(
     memset(&router->pending_ingest, 0, sizeof(router->pending_ingest));
     memset(&router->retained_action, 0, sizeof(router->retained_action));
     router->retained_action_valid = 0u;
+    router->retained_action_tx_token = BLE_MESH_TX_TOKEN_NONE;
     router->next_failure_order = 0u;
     router->application = application;
     router->augmentation = augmentation;

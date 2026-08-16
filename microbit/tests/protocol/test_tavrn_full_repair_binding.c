@@ -399,7 +399,10 @@ static int remove_queued_token(ble_mesh_scheduler_t *scheduler, uint16_t token)
         ble_mesh_tx_queue_entry_t *entry = &scheduler->routed_tx_queue.entries[index];
 
         if (entry->occupied != 0u && entry->item.token == token) {
-            return ble_mesh_tx_queue_remove(&scheduler->routed_tx_queue, index, NULL);
+            return ble_mesh_tx_queue_retire(
+                       &scheduler->routed_tx_queue, index,
+                       BLE_MESH_TX_TERMINAL_CANCELED, NULL) ==
+                BLE_MESH_TX_RETIRE_OK;
         }
     }
     return 0;
@@ -835,8 +838,10 @@ static void test_repair_fault_completion_releases_external_token(void)
 {
     repair_fixture_t queued_fixture;
     repair_fixture_t created_fixture;
+    repair_fixture_t expiry_fixture;
     tavrn_link_data_t queued_data = transit_data(0x9900u);
     tavrn_link_data_t created_data = transit_data(0x9901u);
+    tavrn_link_data_t expiry_data = transit_data(0x9902u);
     tavrn_repair_snapshot_t snapshot;
     tavrn_full_repair_binding_tick_result_t tick;
     tavrn_repair_action_t created;
@@ -895,6 +900,31 @@ static void test_repair_fault_completion_releases_external_token(void)
           created_fixture.maintenance.external_high_token.valid == 0u &&
           tavrn_repair_snapshot(&created_fixture.repair, &snapshot) == TAVRN_REPAIR_OK &&
           snapshot.active_token == 0u);
+
+    if (!fixture_init(&expiry_fixture) ||
+        !start_repair(&expiry_fixture, &expiry_data, NULL, &snapshot) ||
+        !queue_repair_rreq(&expiry_fixture, &tick)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(ble_mesh_tx_queue_cancel(&expiry_fixture.scheduler.routed_tx_queue,
+                                   tick.action.token) == BLE_MESH_TX_RETIRE_OK);
+    memset(&event, 0, sizeof(event));
+    event.type = BLE_MESH_SCHED_EVENT_TX_EXPIRED;
+    event.tx_token = tick.action.token;
+    event.tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    memset(&dispatch, 0, sizeof(dispatch));
+    CHECK(tavrn_maintenance_high_token_scheduler_event(
+              &expiry_fixture.maintenance, &expiry_fixture.router,
+              &expiry_fixture.link, &event, 13u, &dispatch) ==
+              TAVRN_MAINTENANCE_HIGH_TOKEN_OK);
+    CHECK(dispatch.external_handled != 0u &&
+          dispatch.external_status == TAVRN_MAINTENANCE_HIGH_TOKEN_OK &&
+          expiry_fixture.maintenance.external_high_token.valid == 0u &&
+          expiry_fixture.repair.failure_pending != 0u &&
+          expiry_fixture.repair.active_tx_failed == 0u &&
+          !tavrn_link_v2_tracked_token_in_use(&expiry_fixture.link,
+                                               tick.action.token));
 }
 
 

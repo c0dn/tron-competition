@@ -995,11 +995,11 @@ static void test_router_data_terminal_ownership_port(void)
     CHECK("GTT-05", tavrn_link_v2_transfer_rx_custody_to_external(
                          &link, &data, 7u) == TAVRN_LINK_RESOLVE_OK &&
                          tavrn_router_handle_link_event(&router, &event, 7u) ==
-                             TAVRN_ROUTER_EVENT_INVALID &&
+                             TAVRN_ROUTER_EVENT_OK &&
                          recorder.calls == 1u && transit_data_is_pinned(&link, &data) &&
                          transit_data_has_external_custody_owner(&link, &data) &&
                          tavrn_router_fault_reason(&router) ==
-                             TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+                             TAVRN_ROUTER_FAULT_NONE);
 
     memset(&recorder, 0, sizeof(recorder));
     recorder.disposition = TAVRN_ROUTER_DATA_TERMINAL_OBSERVED;

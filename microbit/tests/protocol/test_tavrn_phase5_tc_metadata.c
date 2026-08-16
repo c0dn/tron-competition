@@ -854,8 +854,15 @@ static void corrective_clear_queue(corrective_fixture_t *fixture)
 
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         if (fixture->scheduler.routed_tx_queue.entries[index].occupied != 0u) {
-            (void)ble_mesh_tx_queue_remove(&fixture->scheduler.routed_tx_queue,
-                                           index, NULL);
+            if (fixture->scheduler.routed_tx_queue.entries[index].item.token ==
+                BLE_MESH_TX_TOKEN_NONE) {
+                (void)ble_mesh_tx_queue_remove(&fixture->scheduler.routed_tx_queue,
+                                               index, NULL);
+            } else {
+                (void)ble_mesh_tx_queue_retire(
+                    &fixture->scheduler.routed_tx_queue, index,
+                    BLE_MESH_TX_TERMINAL_CANCELED, NULL);
+            }
         }
     }
 }
@@ -926,6 +933,10 @@ static int corrective_seed_evictable_transit(corrective_fixture_t *fixture,
         item.priority = BLE_MESH_TX_PRIORITY_DATA;
         item.service_class = index == 0u ? BLE_MESH_TX_SERVICE_CUSTODY_DATA :
                                           BLE_MESH_TX_SERVICE_BEST_EFFORT;
+        item.expiry_ms = 0x7fffffffu;
+        item.sweep_count = index == 0u ? BLE_MESH_TX_SWEEP_COUNT_TWO :
+            BLE_MESH_TX_SWEEP_COUNT_ONE;
+        item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
         item.token = index == 0u ? 0x31u : BLE_MESH_TX_TOKEN_NONE;
         enqueue = ble_mesh_tx_queue_enqueue(&fixture->scheduler.routed_tx_queue, &item);
         if (enqueue.status != BLE_MESH_TX_ENQUEUE_OK) return 0;
@@ -1580,7 +1591,6 @@ static int corrective_fill_control_queue(corrective_fixture_t *fixture,
 {
     uint8_t index;
 
-    (void)now_ms;
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         ble_mesh_tx_item_t item;
         ble_mesh_tx_enqueue_result_t enqueue;
@@ -1590,6 +1600,9 @@ static int corrective_fill_control_queue(corrective_fixture_t *fixture,
         item.channel_mask = 1u;
         item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
         item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+        item.expiry_ms = now_ms + 10000u;
+        item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+        item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
         enqueue = ble_mesh_tx_queue_enqueue(&fixture->scheduler.routed_tx_queue, &item);
         if (enqueue.status != BLE_MESH_TX_ENQUEUE_OK) {
             return 0;
@@ -2329,6 +2342,58 @@ static void test_corrective_metadata_transaction_retention(void)
                         telemetry.metadata_transaction_active == 0u &&
                         telemetry.metadata_completion_commit_count == 1u &&
                         telemetry.metadata_completion_retry_count == 2u);
+}
+
+static void test_corrective_metadata_expiry_abandons_stale_control(void)
+{
+    corrective_fixture_t fixture;
+    tavrn_metadata_candidate_t request = candidate(
+        adva_c, TAVRN_METADATA_SOFT_REQUEST, 1u, 1u);
+    tavrn_validated_control_t base;
+    tavrn_validated_control_t attached;
+    ble_mesh_sched_event_t expiry;
+    tavrn_tc_metadata_snapshot_t snapshot;
+
+    STRUCTURAL("corrective-metadata-expiry-fixture", corrective_fixture_init(&fixture));
+    if (structural_failures != 0u) return;
+    STRUCTURAL("corrective-metadata-expiry-subject",
+               corrective_observe(&fixture, adva_c, 7u, 1u,
+                                   TAVRN_GTT_PROVENANCE_IMPORTED_HOP_ONE, 80u));
+    if (structural_failures != 0u) return;
+    base = route_control(TAVRN_METADATA_FRAME_RREQ8, 0u);
+    CHECK("META-06", tavrn_maintenance_metadata_create(
+                           &fixture.maintenance.tc_metadata, &request, 80u) ==
+                           TAVRN_TC_METADATA_OK &&
+                       fixture.router.control_augmentation.prepare(
+                           fixture.router.control_augmentation.context, &base,
+                           &attached, 81u) ==
+                           TAVRN_ROUTER_CONTROL_AUGMENTATION_OK);
+    fixture.router.control_augmentation.admitted(
+        fixture.router.control_augmentation.context, &base, &attached,
+        NULL, 1u, TAVRN_LINK_SEND_OK, 0x43u, 82u);
+    memset(&expiry, 0, sizeof(expiry));
+    expiry.type = BLE_MESH_SCHED_EVENT_TX_EXPIRED;
+    expiry.tx_token = 0x43u;
+    expiry.tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    expiry.tx_requested_sweep_count = BLE_MESH_TX_SWEEP_COUNT_TWO;
+    CHECK("META-06", tavrn_router_handle_scheduler_event(
+                           &fixture.router, &expiry, 83u) ==
+                           TAVRN_ROUTER_EVENT_IGNORED &&
+                       fixture.maintenance.metadata_pending.valid == 0u &&
+                       fixture.maintenance.metadata_completion_failure_count == 1u &&
+                       tavrn_maintenance_tc_metadata_snapshot(
+                           &fixture.maintenance.tc_metadata, &snapshot) ==
+                           TAVRN_TC_METADATA_OK &&
+                       snapshot.candidate_count == 1u &&
+                       snapshot.cooldown_count == 0u &&
+                       tavrn_maintenance_metadata_owner_tick(
+                           &fixture.maintenance, 84u) == TAVRN_TC_METADATA_OK &&
+                       fixture.maintenance.metadata_pending.valid == 0u);
+    CHECK("META-06", fixture.router.control_augmentation.prepare(
+                           fixture.router.control_augmentation.context, &base,
+                           &attached, 85u) ==
+                           TAVRN_ROUTER_CONTROL_AUGMENTATION_OK &&
+                       fixture.maintenance.metadata_pending.valid != 0u);
 }
 
 static void test_corrective_decorated_control_pass_through(void)
@@ -3289,6 +3354,8 @@ static void test_corrective_production_composition(void)
     if (structural_failures == 0u) test_corrective_received_tc_preemption_filter();
     if (structural_failures == 0u) test_corrective_metadata_answer_merge();
     if (structural_failures == 0u) test_corrective_metadata_transaction_retention();
+    if (structural_failures == 0u)
+        test_corrective_metadata_expiry_abandons_stale_control();
     if (structural_failures == 0u) test_corrective_decorated_control_pass_through();
     if (structural_failures == 0u) test_corrective_augmented_rerr_scheduler_rx();
     if (structural_failures == 0u)

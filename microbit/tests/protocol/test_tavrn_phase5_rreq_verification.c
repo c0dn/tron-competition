@@ -378,6 +378,9 @@ static int fill_control_queue(verification_fixture_t *fixture)
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.expiry_ms = 0x7fffffffu;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         if (ble_mesh_scheduler_enqueue_ex(&fixture->scheduler, &item).status !=
             BLE_MESH_SCHED_ENQUEUE_OK) {
@@ -533,6 +536,8 @@ static void test_rate_and_terminal_nonconsumption(void)
     tavrn_rreq_verification_action_t action;
     tavrn_rreq_verification_completion_t completion;
     tavrn_rreq_verification_snapshot_t snapshot;
+    tavrn_maintenance_high_token_dispatch_result_t dispatch;
+    ble_mesh_sched_event_t event;
     tron_application_data_t ordinary;
     aodv_action_t ordinary_action;
     uint8_t index;
@@ -617,9 +622,45 @@ static void test_rate_and_terminal_nonconsumption(void)
     CHECK("MAINT-07", phase5_rreq_snapshot(&fixture.maintenance, &fixture.router,
                                             &fixture.link, &fixture.gtt, &snapshot) ==
                           TAVRN_RREQ_VERIFICATION_OK &&
-                      snapshot.contexts[index].stage ==
-                          TAVRN_RREQ_VERIFICATION_STAGE1_READY &&
-                      snapshot.contexts[index].stage1_request_id == retained_id);
+                       snapshot.contexts[index].stage ==
+                           TAVRN_RREQ_VERIFICATION_STAGE1_READY &&
+                       snapshot.contexts[index].stage1_request_id == retained_id);
+    memset(&action, 0, sizeof(action));
+    CHECK("SERIAL-01", phase5_rreq_owner_tick(
+                            &fixture.maintenance, &fixture.router, &fixture.link,
+                            &fixture.gtt, now_ms + 1003u, &action) ==
+                            TAVRN_RREQ_VERIFICATION_OK &&
+                        action.attempt.request_id == retained_id);
+    CHECK("MAINT-07", ble_mesh_tx_queue_cancel(
+                           &fixture.scheduler.routed_tx_queue,
+                           action.token) == BLE_MESH_TX_RETIRE_OK);
+    memset(&event, 0, sizeof(event));
+    event.type = BLE_MESH_SCHED_EVENT_TX_EXPIRED;
+    event.tx_token = action.token;
+    event.tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    memset(&dispatch, 0, sizeof(dispatch));
+    CHECK("MAINT-07", tavrn_maintenance_high_token_scheduler_event(
+                           &fixture.maintenance, &fixture.router, &fixture.link,
+                           &event, now_ms + 1004u, &dispatch) ==
+                           TAVRN_MAINTENANCE_HIGH_TOKEN_OK &&
+                       dispatch.verification_handled != 0u &&
+                       dispatch.verification_status ==
+                           TAVRN_RREQ_VERIFICATION_OK &&
+                       phase5_rreq_snapshot(
+                           &fixture.maintenance, &fixture.router, &fixture.link,
+                           &fixture.gtt, &snapshot) ==
+                           TAVRN_RREQ_VERIFICATION_OK &&
+                       snapshot.contexts[index].stage ==
+                           TAVRN_RREQ_VERIFICATION_STAGE1_READY &&
+                       snapshot.contexts[index].stage1_request_id == 0u &&
+                       snapshot.contexts[index].token == BLE_MESH_TX_TOKEN_NONE);
+    memset(&action, 0, sizeof(action));
+    CHECK("SERIAL-01", phase5_rreq_owner_tick(
+                            &fixture.maintenance, &fixture.router, &fixture.link,
+                            &fixture.gtt, now_ms + 2004u, &action) ==
+                            TAVRN_RREQ_VERIFICATION_OK &&
+                        action.attempt.request_id != 0u &&
+                        action.attempt.request_id != retained_id);
 }
 
 static void test_evidence_direct_deadline_and_departure(void)

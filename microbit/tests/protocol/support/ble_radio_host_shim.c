@@ -24,12 +24,19 @@
 static UW registers[HOST_REGISTER_WORDS];
 static uint8_t scripted_raw[BLE_RX_MAX];
 static size_t scripted_raw_len;
-static uint8_t channel_trace[3];
+#define TEST_RADIO_CHANNEL_TRACE_CAPACITY 6u
+
+static uint8_t channel_trace[TEST_RADIO_CHANNEL_TRACE_CAPACITY];
 static size_t channel_trace_len;
+static uint8_t channel_attempts[3];
 static uint8_t script_requested_mask;
 static uint8_t script_completed_mask;
 static ble_radio_op_result_t script_fault;
 static test_radio_failure_location_t script_failure_location;
+static uint8_t script_failure_sweep;
+static test_radio_tx_start_handler_t tx_start_handler;
+static void *tx_start_context;
+static unsigned int disable_count;
 
 static UW *register_slot(UW address)
 {
@@ -54,6 +61,11 @@ static test_radio_failure_location_t channel_failure_location(uint8_t channel)
         return TEST_RADIO_FAILURE_CH38;
     }
     return TEST_RADIO_FAILURE_CH39;
+}
+
+static uint8_t channel_trace_index(uint8_t channel)
+{
+    return channel == 37u ? 0u : channel == 38u ? 1u : 2u;
 }
 
 static void copy_scripted_rx(UW packet_pointer)
@@ -92,6 +104,7 @@ void ble_radio_host_out_w(UW address, UW value)
         return;
     }
     if (address == HOST_TASKS_DISABLE) {
+        disable_count++;
         if (script_failure_location != TEST_RADIO_FAILURE_PRE_DISABLE) {
             *register_slot(HOST_STATE) = 0u;
             *register_slot(HOST_EVENTS_DISABLED) = 1u;
@@ -99,16 +112,24 @@ void ble_radio_host_out_w(UW address, UW value)
         return;
     }
     if (address == HOST_TASKS_TXEN) {
+        uint8_t trace_index;
+
         channel = (uint8_t)*register_slot(HOST_DATAWHITEIV);
         channel_mask = channel == 37u ? BLE_RADIO_ADV_CH37 :
             channel == 38u ? BLE_RADIO_ADV_CH38 : BLE_RADIO_ADV_CH39;
         if ((script_requested_mask & channel_mask) == 0u) {
             return;
         }
+        if (tx_start_handler != NULL) {
+            tx_start_handler(tx_start_context);
+        }
+        trace_index = channel_trace_index(channel);
+        channel_attempts[trace_index]++;
         if (channel_trace_len < sizeof(channel_trace)) {
             channel_trace[channel_trace_len++] = channel;
         }
-        if (script_failure_location != channel_failure_location(channel) &&
+        if (!(script_failure_location == channel_failure_location(channel) &&
+              channel_attempts[trace_index] == script_failure_sweep) &&
             ((script_completed_mask & channel_mask) != 0u ||
              script_fault == BLE_RADIO_OP_OK)) {
             *register_slot(HOST_STATE) = 0u;
@@ -128,12 +149,24 @@ void test_radio_script_reset(void)
     memset(registers, 0, sizeof(registers));
     memset(scripted_raw, 0, sizeof(scripted_raw));
     memset(channel_trace, 0, sizeof(channel_trace));
+    memset(channel_attempts, 0, sizeof(channel_attempts));
     scripted_raw_len = 0u;
     channel_trace_len = 0u;
     script_requested_mask = BLE_RADIO_ADV_CH_ALL;
     script_completed_mask = BLE_RADIO_ADV_CH_ALL;
     script_fault = BLE_RADIO_OP_OK;
     script_failure_location = TEST_RADIO_FAILURE_NONE;
+    script_failure_sweep = 1u;
+    tx_start_handler = NULL;
+    tx_start_context = NULL;
+    disable_count = 0u;
+}
+
+void test_radio_set_tx_start_handler(test_radio_tx_start_handler_t handler,
+                                    void *context)
+{
+    tx_start_handler = handler;
+    tx_start_context = context;
 }
 
 void test_radio_script_tx(uint8_t requested_channel_mask,
@@ -145,10 +178,23 @@ void test_radio_script_tx(uint8_t requested_channel_mask,
     script_completed_mask = completed_channel_mask;
     script_fault = fault;
     script_failure_location = failure_location;
+    script_failure_sweep = 1u;
     channel_trace_len = 0u;
+    memset(channel_attempts, 0, sizeof(channel_attempts));
     *register_slot(HOST_EVENTS_DISABLED) = 0u;
     *register_slot(HOST_STATE) =
         failure_location == TEST_RADIO_FAILURE_PRE_DISABLE ? 3u : 0u;
+}
+
+void test_radio_script_tx_repeat_failure(
+    uint8_t failure_sweep, test_radio_failure_location_t failure_location)
+{
+    if (failure_sweep == 0u || failure_location < TEST_RADIO_FAILURE_CH37 ||
+        failure_location > TEST_RADIO_FAILURE_CH39) {
+        return;
+    }
+    script_failure_sweep = failure_sweep;
+    script_failure_location = failure_location;
 }
 
 void test_radio_script_rx(const uint8_t *raw_pdu, size_t raw_pdu_len,
@@ -174,4 +220,9 @@ const uint8_t *test_radio_channel_trace(size_t *length_out)
         *length_out = channel_trace_len;
     }
     return channel_trace;
+}
+
+unsigned int test_radio_disable_count(void)
+{
+    return disable_count;
 }

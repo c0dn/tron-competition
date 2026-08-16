@@ -19,6 +19,8 @@
 
 #define BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY 4u
 #define BLE_MESH_SCHED_ADV_DATA_MAX           BLE_ADV_MAX_DATA
+#define BLE_MESH_SCHED_BUDGET_API              1
+#define BLE_MESH_SCHED_BUDGET_RING_CAPACITY    40u
 
 #define BLE_MESH_SCHED_CH37                   BLE_RADIO_ADV_CH37
 #define BLE_MESH_SCHED_CH38                   BLE_RADIO_ADV_CH38
@@ -35,6 +37,7 @@ typedef enum ble_mesh_sched_event_type {
     BLE_MESH_SCHED_EVENT_RX_ADV,
     BLE_MESH_SCHED_EVENT_TX_DONE,
     BLE_MESH_SCHED_EVENT_TX_FAILED,
+    BLE_MESH_SCHED_EVENT_TX_EXPIRED,
     BLE_MESH_SCHED_EVENT_RADIO_FAULT,
     BLE_MESH_SCHED_EVENT_SERVICE_FAULT,
 } ble_mesh_sched_event_type_t;
@@ -58,6 +61,9 @@ typedef struct ble_mesh_sched_event {
     ble_mesh_tx_token_t tx_token;
     uint8_t tx_requested_channel_mask;
     uint8_t tx_completed_channel_mask;
+    uint8_t tx_requested_sweep_count;
+    uint8_t tx_attempted_sweep_count;
+    uint8_t tx_completed_channel_masks[BLE_RADIO_MAX_ADV_SWEEPS];
     ble_mesh_sched_fault_t fault;
 } ble_mesh_sched_event_t;
 
@@ -66,6 +72,7 @@ typedef enum ble_mesh_sched_enqueue_status {
     BLE_MESH_SCHED_ENQUEUE_FULL,
     BLE_MESH_SCHED_ENQUEUE_INVALID,
     BLE_MESH_SCHED_ENQUEUE_TOO_LONG,
+    BLE_MESH_SCHED_ENQUEUE_REJECTED,
 } ble_mesh_sched_enqueue_status_t;
 
 typedef struct ble_mesh_sched_enqueue_result {
@@ -82,7 +89,16 @@ typedef struct ble_mesh_sched_counters {
     uint32_t relay_drop;
     uint32_t relay_rate_limited;
     uint32_t tx_len_drop;
+    uint32_t tx_expired_anonymous;
+    uint32_t tx_expired_tracked;
 } ble_mesh_sched_counters_t;
+
+typedef struct ble_mesh_sched_budget_snapshot {
+    uint8_t live_total_bu;
+    uint8_t live_general_bu;
+    uint8_t live_critical_bu;
+    uint8_t custody_hold;
+} ble_mesh_sched_budget_snapshot_t;
 
 /* Wire-v1 queue. Routed callers use ble_mesh_tx_queue_t. */
 typedef struct ble_mesh_sched_legacy_tx_item {
@@ -113,6 +129,16 @@ typedef struct ble_mesh_scheduler {
     uint8_t custody_bypass_count;
     ble_mesh_sched_fault_t latched_fault;
     ble_mesh_tx_queue_t routed_tx_queue;
+    /* Routed-only fixed rolling BU state. The public snapshot API exposes
+     * aggregates only; callers must not inspect or mutate these slots. */
+    uint32_t budget_timestamps[BLE_MESH_SCHED_BUDGET_RING_CAPACITY];
+    uint8_t budget_classes[BLE_MESH_SCHED_BUDGET_RING_CAPACITY];
+    uint8_t budget_head;
+    uint8_t budget_count;
+    uint8_t budget_general_bu;
+    uint8_t budget_critical_bu;
+    uint8_t custody_hold;
+    ble_mesh_tx_token_t custody_hold_token;
 } ble_mesh_scheduler_t;
 
 /* Routed typed initialization. It copies the canonical local AdvA by value. */
@@ -143,6 +169,11 @@ int ble_mesh_scheduler_poll(
     ble_mesh_scheduler_t *sched,
     uint32_t now_ms,
     ble_mesh_sched_event_t *event);
+
+/* Computes aggregate live BU usage without retiring ring entries. */
+int ble_mesh_scheduler_get_budget_snapshot(
+    const ble_mesh_scheduler_t *sched, uint32_t now_ms,
+    ble_mesh_sched_budget_snapshot_t *snapshot_out);
 
 const ble_mesh_sched_counters_t *ble_mesh_scheduler_counters(const ble_mesh_scheduler_t *sched);
 

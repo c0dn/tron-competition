@@ -576,8 +576,10 @@ static void test_aodv_05_two_node_pending_data_release(void)
         !poll_control("AODV-03", &node_b, AODV_ACTION_SEND_RREP, &action)) {
         return;
     }
+    CHECK("AODV-03", action.detail.control.response_anchor_valid != 0u &&
+                         action.detail.control.response_anchor_ms == 1u);
     CHECK("AODV-07", aodv_core_mark_action_sent(&node_b, action.detail.control.token,
-                                                   1u) == AODV_STATUS_OK);
+                                                    1u) == AODV_STATUS_OK);
     if (!transmit_control("AODV-03", &codec_b, &codec_a, &peer_b, &action, &node_a,
                           2u) ||
         !poll_control("AODV-07", &node_a, AODV_ACTION_SEND_RREP_ACK, &action) ||
@@ -585,6 +587,8 @@ static void test_aodv_05_two_node_pending_data_release(void)
                           3u)) {
         return;
     }
+    CHECK("AODV-07", action.detail.control.response_anchor_valid != 0u &&
+                         action.detail.control.response_anchor_ms == 2u);
     CHECK("AODV-05", aodv_core_poll_action(&node_a, &action) == AODV_ACTION_POLL_OK &&
                        action.type == AODV_ACTION_FORWARD_DATA &&
                        action.detail.data.next_hop.logical_id.value == peer_b.logical_id.value);

@@ -105,7 +105,9 @@ static tavrn_maintenance_high_token_status_t repair_scheduler_completion(
     repair_completion.completed_channel_mask = completion->completed_channel_mask;
     repair_completion.kind = completion->kind ==
             TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_DONE ?
-        TAVRN_REPAIR_COMPLETION_RREQ_TX_DONE :
+        TAVRN_REPAIR_COMPLETION_RREQ_TX_DONE : completion->kind ==
+            TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_EXPIRED ?
+        TAVRN_REPAIR_COMPLETION_RREQ_TX_EXPIRED :
         TAVRN_REPAIR_COMPLETION_RREQ_TX_FAILED;
     status = tavrn_repair_complete(binding->repair, &repair_completion,
                                    completion->completed_at_ms, NULL);

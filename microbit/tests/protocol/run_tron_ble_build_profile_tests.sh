@@ -259,8 +259,8 @@ require_timer_profile_surface() {
     require_line 'timer.freshness_response_min_ms=10' "$manifest"
     require_line 'timer.freshness_response_max_ms=100' "$manifest"
     require_line "timer.verification_window_ms=${verification_window_ms}" "$manifest"
-    if [[ "$(grep -c '^timer\.' "$manifest")" -ne 73 ]]; then
-        printf '%s timer manifest key count is not exactly 73\n' "$profile" >&2
+    if [[ "$(grep -c '^timer\.' "$manifest")" -ne 75 ]]; then
+        printf '%s timer manifest key count is not exactly 75\n' "$profile" >&2
         return 1
     fi
     if ! grep -Fqx '    .aodv_rreq_retries = 2u,' "$timer_source" ||
@@ -873,6 +873,49 @@ configure_ok routed-initial-task-stack-red -DTRON_PHASE1_TARGET=ROUTED \
 initial_stack_red_manifest="$(routed_manifest_path routed-initial-task-stack-red)"
 require_line 'build.initial_task_stack_bytes=4096' "$initial_stack_red_manifest"
 
+# BEARER-CAP-01: routed queue storage is a generated target input. The default
+# control stays four, while each accepted benchmark capacity is built from the
+# same routed composition and reaches the shared queue header through the
+# force-included generated configuration.
+configure_ok routed-queue-capacity-default -DTRON_PHASE1_TARGET=ROUTED \
+    -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=AODV_ONLY
+routed_queue_default_manifest="$(routed_manifest_path routed-queue-capacity-default)"
+routed_queue_default_config="$WORK_DIR/routed-queue-capacity-default/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+require_line 'capacity.scheduler_tx_queue=4' "$routed_queue_default_manifest"
+if ! grep -Fqx '#define TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY 4u' \
+        "$routed_queue_default_config"; then
+    printf '%s\n' 'default routed queue capacity is not generated as four' >&2
+    exit 1
+fi
+build_target routed-queue-capacity-default tavrn_routed_node
+
+for routed_queue_capacity in 4 8 16 40; do
+    routed_queue_name="routed-queue-capacity-${routed_queue_capacity}"
+    configure_ok "$routed_queue_name" -DTRON_PHASE1_TARGET=ROUTED \
+        -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=AODV_ONLY \
+        -DTRON_ROUTED_TX_QUEUE_CAPACITY="$routed_queue_capacity"
+    routed_queue_manifest="$(routed_manifest_path "$routed_queue_name")"
+    routed_queue_config="$WORK_DIR/$routed_queue_name/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
+    require_line "capacity.scheduler_tx_queue=${routed_queue_capacity}" \
+        "$routed_queue_manifest"
+    if ! grep -Fqx "#define TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY ${routed_queue_capacity}u" \
+            "$routed_queue_config"; then
+        printf 'generated routed queue capacity mismatch: %s\n' "$routed_queue_capacity" >&2
+        exit 1
+    fi
+    build_target "$routed_queue_name" tavrn_routed_node
+done
+configure_fail_with routed-queue-capacity-invalid \
+    'TRON_ROUTED_TX_QUEUE_CAPACITY must be exactly 4, 8, 16, or 40' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ROUTED_TX_QUEUE_CAPACITY=5
+configure_fail_with legacy-routed-queue-capacity \
+    'TRON_ROUTED_TX_QUEUE_CAPACITY is available only for ROUTED targets' \
+    -DTRON_PHASE1_TARGET=LEGACY -DTRON_ROUTED_TX_QUEUE_CAPACITY=8
+configure_fail_with link-routed-queue-capacity \
+    'TRON_ROUTED_TX_QUEUE_CAPACITY is available only for ROUTED targets' \
+    -DTRON_PHASE1_TARGET=LINK -DTRON_ROUTED_TX_QUEUE_CAPACITY=40
+
 # BUILD-P1-01: selected target isolates legacy source/identity composition.
 configure_ok default-legacy -DTRON_PHASE1_TARGET=LEGACY
 legacy_manifest="$(legacy_manifest_path default-legacy)"
@@ -920,7 +963,7 @@ require_line 'identity.width=SID16' "$runtime_manifest"
 require_line 'link_test.peer_adva=NOT_CONFIGURED' "$runtime_manifest"
 require_line 'timer.aodv_node_traversal_ms=10' "$runtime_manifest"
 require_line 'formula.verification_window_ms=timer.aodv_net_traversal_ms+2*timer.aodv_path_discovery_ms' "$runtime_manifest"
-require_line 'timer.link_no_response_wall_bound_ms=840' "$runtime_manifest"
+require_line 'timer.link_no_response_wall_bound_ms=9894' "$runtime_manifest"
 require_line 'capacity.link_custody.state=IMPLEMENTED' "$runtime_manifest"
 require_line 'capacity.aodv_routes.state=NOT_IMPLEMENTED' "$runtime_manifest"
 require_line 'capacity.retry_log_mailbox=1' "$runtime_manifest"
@@ -1792,7 +1835,10 @@ if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittas
 fi
 require_line 'source.selected.7=generated/tron_timer_config.c' "$runtime_manifest"
 require_line 'timer.radio_tx_event_bound_ms=8' "$runtime_manifest"
-require_line 'timer.link_tx_scheduler_attempt_bound_ms=30' "$runtime_manifest"
+require_line 'timer.radio_tx_repeated_event_bound_ms=14' "$runtime_manifest"
+require_line 'timer.radio_tx_fault_cleanup_bound_ms=18' "$runtime_manifest"
+require_line 'timer.link_tx_scheduler_attempt_bound_ms=3048' "$runtime_manifest"
+require_line 'timer.link_no_response_wall_bound_ms=9894' "$runtime_manifest"
 require_line 'timer.link_response_window_sum_ms=750' "$runtime_manifest"
 require_line 'formula.link_no_response_wall_bound_ms=timer.link_response_window_sum_ms+timer.link_max_attempts*timer.link_tx_scheduler_attempt_bound_ms' "$runtime_manifest"
 link_testbed_main="$MICROBIT_ROOT/app/ble_link_v2_testbed/src/main.c"
@@ -1927,7 +1973,7 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     printf '%s\n' 'firmware compile commands must not contain the host-only immediate HACK macro' >&2
     exit 1
 fi
-if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 73 ]] ||
+if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 75 ]] ||
     [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 48 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
@@ -2655,5 +2701,28 @@ publisher_fail_with benchmark-wrapper-direct-block \
     '--benchmark ON roles 1 and 3 require --rx-block-adva' \
     --target tavrn_routed_node --timer BALANCED --enable-hooks ON --benchmark ON \
     --role-number 1 --peer-adva dc:4b:0a:06:03:f8
+
+# BEARER-CAP-02: the publisher forwards the routed-only queue variant through
+# the generated build manifest and rejects invalid or lower-target requests.
+routed_queue_publisher_out="$WORK_DIR/routed-queue-published"
+bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
+    --feature AODV_ONLY --routed-tx-queue-capacity 16 \
+    --out "$routed_queue_publisher_out" >/dev/null
+routed_queue_published_manifest=()
+for manifest_path in "$routed_queue_publisher_out"/*.manifest; do
+    [[ "$manifest_path" == *.build-config.manifest ]] && continue
+    routed_queue_published_manifest+=("$manifest_path")
+done
+if [[ ${#routed_queue_published_manifest[@]} -ne 1 ]]; then
+    printf '%s\n' 'routed queue publisher did not create exactly one artifact manifest' >&2
+    exit 1
+fi
+require_line 'capacity.scheduler_tx_queue=16' "${routed_queue_published_manifest[0]}"
+publisher_fail_with routed-queue-wrapper-invalid \
+    '--routed-tx-queue-capacity must be 4, 8, 16, or 40' \
+    --target tavrn_routed_node --routed-tx-queue-capacity 5
+publisher_fail_with routed-queue-wrapper-link \
+    '--routed-tx-queue-capacity is valid only with --target tavrn_routed_node' \
+    --target ble_link_v2_testbed --routed-tx-queue-capacity 8
 
 printf '%s\n' 'tron BLE build/profile tests passed'

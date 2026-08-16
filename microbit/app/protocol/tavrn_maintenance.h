@@ -365,6 +365,7 @@ typedef enum tavrn_maintenance_high_token_status {
 typedef enum tavrn_maintenance_high_token_completion_kind {
     TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_DONE = 0,
     TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_FAILED,
+    TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_TX_EXPIRED,
     TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_RADIO_FAULT,
     TAVRN_MAINTENANCE_HIGH_TOKEN_COMPLETION_SERVICE_FAULT,
 } tavrn_maintenance_high_token_completion_kind_t;
@@ -617,6 +618,7 @@ typedef enum tavrn_rreq_verification_terminal_kind {
     TAVRN_RREQ_VERIFICATION_TERMINAL_TX_FAILED,
     TAVRN_RREQ_VERIFICATION_TERMINAL_EVICTED,
     TAVRN_RREQ_VERIFICATION_TERMINAL_LOCAL_NOT_ATTEMPTED,
+    TAVRN_RREQ_VERIFICATION_TERMINAL_EXPIRED,
 } tavrn_rreq_verification_terminal_kind_t;
 
 typedef struct tavrn_rreq_verification_action {

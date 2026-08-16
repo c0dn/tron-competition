@@ -672,6 +672,9 @@ static int enqueue_data_priority_filler(ble_mesh_scheduler_t *scheduler,
     item.priority = BLE_MESH_TX_PRIORITY_DATA;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms + 1000u;
+    item.expiry_ms = now_ms + 10000u;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     result = ble_mesh_scheduler_enqueue_ex(scheduler, &item);
     return result.status == BLE_MESH_SCHED_ENQUEUE_OK;
 }
@@ -692,6 +695,9 @@ static int enqueue_control_priority_filler(ble_mesh_scheduler_t *scheduler,
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms + 1000u;
+    item.expiry_ms = now_ms + 10000u;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     result = ble_mesh_scheduler_enqueue_ex(scheduler, &item);
     return result.status == BLE_MESH_SCHED_ENQUEUE_OK;
 }

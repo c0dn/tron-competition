@@ -36,6 +36,11 @@ static ble_mesh_tx_item_t make_item(ble_mesh_tx_priority_t priority,
     item.service_class = service_class;
     item.token = token;
     item.not_before_ms = not_before_ms;
+    item.expiry_ms = 10000u;
+    item.sweep_count = service_class == BLE_MESH_TX_SERVICE_CUSTODY_DATA ?
+        BLE_MESH_TX_SWEEP_COUNT_TWO : BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = priority == BLE_MESH_TX_PRIORITY_HACK ?
+        BLE_MESH_TX_BUDGET_CRITICAL : BLE_MESH_TX_BUDGET_GENERAL;
     item.adv_data[0] = marker;
     return item;
 }

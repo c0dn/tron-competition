@@ -3380,18 +3380,19 @@ EXPORT INT usermain(void)
         tm_printf((UB *)"routed logger task creation failed id=%d\n", logger_id);
         return 1;
     }
+    if (tk_sta_tsk(logger_id, 0) != E_OK) {
+        tm_printf((UB *)"routed logger task start failed\n");
+        return 1;
+    }
     if (tk_sta_cyc(release_cyclic_id) != E_OK) {
         tm_printf((UB *)"routed release cyclic start failed\n");
+        (void)tk_ter_tsk(logger_id);
         return 1;
     }
     if (tk_sta_tsk(mesh_id, 0) != E_OK) {
         tm_printf((UB *)"routed mesh task start failed\n");
-        return 1;
-    }
-    if (tk_sta_tsk(logger_id, 0) != E_OK) {
-        tm_printf((UB *)"routed logger task start failed\n");
         (void)tk_stp_cyc(release_cyclic_id);
-        (void)tk_ter_tsk(mesh_id);
+        (void)tk_ter_tsk(logger_id);
         return 1;
     }
     tk_slp_tsk(TMO_FEVR);

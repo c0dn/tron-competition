@@ -109,6 +109,7 @@ typedef enum tavrn_repair_rreq_enqueue_status {
 typedef enum tavrn_repair_completion_kind {
     TAVRN_REPAIR_COMPLETION_RREQ_TX_DONE = 0,
     TAVRN_REPAIR_COMPLETION_RREQ_TX_FAILED,
+    TAVRN_REPAIR_COMPLETION_RREQ_TX_EXPIRED,
     TAVRN_REPAIR_COMPLETION_DATA_FLUSHED,
     TAVRN_REPAIR_COMPLETION_DATA_DROPPED,
 } tavrn_repair_completion_kind_t;

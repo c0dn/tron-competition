@@ -47,6 +47,7 @@ resource_logger_stack_headroom_bytes="NOT_APPLICABLE"
 repair="OFF"
 wearable_ingress="OFF"
 app_node_number="1"
+routed_tx_queue_capacity=""
 
 usage() {
     cat <<'EOF'
@@ -63,6 +64,8 @@ Common options:
   --identify-display ON|OFF Routed hooks-only 5x5 identification display
    --benchmark ON|OFF       Continuous routed control-plane observability
   --network-id VALUE        Wire-v2 network ID (routed targets)
+  --routed-tx-queue-capacity N
+                            Routed TX queue capacity: 4, 8, 16, or 40
   --candidate               Require a clean, inventory-bound link or routed candidate
   --adva xx:xx:xx:xx:xx:xx  Canonical configured AdvA (routed targets)
   --probe-uid UID           Candidate probe UID
@@ -122,6 +125,7 @@ while [[ $# -gt 0 ]]; do
         --repair) repair="${2:?Missing value for --repair}"; shift 2 ;;
         --wearable-ingress) wearable_ingress="${2:?Missing value for --wearable-ingress}"; shift 2 ;;
         --app-node-number) app_node_number="${2:?Missing value for --app-node-number}"; shift 2 ;;
+        --routed-tx-queue-capacity) routed_tx_queue_capacity="${2:?Missing value for --routed-tx-queue-capacity}"; shift 2 ;;
         --stack-usage) stack_usage="ON"; shift ;;
         --resource-baseline) resource_baseline="${2:?Missing value for --resource-baseline}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
@@ -136,6 +140,16 @@ if [[ "$target" != "ble_mesh_node" && "$target" != "ble_link_v2_testbed" &&
 fi
 if [[ "$target" != "tavrn_routed_node" && "$feature_requested" == yes ]]; then
     printf '%s\n' '--feature is valid only with --target tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ -n "$routed_tx_queue_capacity" && "$target" != "tavrn_routed_node" ]]; then
+    printf '%s\n' '--routed-tx-queue-capacity is valid only with --target tavrn_routed_node' >&2
+    exit 2
+fi
+if [[ -n "$routed_tx_queue_capacity" && "$routed_tx_queue_capacity" != "4" &&
+      "$routed_tx_queue_capacity" != "8" && "$routed_tx_queue_capacity" != "16" &&
+      "$routed_tx_queue_capacity" != "40" ]]; then
+    printf '%s\n' '--routed-tx-queue-capacity must be 4, 8, 16, or 40' >&2
     exit 2
 fi
 if [[ "$target" == "tavrn_routed_node" && "$feature" != "AODV_ONLY" &&
@@ -353,6 +367,11 @@ cmake_args=(
     -DTRON_LINK_TEST_TX_INTERVAL_MS="$tx_interval_ms"
     -DTRON_LINK_TEST_TRANSACTION_TARGET="$transaction_target"
 )
+if [[ -n "$routed_tx_queue_capacity" ]]; then
+    cmake_args+=(
+        -DTRON_ROUTED_TX_QUEUE_CAPACITY="$routed_tx_queue_capacity"
+    )
+fi
 cmake -S "$repo_root" -B "$build_dir" -G Ninja "${cmake_args[@]}"
 
 observe_source_state() {

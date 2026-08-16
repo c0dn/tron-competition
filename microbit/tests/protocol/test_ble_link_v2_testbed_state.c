@@ -81,6 +81,9 @@ static int enqueue_hack(ble_mesh_tx_queue_t *queue,
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_HACK;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.expiry_ms = 0x7fffffffu;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_CRITICAL;
     return ble_mesh_tx_queue_enqueue(queue, &item).status == BLE_MESH_TX_ENQUEUE_OK;
 }
 
@@ -314,7 +317,9 @@ static void test_resolve_failure_and_hack_enqueue_commit(void)
     CHECK(link_testbed_admit_final(&candidate.data, &local.logical_id, &state,
                                    &forced_busy, &index) == TAVRN_RX_ACCEPTED);
     for (i = 0u; i < BLE_MESH_TX_QUEUE_CAPACITY; i++) {
-        CHECK(enqueue_hack(&scheduler.routed_tx_queue, &local, &peer, &data,
+        tavrn_link_data_t blocker = diagnostic_data((uint16_t)(100u + i));
+
+        CHECK(enqueue_hack(&scheduler.routed_tx_queue, &local, &peer, &blocker,
                            TAVRN_HACK_ACCEPTED));
     }
     CHECK(tavrn_link_v2_resolve_rx(&link, candidate.token, TAVRN_RX_ACCEPTED,

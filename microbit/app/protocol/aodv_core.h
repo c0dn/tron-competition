@@ -177,6 +177,8 @@ typedef struct aodv_control_action {
      * aodv_core_mark_action_sent(). */
     uint16_t token;
     uint8_t controlled_flood;
+    uint8_t response_anchor_valid;
+    uint32_t response_anchor_ms;
     tavrn_direct_peer_t next_hop;
     tavrn_validated_control_t control;
     aodv_rreq_attempt_t rreq_attempt;

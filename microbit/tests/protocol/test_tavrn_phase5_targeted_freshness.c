@@ -1778,6 +1778,28 @@ static void test_tokens_terminal_tombstones_and_no_side_effects(void)
         return;
     }
     CHECK("MAINT-07", context->valid == 0u);
+    CHECK("MAINT-07", ble_mesh_tx_queue_cancel(
+                           &fixture.scheduler.routed_tx_queue,
+                           actions[3].token) == BLE_MESH_TX_RETIRE_OK);
+    memset(&event, 0, sizeof(event));
+    event.type = BLE_MESH_SCHED_EVENT_TX_EXPIRED;
+    event.tx_token = actions[3].token;
+    event.tx_requested_channel_mask = BLE_RADIO_ADV_CH_ALL;
+    CHECK("MAINT-07", phase5_targeted_terminal(
+                           &fixture.maintenance, &fixture.router, &fixture.link,
+                           &event, HARD_EXPIRY_MS + 8u) ==
+                           TAVRN_TARGETED_FRESHNESS_OK &&
+                       phase5_targeted_snapshot(
+                           &fixture.maintenance, &fixture.router, &fixture.link,
+                           &fixture.gtt, &state) == TAVRN_TARGETED_FRESHNESS_OK);
+    context = context_at(&state, actions[3].context_index, "expired-stage0");
+    if (context == NULL) {
+        return;
+    }
+    CHECK("MAINT-07", context->valid != 0u &&
+                       context->stage == TAVRN_TARGETED_STAGE1_READY &&
+                       context->token == BLE_MESH_TX_TOKEN_NONE &&
+                       context->queued == 0u && context->in_flight == 0u);
 }
 
 static void test_local_terminal_response_and_sequence_frontier(void)

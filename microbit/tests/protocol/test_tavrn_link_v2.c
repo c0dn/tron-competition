@@ -292,6 +292,10 @@ static void seed_candidate_eviction_queue(ble_mesh_scheduler_t *scheduler)
         entry->item.priority = BLE_MESH_TX_PRIORITY_DATA;
         entry->item.service_class = i == 0u ? BLE_MESH_TX_SERVICE_CUSTODY_DATA :
             BLE_MESH_TX_SERVICE_BEST_EFFORT;
+        entry->item.expiry_ms = 10000u;
+        entry->item.sweep_count = i == 0u ? BLE_MESH_TX_SWEEP_COUNT_TWO :
+            BLE_MESH_TX_SWEEP_COUNT_ONE;
+        entry->item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
         entry->item.token = i == 0u ? 0x41u : BLE_MESH_TX_TOKEN_NONE;
     }
 }
@@ -513,16 +517,33 @@ static tavrn_link_step_status_t start_two_peer_data(
 }
 
 static tavrn_link_step_status_t finish_two_peer_hack(
-    tavrn_link_v2_t *sender, const ble_mesh_scheduler_t *receiver_scheduler,
+    tavrn_link_v2_t *sender, ble_mesh_scheduler_t *receiver_scheduler,
     tavrn_hack_status_t status, uint32_t now_ms, tavrn_link_event_t *output)
 {
     ble_mesh_sched_event_t event;
     const ble_mesh_tx_item_t *item = queued_hack_item(receiver_scheduler, status);
+    uint8_t adv_data[BLE_ADV_MAX_DATA];
+    uint8_t adv_len;
+    uint8_t index;
 
     if (item == NULL) {
         return TAVRN_LINK_STEP_INVALID;
     }
-    make_rx_event(&event, item->adv_data, item->adv_len, adva_b);
+    adv_len = item->adv_len;
+    memcpy(adv_data, item->adv_data, adv_len);
+    for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
+        if (receiver_scheduler->routed_tx_queue.entries[index].occupied != 0u &&
+            &receiver_scheduler->routed_tx_queue.entries[index].item == item) {
+            break;
+        }
+    }
+    if (index == BLE_MESH_TX_QUEUE_CAPACITY ||
+        !ble_mesh_tx_queue_complete(&receiver_scheduler->routed_tx_queue, index,
+                                    BLE_RADIO_ADV_CH_ALL,
+                                    BLE_MESH_TX_TOKEN_NONE)) {
+        return TAVRN_LINK_STEP_INVALID;
+    }
+    make_rx_event(&event, adv_data, adv_len, adva_b);
     return tavrn_link_v2_on_scheduler_event(sender, &event, now_ms, output);
 }
 
@@ -603,18 +624,35 @@ static tavrn_link_step_status_t deliver_due_selection(
 {
     ble_mesh_tx_selection_t selection;
     ble_mesh_sched_event_t event;
+    ble_radio_tx_result_t tx_result;
+    uint8_t sweep_index;
 
     if (sender == NULL || sender_scheduler == NULL || receiver == NULL ||
         sender_adva == NULL || sender_output == NULL || receiver_output == NULL ||
         ble_mesh_tx_queue_select_due(&sender_scheduler->routed_tx_queue, now_ms,
                                     sender->active_custody_index <
                                             TAVRN_LINK_CUSTODY_CAPACITY ?
-                                        sender->custody[sender->active_custody_index]
-                                            .scheduler_token :
-                                        BLE_MESH_TX_TOKEN_NONE,
-                                    &selection) != BLE_MESH_TX_SELECT_OK ||
-        !ble_mesh_tx_queue_remove(&sender_scheduler->routed_tx_queue,
-                                  selection.index, NULL)) {
+                                         sender->custody[sender->active_custody_index]
+                                             .scheduler_token :
+                                         BLE_MESH_TX_TOKEN_NONE,
+                                     &selection) != BLE_MESH_TX_SELECT_OK) {
+        return TAVRN_LINK_STEP_INVALID;
+    }
+    memset(&tx_result, 0, sizeof(tx_result));
+    tx_result.requested_channel_mask = selection.item.channel_mask;
+    tx_result.completed_channel_mask = selection.item.channel_mask;
+    tx_result.requested_sweep_count = (uint8_t)selection.item.sweep_count;
+    tx_result.attempted_sweep_count = tx_result.requested_sweep_count;
+    for (sweep_index = 0u; sweep_index < tx_result.attempted_sweep_count;
+         sweep_index++) {
+        tx_result.completed_channel_masks[sweep_index] =
+            selection.item.channel_mask;
+    }
+    tx_result.fault = BLE_RADIO_OP_OK;
+    if (ble_mesh_tx_queue_retire(&sender_scheduler->routed_tx_queue,
+                                 selection.index,
+                                 BLE_MESH_TX_TERMINAL_TX_DONE,
+                                 &tx_result) != BLE_MESH_TX_RETIRE_OK) {
         return TAVRN_LINK_STEP_INVALID;
     }
     if (selection_out != NULL) {
@@ -644,6 +682,9 @@ static int enqueue_equal_priority_hack_blockers(ble_mesh_scheduler_t *scheduler,
     item.priority = BLE_MESH_TX_PRIORITY_HACK;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
     item.not_before_ms = now_ms;
+    item.expiry_ms = now_ms + 1000u;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_CRITICAL;
     item.token = BLE_MESH_TX_TOKEN_NONE;
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         if (ble_mesh_tx_queue_enqueue(&scheduler->routed_tx_queue, &item).status !=
@@ -663,7 +704,9 @@ static int remove_all_queued_items(ble_mesh_scheduler_t *scheduler)
     }
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         if (scheduler->routed_tx_queue.entries[index].occupied != 0u &&
-            !ble_mesh_tx_queue_remove(&scheduler->routed_tx_queue, index, NULL)) {
+            ble_mesh_tx_queue_retire(&scheduler->routed_tx_queue, index,
+                                      BLE_MESH_TX_TERMINAL_CANCELED, NULL) !=
+                BLE_MESH_TX_RETIRE_OK) {
             return 0;
         }
     }
@@ -683,6 +726,9 @@ static int enqueue_test_tracked_token(ble_mesh_scheduler_t *scheduler,
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.expiry_ms = 0x7fffffffu;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     item.token = token;
     return ble_mesh_tx_queue_enqueue(&scheduler->routed_tx_queue, &item).status ==
         BLE_MESH_TX_ENQUEUE_OK;
@@ -742,15 +788,15 @@ static void test_link_08_three_peer_hack_priority_and_retry_exhaustion(void)
                             TAVRN_RX_ACCEPTED, 1u, &output) == TAVRN_LINK_RESOLVE_OK &&
                         queued_hack_status(&scheduler_c, TAVRN_HACK_ACCEPTED));
 
-    CHECK("LINK-08", ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 7u,
-                                                     active_token(&link_b), &selection) ==
-                            BLE_MESH_TX_SELECT_NONE &&
-                        ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 8u,
-                                                     active_token(&link_b), &selection) ==
-                            BLE_MESH_TX_SELECT_OK &&
+    CHECK("LINK-08", ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 21u,
+                                                      active_token(&link_b), &selection) ==
+                             BLE_MESH_TX_SELECT_NONE &&
+                        ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 22u,
+                                                      active_token(&link_b), &selection) ==
+                             BLE_MESH_TX_SELECT_OK &&
                         selection.item.adv_data[11] == TAVRN_WIRE_HACK &&
                         deliver_due_selection(&link_b, &scheduler_b, &link_a, adva_b,
-                                              8u, &selection, &sender_output,
+                                              22u, &selection, &sender_output,
                                               &receiver_output) == TAVRN_LINK_STEP_EVENT &&
                         receiver_output.type == TAVRN_LINK_EVENT_CUSTODY_TRANSFERRED &&
                         receiver_output.detail.transferred_data.data.data_seq == data.data_seq &&
@@ -771,13 +817,13 @@ static void test_link_08_three_peer_hack_priority_and_retry_exhaustion(void)
                             TAVRN_LINK_STEP_NO_EVENT &&
                         tavrn_link_v2_dispatch(&link_b, 501u, &output) ==
                             TAVRN_LINK_STEP_NO_EVENT &&
-                        deliver_due_selection(&link_b, &scheduler_b, &link_c, adva_b,
-                                              501u, &selection, &sender_output,
-                                              &receiver_output) == TAVRN_LINK_STEP_NO_EVENT &&
-                        link_c.counters.rx_candidate_accepted == 1u &&
-                        link_c.counters.rx_committed_duplicate == 2u &&
-                        scheduler_c.routed_tx_queue.count == 3u &&
-                        link_b.counters.tx_done == 3u);
+                         deliver_due_selection(&link_b, &scheduler_b, &link_c, adva_b,
+                                               501u, &selection, &sender_output,
+                                               &receiver_output) == TAVRN_LINK_STEP_NO_EVENT &&
+                         link_c.counters.rx_candidate_accepted == 1u &&
+                         link_c.counters.rx_committed_duplicate == 2u &&
+                         scheduler_c.routed_tx_queue.count == 1u &&
+                         link_b.counters.tx_done == 3u);
 
     CHECK("LINK-08", tavrn_link_v2_tick(&link_b, 750u, &output) ==
                             TAVRN_LINK_STEP_NO_EVENT &&
@@ -887,11 +933,11 @@ static void test_link_08_hack_enqueue_failure_recovery(void)
                         link_b.counters.rx_committed_duplicate == 1u &&
                         link_b.counters.hack_enqueue_failed == 1u &&
                         queued_hack_status(&scheduler_b, TAVRN_HACK_DUPLICATE) &&
-                        ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 108u,
+                        ble_mesh_tx_queue_select_due(&scheduler_b.routed_tx_queue, 122u,
                                                      active_token(&link_b), &selection) ==
                             BLE_MESH_TX_SELECT_NONE &&
                         deliver_due_selection(&link_b, &scheduler_b, &link_a, adva_b,
-                                              109u, &selection, &sender_output,
+                                              123u, &selection, &sender_output,
                                               &receiver_output) == TAVRN_LINK_STEP_EVENT &&
                         receiver_output.type == TAVRN_LINK_EVENT_CUSTODY_TRANSFERRED &&
                         receiver_output.detail.transferred_data.attempt_count == 1u &&
@@ -1052,11 +1098,12 @@ static void test_link_02_candidate_resolution_and_containment(void)
                        TAVRN_LINK_STEP_NO_EVENT);
     CHECK("LINK-02", link.counters.rx_committed_duplicate == 1u &&
                        link.counters.rx_candidate == 1u && link.counters.hack_duplicate == 1u);
-    CHECK("LINK-02", queued_hack_status(&scheduler, TAVRN_HACK_DUPLICATE));
-    queued_hack = queued_hack_item(&scheduler, TAVRN_HACK_DUPLICATE);
+    CHECK("LINK-02", !queued_hack_status(&scheduler, TAVRN_HACK_DUPLICATE) &&
+                       scheduler.routed_tx_queue.count == 1u);
+    queued_hack = queued_hack_item(&scheduler, TAVRN_HACK_ACCEPTED);
     CHECK("LINK-02", queued_hack != NULL && queued_hack->channel_mask ==
-                       BLE_RADIO_ADV_CH_ALL && queued_hack->adv_data[23] ==
-                       TAVRN_HACK_DUPLICATE);
+                        BLE_RADIO_ADV_CH_ALL && queued_hack->adv_data[23] ==
+                        TAVRN_HACK_ACCEPTED);
 
     if (!setup_link(&link, &scheduler, 20u)) {
         return;
@@ -1560,7 +1607,7 @@ static void test_link_04_slots_retries_terminal_ownership_and_fault_draining(voi
     CHECK("LINK-04", output.type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED &&
                        output.detail.owned_data.attempt_count == 3u &&
                        (uint32_t)(output.detail.owned_data.final_deadline_ms -
-                                  0xffffff00u) <= 840u);
+                                   0xffffff00u) <= 9894u);
     CHECK("LINK-04", output.detail.owned_data.next_hop.logical_id.value == 0x4bdcu &&
                        memcmp(output.detail.owned_data.next_hop.adva.bytes, adva_b, 6u) == 0 &&
                        output.detail.owned_data.data.origin.width == TAVRN_IDENTITY_SID16 &&
@@ -1607,7 +1654,27 @@ static void test_link_04_slots_retries_terminal_ownership_and_fault_draining(voi
                        output.detail.owned_data.data.data_seq == 0x6000u &&
                        output.detail.owned_data.next_hop.logical_id.value == 0x4bdcu);
     CHECK("LINK-04", tavrn_link_v2_send_unicast(&link, &next_hop, &fifth, 202u,
-                                                  &output) == TAVRN_LINK_SEND_OK);
+                                                   &output) == TAVRN_LINK_SEND_OK);
+
+    if (!setup_link(&link, &scheduler, 205u)) {
+        return;
+    }
+    seed_active_queued(&link, 0x6004u, 205u);
+    link.custody[0].attempt_count = 1u;
+    make_tx_event(&event, BLE_MESH_SCHED_EVENT_TX_EXPIRED, 0x41u, 0u);
+    CHECK("LINK-07", tavrn_link_v2_on_scheduler_event(&link, &event, 206u,
+                                                         &output) ==
+                       TAVRN_LINK_STEP_EVENT);
+    CHECK("LINK-07", output.type == TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED &&
+                       output.detail.owned_data.local_reason ==
+                           TAVRN_LOCAL_TX_DEADLINE_EXPIRED &&
+                       output.detail.owned_data.requested_channel_mask ==
+                           BLE_RADIO_ADV_CH_ALL &&
+                       output.detail.owned_data.completed_channel_mask == 0u &&
+                       output.detail.owned_data.attempt_count == 1u &&
+                       output.detail.owned_data.data.data_seq == 0x6004u &&
+                       link.counters.tx_failed == 0u &&
+                       link.counters.local_tx_not_attempted == 1u);
 
     if (!setup_link(&link, &scheduler, 210u)) {
         return;
@@ -1978,7 +2045,7 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     tavrn_rx_candidate_token_t token;
     uint8_t directed[sizeof(data16)];
     uint8_t alternate[sizeof(data16)];
-    const uint32_t turnaround_ms = 8u;
+    const uint32_t response_delay_ms = 8u + 14u;
 
     memcpy(directed, data16, sizeof(directed));
     directed[14] = adva_a[0];
@@ -1989,19 +2056,32 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     }
     make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
     CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 100u,
-                                                         &output) ==
+                                                          &output) ==
                        TAVRN_LINK_STEP_EVENT);
     token = output.detail.candidate.token;
-    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
-                                                 100u, &output) ==
-                       TAVRN_LINK_RESOLVE_OK);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED, 100u + turnaround_ms);
-
     make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
     CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 101u,
-                                                         &output) ==
+                                                          &output) ==
+                       TAVRN_LINK_STEP_NO_EVENT && link.candidate_valid != 0u &&
+                       link.candidate.token == token &&
+                       link.candidate.deadline_ms == 110u &&
+                       scheduler.routed_tx_queue.count == 0u &&
+                       link.counters.rx_additional_data_busy == 0u);
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
+                                                  105u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED,
+                          100u + response_delay_ms);
+    CHECK("LINK-02", scheduler.routed_tx_queue.count == 1u);
+
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 106u,
+                                                          &output) ==
                        TAVRN_LINK_STEP_NO_EVENT);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_DUPLICATE, 101u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED,
+                          100u + response_delay_ms);
+    CHECK("LINK-02", scheduler.routed_tx_queue.count == 1u &&
+                        !queued_hack_status(&scheduler, TAVRN_HACK_DUPLICATE));
 
     if (!setup_link(&link, &scheduler, 200u)) {
         return;
@@ -2012,7 +2092,8 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_BUSY,
                                                  200u, &output) ==
                        TAVRN_LINK_RESOLVE_OK);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 200u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY,
+                          200u + response_delay_ms);
 
     if (!setup_link(&link, &scheduler, 300u)) {
         return;
@@ -2023,7 +2104,8 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_REJECTED,
                                                  300u, &output) ==
                        TAVRN_LINK_RESOLVE_OK);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_REJECTED, 300u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_REJECTED,
+                          300u + response_delay_ms);
 
     if (!setup_link(&link, &scheduler, 400u)) {
         return;
@@ -2036,7 +2118,8 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     CHECK("LINK-02", tavrn_link_v2_on_scheduler_event(&link, &event, 401u,
                                                          &output) ==
                        TAVRN_LINK_STEP_ADDITIONAL_DATA_BUSY);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 401u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY,
+                          401u + response_delay_ms);
 
     if (!setup_link(&link, &scheduler, 500u)) {
         return;
@@ -2045,7 +2128,8 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     (void)tavrn_link_v2_on_scheduler_event(&link, &event, 500u, &output);
     CHECK("LINK-02", tavrn_link_v2_tick(&link, 510u, &output) ==
                        TAVRN_LINK_STEP_CANDIDATE_TIMEOUT_BUSY);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 510u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY,
+                          500u + response_delay_ms);
 
     if (!setup_link(&link, &scheduler, 600u)) {
         return;
@@ -2056,7 +2140,20 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
                                                           &output) ==
                        TAVRN_LINK_STEP_DATA_DEDUPE_BUSY &&
                        tavrn_link_v2_counters(&link)->rx_data_dedupe_busy == 1u);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY, 600u + turnaround_ms);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_BUSY,
+                          600u + response_delay_ms);
+
+    if (!setup_link(&link, &scheduler, 700u)) {
+        return;
+    }
+    make_rx_event(&event, directed, (uint8_t)sizeof(directed), adva_b);
+    (void)tavrn_link_v2_on_scheduler_event(&link, &event, 700u, &output);
+    token = output.detail.candidate.token;
+    CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
+                                                 705u, &output) ==
+                       TAVRN_LINK_RESOLVE_OK);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED,
+                          700u + response_delay_ms);
 
     if (!setup_link(&link, &scheduler, UINT32_MAX - 3u)) {
         return;
@@ -2067,7 +2164,7 @@ static void test_link_02_hack_turnaround_enqueue_paths(void)
     CHECK("LINK-02", tavrn_link_v2_resolve_rx(&link, token, TAVRN_RX_ACCEPTED,
                                                  UINT32_MAX - 3u, &output) ==
                        TAVRN_LINK_RESOLVE_OK);
-    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED, 4u);
+    check_queued_hack_due(&scheduler, TAVRN_HACK_ACCEPTED, 18u);
 }
 
 static void test_link_04_tx_done_response_deadline(void)
@@ -2078,9 +2175,12 @@ static void test_link_04_tx_done_response_deadline(void)
     tavrn_link_event_t output;
 
     CHECK("LINK-04", tron_timer_config.radio_tx_event_bound_ms == 8u &&
-                       tron_timer_config.link_hack_timeout_ms == 250u &&
-                       tron_timer_config.link_response_window_sum_ms == 750u &&
-                       tron_timer_config.link_no_response_wall_bound_ms == 840u);
+                        tron_timer_config.radio_tx_repeated_event_bound_ms == 14u &&
+                        tron_timer_config.radio_tx_fault_cleanup_bound_ms == 18u &&
+                        tron_timer_config.link_hack_timeout_ms == 250u &&
+                        tron_timer_config.link_tx_scheduler_attempt_bound_ms == 3048u &&
+                        tron_timer_config.link_response_window_sum_ms == 750u &&
+                        tron_timer_config.link_no_response_wall_bound_ms == 9894u);
     if (!setup_link(&link, &scheduler, 100u)) {
         return;
     }
@@ -2149,6 +2249,33 @@ static tavrn_validated_control_t make_aodv_control(tavrn_wire_type_t type)
     return control;
 }
 
+static tavrn_validated_control_t make_sync_control(tavrn_wire_type_t type)
+{
+    tavrn_validated_control_t control;
+
+    memset(&control, 0, sizeof(control));
+    control.type = type;
+    control.pdu[0] = 0x54u;
+    control.pdu[1] = 0x52u;
+    control.pdu[2] = 0x02u;
+    control.pdu[3] = 0x2au;
+    control.pdu[4] = (uint8_t)type;
+    if (type == TAVRN_WIRE_SYNC_OFFER) {
+        control.pdu_len = 24u;
+        control.pdu[6] = 0x10u;
+        memcpy(&control.pdu[7], adva_a, TAVRN_ADVA_LEN);
+        memcpy(&control.pdu[13], adva_b, TAVRN_ADVA_LEN);
+        control.pdu[20] = 1u;
+        control.pdu[22] = 1u;
+    } else {
+        control.pdu_len = 15u;
+        control.pdu[5] = 0x40u;
+        memcpy(&control.pdu[6], adva_b, TAVRN_ADVA_LEN);
+        control.pdu[12] = 1u;
+    }
+    return control;
+}
+
 static void test_link_07_best_effort_aodv_control_send(void)
 {
     tavrn_link_v2_t link;
@@ -2156,6 +2283,7 @@ static void test_link_07_best_effort_aodv_control_send(void)
     tavrn_link_event_t output;
     tavrn_validated_control_t control;
     const ble_mesh_tx_item_t *item;
+    ble_mesh_tx_selection_t selection;
     tavrn_direct_peer_t peer_b = make_peer(adva_b);
 
     if (!setup_link(&link, &scheduler, 100u)) {
@@ -2167,6 +2295,8 @@ static void test_link_07_best_effort_aodv_control_send(void)
     item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREQ, BLE_MESH_TX_TOKEN_NONE);
     CHECK("LINK-07", item != NULL && item->priority == BLE_MESH_TX_PRIORITY_CONTROL &&
                        item->service_class == BLE_MESH_TX_SERVICE_BEST_EFFORT &&
+                       item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_TWO &&
+                       item->budget_class == BLE_MESH_TX_BUDGET_GENERAL &&
                        item->token == BLE_MESH_TX_TOKEN_NONE && item->not_before_ms == 100u &&
                        link.custody[0].phase == TAVRN_CUSTODY_FREE);
     CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
@@ -2179,17 +2309,23 @@ static void test_link_07_best_effort_aodv_control_send(void)
     CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 101u,
                                                   &output) == TAVRN_LINK_SEND_OK);
     item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RERR, BLE_MESH_TX_TOKEN_NONE);
-    CHECK("LINK-07", item != NULL && item->priority == BLE_MESH_TX_PRIORITY_CONTROL);
+    CHECK("LINK-07", item != NULL && item->priority == BLE_MESH_TX_PRIORITY_CONTROL &&
+                       item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_ONE &&
+                       item->budget_class == BLE_MESH_TX_BUDGET_GENERAL);
 
     if (!setup_link(&link, &scheduler, 102u)) {
         return;
     }
     control = make_aodv_control(TAVRN_WIRE_E_RREP);
-    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
-                                                  0u, 102u, &output) == TAVRN_LINK_SEND_OK);
+    CHECK("LINK-07", tavrn_link_v2_send_control_at(&link, &control, &peer_b,
+                                                      0u, 102u, 124u, &output) ==
+                        TAVRN_LINK_SEND_OK);
     item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREP, BLE_MESH_TX_TOKEN_NONE);
     CHECK("LINK-07", item != NULL && item->adv_data[14] == adva_b[0] &&
-                       item->adv_data[15] == adva_b[1]);
+                        item->adv_data[15] == adva_b[1] &&
+                        item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_TWO &&
+                        item->budget_class == BLE_MESH_TX_BUDGET_CRITICAL &&
+                        item->not_before_ms == 124u);
     control.pdu[7] = adva_a[0];
     CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
                                                   0u, 102u, &output) == TAVRN_LINK_SEND_INVALID);
@@ -2198,20 +2334,64 @@ static void test_link_07_best_effort_aodv_control_send(void)
         return;
     }
     control = make_aodv_control(TAVRN_WIRE_E_RREP_ACK);
-    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, &peer_b,
-                                                  0u, 103u, &output) == TAVRN_LINK_SEND_OK);
+    CHECK("LINK-07", tavrn_link_v2_send_control_at(&link, &control, &peer_b,
+                                                      0u, 103u, 125u, &output) ==
+                        TAVRN_LINK_SEND_OK);
     item = queued_wire_item(&scheduler, TAVRN_WIRE_E_RREP_ACK, BLE_MESH_TX_TOKEN_NONE);
     CHECK("LINK-07", item != NULL && item->adv_data[13] == adva_b[0] &&
-                       item->adv_data[14] == adva_b[1]);
+                        item->adv_data[14] == adva_b[1] &&
+                        item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_ONE &&
+                        item->budget_class == BLE_MESH_TX_BUDGET_CRITICAL &&
+                        item->not_before_ms == 125u);
 
     if (!setup_link(&link, &scheduler, 104u)) {
         return;
     }
-    seed_active_queued(&link, 0x7400u, 104u);
+    control = make_sync_control(TAVRN_WIRE_SYNC_OFFER);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 0u, 104u,
+                                                  &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_SYNC_OFFER,
+                            BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL &&
+                        item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_ONE &&
+                        item->budget_class == BLE_MESH_TX_BUDGET_CRITICAL);
+
+    if (!setup_link(&link, &scheduler, 105u)) {
+        return;
+    }
+    control = make_sync_control(TAVRN_WIRE_SYNC_DATA);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 0u, 105u,
+                                                  &output) == TAVRN_LINK_SEND_OK);
+    item = queued_wire_item(&scheduler, TAVRN_WIRE_SYNC_DATA,
+                            BLE_MESH_TX_TOKEN_NONE);
+    CHECK("LINK-07", item != NULL &&
+                        item->sweep_count == BLE_MESH_TX_SWEEP_COUNT_ONE &&
+                        item->budget_class == BLE_MESH_TX_BUDGET_CRITICAL);
+
+    if (!setup_link(&link, &scheduler, UINT32_MAX - 21u)) {
+        return;
+    }
+    control = make_aodv_control(TAVRN_WIRE_E_RREP);
+    CHECK("LINK-07", tavrn_link_v2_send_control_at(
+                         &link, &control, &peer_b, 0u, UINT32_MAX - 21u, 0u,
+                         &output) == TAVRN_LINK_SEND_OK &&
+                        ble_mesh_tx_queue_select_due(
+                            &scheduler.routed_tx_queue, UINT32_MAX,
+                            BLE_MESH_TX_TOKEN_NONE, &selection) ==
+                            BLE_MESH_TX_SELECT_NONE &&
+                        ble_mesh_tx_queue_select_due(
+                            &scheduler.routed_tx_queue, 0u,
+                            BLE_MESH_TX_TOKEN_NONE, &selection) ==
+                            BLE_MESH_TX_SELECT_OK);
+
+    if (!setup_link(&link, &scheduler, 106u)) {
+        return;
+    }
+    seed_active_queued(&link, 0x7400u, 106u);
     seed_candidate_eviction_queue(&scheduler);
     control = make_aodv_control(TAVRN_WIRE_E_RREQ);
-    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 104u,
-                                                  &output) == TAVRN_LINK_SEND_OK);
+    CHECK("LINK-07", tavrn_link_v2_send_control(&link, &control, NULL, 1u, 106u,
+                                                   &output) == TAVRN_LINK_SEND_OK);
     CHECK("LINK-07", output.type == TAVRN_LINK_EVENT_LOCAL_TX_NOT_ATTEMPTED &&
                        output.detail.owned_data.data.data_seq == 0x7400u);
 
@@ -2227,6 +2407,9 @@ static void test_link_07_best_effort_aodv_control_send(void)
         entry->item.channel_mask = BLE_RADIO_ADV_CH_ALL;
         entry->item.priority = BLE_MESH_TX_PRIORITY_HACK;
         entry->item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+        entry->item.expiry_ms = 0x7fffffffu;
+        entry->item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+        entry->item.budget_class = BLE_MESH_TX_BUDGET_CRITICAL;
     }
     scheduler.routed_tx_queue.count = BLE_MESH_TX_QUEUE_CAPACITY;
     control = make_aodv_control(TAVRN_WIRE_E_RERR);
@@ -2290,7 +2473,8 @@ static void test_link_03_external_custody_transfer_is_exact(void)
                        tavrn_link_v2_transfer_rx_custody_to_external(
                            &link, &wrong, 3u) == TAVRN_LINK_RESOLVE_TOKEN_INVALID &&
                        tavrn_link_v2_transfer_rx_custody_to_external(
-                           &link, &data, 3u) == TAVRN_LINK_RESOLVE_TOKEN_INVALID &&
+                            &link, &data, 3u) == TAVRN_LINK_RESOLVE_OK &&
+                        data_dedupe_has_external_custody_owner(&link, &data) &&
                        tavrn_link_v2_release_rx_custody(&link, &data, 4u) ==
                            TAVRN_LINK_RESOLVE_OK &&
                        !data_dedupe_is_pinned(&link, &data) &&

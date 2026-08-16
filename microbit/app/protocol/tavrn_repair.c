@@ -1141,7 +1141,8 @@ tavrn_repair_status_t tavrn_repair_complete(
         return TAVRN_REPAIR_IGNORED;
     }
     if (completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_DONE ||
-        completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_FAILED) {
+        completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_FAILED ||
+        completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_EXPIRED) {
         if (!repair_active(repair) ||
             (completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_DONE &&
              repair->active_enqueued == 0u) ||
@@ -1159,6 +1160,13 @@ tavrn_repair_status_t tavrn_repair_complete(
             repair->stage_response_deadline_ms =
                 now_ms + repair->config.path_discovery_ms;
             return TAVRN_REPAIR_OK;
+        }
+        if (completion->kind == TAVRN_REPAIR_COMPLETION_RREQ_TX_EXPIRED) {
+            /* This request crossed its bearer deadline without transmission.
+             * End the repair episode; the radio-failure scope fallback must
+             * not recreate stale repair work after expiry. */
+            repair->failure_pending = 1u;
+            return release_active_token(repair);
         }
         repair->active_tx_failed = 1u;
         return release_active_token(repair);

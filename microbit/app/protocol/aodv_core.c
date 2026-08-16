@@ -999,7 +999,8 @@ static int enqueue_rrep_ack(aodv_core_t *core,
                             const aodv_control_input_t *input,
                             uint16_t destination,
                             uint16_t destination_sequence,
-                            uint16_t origin, uint16_t request_id)
+                            uint16_t origin, uint16_t request_id,
+                            uint32_t first_rx_ms)
 {
     aodv_action_t action;
     tavrn_validated_control_t *control;
@@ -1009,6 +1010,8 @@ static int enqueue_rrep_ack(aodv_core_t *core,
     memset(&action, 0, sizeof(action));
     action.type = AODV_ACTION_SEND_RREP_ACK;
     action.detail.control.next_hop = input->transmitter;
+    action.detail.control.response_anchor_valid = 1u;
+    action.detail.control.response_anchor_ms = first_rx_ms;
     control = &action.detail.control.control;
     begin_control(control, TAVRN_WIRE_E_RREP_ACK,
                   (uint8_t)(10u + 3u * width_len), core);
@@ -1025,7 +1028,8 @@ static int enqueue_rrep(aodv_core_t *core, aodv_action_type_t type,
                         const tavrn_direct_peer_t *next_hop,
                         const tavrn_validated_control_t *control,
                         uint16_t destination, uint16_t destination_sequence,
-                        uint16_t origin, uint16_t request_id)
+                        uint16_t origin, uint16_t request_id,
+                        uint32_t first_rx_ms)
 {
     aodv_action_t action;
     aodv_rrep_ack_wait_t *wait = NULL;
@@ -1046,6 +1050,8 @@ static int enqueue_rrep(aodv_core_t *core, aodv_action_type_t type,
     action.type = type;
     action.detail.control.next_hop = *next_hop;
     action.detail.control.control = *control;
+    action.detail.control.response_anchor_valid = 1u;
+    action.detail.control.response_anchor_ms = first_rx_ms;
     if (wait != NULL) {
         action.detail.control.token = wait->token;
         action.detail.control.control.pdu[AODV_PDU_FLAGS_OFFSET] |=
@@ -1321,8 +1327,8 @@ static aodv_status_t ingest_rreq(aodv_core_t *core,
         pdu_put_u16(reply.pdu, (uint8_t)(11u + 3u * width_len),
                     lifetime_encode(core->config.active_route_ms));
         if (!enqueue_rrep(core, AODV_ACTION_SEND_RREP, &input->transmitter,
-                          &reply, destination, state_of(core)->local_origin_sequence,
-                          origin, request_id)) {
+                           &reply, destination, state_of(core)->local_origin_sequence,
+                           origin, request_id, now_ms)) {
             return AODV_STATUS_BUSY;
         }
         return AODV_STATUS_OK;
@@ -1473,8 +1479,8 @@ static aodv_status_t ingest_rrep(aodv_core_t *core,
     }
     rrep_seen_add(core, destination, destination_sequence, origin, request_id, now_ms);
     if (ack_required != 0 && !enqueue_rrep_ack(core, input, destination,
-                                                destination_sequence, origin,
-                                                request_id)) {
+                                                 destination_sequence, origin,
+                                                 request_id, now_ms)) {
         return AODV_STATUS_BUSY;
     }
     if (origin == core->config.local_peer.logical_id.value) {
@@ -1494,8 +1500,8 @@ static aodv_status_t ingest_rrep(aodv_core_t *core,
             (uint8_t)(((ttl - 1u) << 4) | ((hops + 1u) & 0x0fu));
         pdu_put_id(forwarded.pdu, 7u, width, reverse->next_hop.logical_id.value);
         if (!enqueue_rrep(core, AODV_ACTION_FORWARD_RREP, &reverse->next_hop,
-                          &forwarded, destination, destination_sequence, origin,
-                          request_id)) {
+                           &forwarded, destination, destination_sequence, origin,
+                           request_id, now_ms)) {
             return AODV_STATUS_BUSY;
         }
     }

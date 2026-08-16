@@ -1,6 +1,7 @@
 #include "tavrn_mentorship.h"
 
 #include "tavrn_maintenance.h"
+#include "tron_timer_config.h"
 
 #include <string.h>
 
@@ -1650,7 +1651,9 @@ static tavrn_mentorship_status_t process_hello(tavrn_mentorship_t *mentorship,
                                         &delay) != TAVRN_MENTORSHIP_OK) {
         return TAVRN_MENTORSHIP_INVALID;
     }
-    if (tavrn_mentorship_schedule_offer(mentorship, &offer, now_ms + delay) ==
+    if (tavrn_mentorship_schedule_offer(
+            mentorship, &offer,
+            now_ms + tron_timer_config.radio_tx_repeated_event_bound_ms + delay) ==
         TAVRN_MENTORSHIP_OFFER_INVALID) {
         return TAVRN_MENTORSHIP_INVALID;
     }

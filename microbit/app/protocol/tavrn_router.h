@@ -447,6 +447,7 @@ typedef struct tavrn_router {
     uint32_t next_failure_order;
     tavrn_router_fault_reason_t fault_reason;
     uint8_t retained_action_valid;
+    ble_mesh_tx_token_t retained_action_tx_token;
     tavrn_router_incarnation_t incarnation;
     tavrn_router_local_broadcast_snapshot_t local_broadcast;
     tavrn_router_control_interceptor_t control_interceptor;

@@ -240,6 +240,9 @@ static int enqueue_control_fillers(ble_mesh_scheduler_t *scheduler)
     item.channel_mask = BLE_RADIO_ADV_CH_ALL;
     item.priority = BLE_MESH_TX_PRIORITY_CONTROL;
     item.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
+    item.expiry_ms = 0x7fffffffu;
+    item.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+    item.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
     item.token = BLE_MESH_TX_TOKEN_NONE;
     for (index = 0u; index < BLE_MESH_TX_QUEUE_CAPACITY; index++) {
         if (ble_mesh_scheduler_enqueue_ex(scheduler, &item).status !=

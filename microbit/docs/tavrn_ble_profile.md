@@ -1,6 +1,7 @@
 # TAVRN-BLE proof-of-concept profile
 
-Status: V2.3 normative candidate for checker acceptance
+Status: V2.3 normative candidate for checker acceptance, with the approved
+future bearer contract below.
 
 Profile version: `TAVRN-BLE-V2.3`
 
@@ -25,6 +26,15 @@ executable TAVRN subset for the micro:bit BLE proving ground. Only statements in
 rows with stable requirement IDs are normative. Later wire and architecture
 contracts derive details from these requirements; they may not silently change
 the behavior.
+
+### Routed bearer status
+
+`BEARER-05`, `BEARER-06`, and `LINK-07` are implemented and host-tested for
+rolling budget accounting, priority-banded EDF, repeated operations, fixed
+first-copy responses, and token-preserving expiry. The queue intentionally has
+no generalized owner/reset lifecycle. `BUILD-05` remains open: routed capacities
+4/8/16/40 are parameterized, but production capacity, capacity-40 WCET/stack,
+and hardware acceptance are not selected or claimed.
 
 ## Authority and provenance
 
@@ -68,7 +78,8 @@ Audited inputs:
 | --- | --- |
 | **BEARER-01** | The bearer is legacy `ADV_NONCONN_IND` on primary advertising channels 37/38/39 with the lab Manufacturer Specific Data envelope (`0xFF`, company ID `0xFFFF`). Routed wire-v2 is isolated by custom prefix `54 52 02` (ASCII `TR`, version 2); legacy wire-v1 remains `54 4d 01` (`TM`, version 1). Routed logical unicast remains physically observable advertising. |
 | **BEARER-02** | A wire-v2 custom PDU is at most 24 bytes. The public by-value DATA application buffer and wire semantic maximum are 10 bytes because SID8 opaque DATA admits 10; SID16 admits at most 7 in a frame. Only patient `app_kind=01` has a fixed application length, exactly 7 bytes. Every type/mode has a compile-time size guard and exact-length decoder; oversize input is rejected before advertising, never truncated, fragmented, or silently stripped. |
-| **BEARER-03** | The single nRF52833 radio is passive-RX by default and interleaves bounded TX windows with RX. Every mesh-radio wait—initialization, idle/disable, listen, RX restore, snapshot, TX pre-disable, and each selected-channel TX wait—is bounded by `timer.radio_state_timeout_ms` and surfaces a typed scheduler-visible radio fault. For advertising, zero completed selected channels emits `TX_FAILED` and is no attempt; one or more completed channels emits `TX_DONE`, counts one attempt, and starts the HACK deadline even if a later channel/restore wait faults. Every TX result/log records requested and completed channel masks plus fault. Firmware/tests must not claim simultaneous TX/RX or an unbounded radio call. |
+| **BEARER-03** | The single nRF52833 radio is passive-RX by default and interleaves bounded TX windows with RX. Every mesh-radio wait—initialization, idle/disable, listen, RX restore, snapshot, TX pre-disable, and each selected-channel TX wait—is bounded by `timer.radio_state_timeout_ms` and surfaces a typed scheduler-visible radio fault. For advertising, zero completed selected channels emits `TX_FAILED` and is no attempt; one or more completed channels emits `TX_DONE`, counts one attempt, and starts the HACK deadline even if a later channel/restore wait faults. A repeated operation reports each sweep's requested/completed masks; any completed channel in either sweep remains `TX_DONE` evidence plus the later fault, never a relabel to `TX_FAILED` or local-not-attempted. Every TX result/log records requested and completed channel masks plus fault. Firmware/tests must not claim simultaneous TX/RX or an unbounded radio call. |
+| **BEARER-05** | The approved routed-only bearer uses a true rolling 1000 ms window of bearer units (BU), where one BU is one complete ordered 37/38/39 sweep. It admits at most 40 total BU and at most 32 general BU per window, reserving 8 BU for critical service. General traffic may consume at most 32 BU; outside custody hold critical traffic may use the total budget up to 40 BU. A one-sweep operation succeeds within `(1 disable + 3 channel waits) * 2 ms = 8 ms`; a two-sweep repeated operation succeeds within `(1 + 6) * 2 ms = 14 ms`; two-sweep fault cleanup plus RX restore is bounded by `(1 + 6 + 2) * 2 ms = 18 ms`. A selected operation reserves and charges its complete one- or two-BU cost at start, runs non-interleavably, and remains charged after zero, partial, or complete physical outcome. Repeated transmission is deliberate repeated advertising, not FEC. Poll first retires due expiry (at most one token-bearing `TX_EXPIRED`, plus a bounded anonymous purge), then tests due promoted custody. If promoted custody fits total/general usage, it reserves and runs; otherwise custody hold is entered or retained. During custody hold, only a higher-priority critical item with `critical_usage + cost <= 8` and total usage within 40 may run; the next poll retests custody first. Without promoted custody, select released work by priority band, earliest expiry within that band, then insertion ordinal. A budget-blocked selection transmits nothing, remains in RX, and is never bypassed. Custody bypass advances only after physical completion of a non-promoted, non-custody operation. |
 | **BEARER-04** | Version, network, message type, exact length, address context, and logical receiver admission occur before dedupe or state mutation. Every receive event preserves outer `AdvA[0..5]` by value as the full immediate-transmitter identity, not merely SID16/SID8, and rejects malformed, foreign-network, self-invalid, or ambiguous frames without partial effects. |
 
 ## Identity and serial arithmetic
@@ -90,9 +101,9 @@ Audited inputs:
 | ID | Normative requirement |
 | --- | --- |
 | **LINK-01** | Legacy advertising supplies no delivery acknowledgment. Wire-v2 therefore defines a TAVRN link `HACK` as a new logical, per-hop acknowledgment for logically unicast DATA only; HACK, FLOOD, E_RREQ/E_RREP/E_RERR/E_RREP_ACK, HELLO, SYNC_*, and TC_UPDATE are never HACKable. HACK is not a Bluetooth controller ACK and not `E_RREP_ACK`. Pure unacknowledged ALOHA advertising supplies no delivery or transmission-failure evidence. `E_RREP_ACK` remains the separate, optional requested-RREP return-path-symmetry mechanism. Future radio/MAC hardening may use acknowledged DATA/HACK and requested RREP/E_RREP_ACK evidence separately; it MUST NOT describe an RREP as HACKable. |
-| **LINK-02** | A new inbound DATA candidate is returned and resolved synchronously as ACCEPTED/BUSY/REJECTED before its router/application dispatch returns. Defensive `timer.link_candidate_resolve_ms=10` expiry auto-resolves an invariant-violating outstanding candidate as BUSY and releases provisional state. Candidate presence cannot stop clock/timer advancement, control admission, scheduler TX, or HACK processing. ACCEPTED establishes exactly-once custody and HACK; DUPLICATE confirms prior custody without second acceptance and is re-HACKed once per retry reception. Every generated DATA HACK—ACCEPTED, DUPLICATE, explicit BUSY, REJECTED, additional-DATA BUSY, candidate-timeout BUSY, or dedupe-capacity BUSY—has `not_before_ms = now + hack_turnaround_ms`, where `now` is the receiver decision time and, for a scheduler RX event, the post-poll observed event time; link config sources `hack_turnaround_ms=8` directly from existing `timer.radio_tx_event_bound_ms`; this is not a timer key. |
+| **LINK-02** | A new inbound DATA candidate is returned and resolved synchronously as ACCEPTED/BUSY/REJECTED before its router/application dispatch returns. Defensive `timer.link_candidate_resolve_ms=10` expiry auto-resolves an invariant-violating outstanding candidate as BUSY and releases provisional state. Candidate presence cannot stop clock/timer advancement, control admission, scheduler TX, or HACK processing. ACCEPTED establishes exactly-once custody and HACK; DUPLICATE confirms prior custody without second acceptance and is re-HACKed once per retry reception. The first DATA-copy RX timestamp fixes one pending canonical HACK and its release at `first_rx + 14 ms + hack_turnaround_ms(8 ms) = first_rx + 22 ms`; later resolution or duplicate copies cannot postpone or replace its status. Resolution after that fixed release makes the HACK immediately eligible. After that pending HACK transmits or expires, a later DATA retry may create the normal duplicate HACK. |
 | **LINK-03** | `HACK(busy)` and `HACK(rejected)` do not transfer custody, refresh route/GTT state, or declare a neighbor dead. BUSY defers by `timer.link_busy_backoff_ms` and is bounded by `timer.link_busy_max_responses` plus `timer.link_data_deadline_ms`; REJECTED terminates unchanged retransmission as `CUSTODY_REJECTED`. Neither outcome is a link break. BALANCED examples are 500 ms, three responses, and 5000 ms respectively; the timer table remains authoritative. |
-| **LINK-04** | Four custody slots may hold DATA transactions, but link-v2 promotes exactly one initial/retry attempt into the physical scheduler and marks it eligible at a time; other slots remain link-owned, not eligible, and are bounded by `timer.link_data_deadline_ms`. An eligible attempt may be bypassed by at most `timer.scheduler_custody_bypass_max` completed best-effort events and reaches valid `TX_DONE` within `timer.link_tx_scheduler_attempt_bound_ms` or terminates `LOCAL_TX_NOT_ATTEMPTED`. Observed TX_DONE sets `response_deadline_ms = observed_TX_DONE_time + timer.link_hack_timeout_ms` with wrap-safe arithmetic; the event time is captured after the synchronous scheduler poll returns. A no-response episode uses `timer.link_max_attempts` and `timer.link_hack_timeout_ms`, with unchanged total `timer.link_response_window_sum_ms=750` and wall `timer.link_no_response_wall_bound_ms=840`; its all-profile 840 ms table value starts at first eligibility and is never submit-to-terminal latency. Only final no-response expiry produces peer-link break `RETRY_EXHAUSTED`. That event proves only one local failed-hop episode for its retained immediate hop H: it may invalidate routes via H and enter the applicable local repair/failure path, but it proves neither H nor final destination D departed and cannot itself originate LEAVE. A latched global radio/service fault instead drains every remaining occupied slot exactly once as non-link-break `RADIO_FAULT_TERMINAL` or `SERVICE_FAULT_TERMINAL`, preserving real attempt/channel evidence and transferring custody. Every terminal event contains full failed immediate-next-hop AdvA plus logical origin/final IDs only—no duplicated remote full identities. In SID8 FULL mode, the router must synchronously resolve unique full origin/destination context through GTT before accepting event custody. |
+| **LINK-04** | Four custody slots may hold DATA transactions, but link-v2 promotes exactly one initial/retry attempt into the physical scheduler and marks it eligible at a time; other slots remain link-owned, not eligible, and are bounded by the absolute `timer.link_data_deadline_ms=5000` transaction deadline. Observed TX_DONE sets `response_deadline_ms = observed_TX_DONE_time + timer.link_hack_timeout_ms` with wrap-safe arithmetic; the event time is captured after the synchronous scheduler poll returns. Under the approved rolling-budget policy, the conservative bound from eligible custody attempt to its physical result is `(timer.scheduler_custody_bypass_max + 1) * (1000 + 14 + timer.scheduler_poll_max_ms) = (2 + 1) * (1000 + 14 + 2) = 3048 ms`. Three attempts plus the unchanged 750 ms response-window sum gives the unconstrained three-attempt wall of `3 * 3048 + 750 = 9894 ms`; the fixed 5000 ms custody deadline is absolute and truncates retries, so `timer.link_max_attempts=3` is a ceiling, not a guarantee under saturated budget. Only final no-response expiry produces peer-link break `RETRY_EXHAUSTED`. That event proves only one local failed-hop episode for its retained immediate hop H: it may invalidate routes via H and enter the applicable local repair/failure path, but it proves neither H nor final destination D departed and cannot itself originate LEAVE. A latched global radio/service fault instead drains every remaining occupied slot exactly once as non-link-break `RADIO_FAULT_TERMINAL` or `SERVICE_FAULT_TERMINAL`, preserving real attempt/channel evidence and transferring custody. Every terminal event contains full failed immediate-next-hop AdvA plus logical origin/final IDs only—no duplicated remote full identities. In SID8 FULL mode, the router must synchronously resolve unique full origin/destination context through GTT before accepting event custody. |
 | **LINK-05** | `E_RREP_ACK` is retained solely to acknowledge an `E_RREP` that requested one-hop return-path confirmation. It can cancel or expire the corresponding AODV unidirectional-link probe, but never transfers DATA custody or completes an application transaction. |
 | **LINK-06** | A directed advertisement is accepted only by its logical next hop. Flooded control is explicitly marked and uses controlled admission/dedupe; no valid-route application DATA falls back to broadcast flooding. |
 
@@ -106,7 +117,7 @@ Audited inputs:
 | **AODV-04** | Unknown destinations use expanding-ring TTL `1,3,5,7`, then `timer.aodv_net_diameter`; each transmission uses the fresh request ID required by `AODV-02`. RREQ/RERR origination obey `timer.aodv_rreq_rate`/`timer.aodv_rerr_rate`. All profiles currently use diameter 15 and rate 10/s as table values. A fresh GTT estimate may replace only the first ring under `GTT-06`; later fallback remains locally correlated. |
 | **AODV-05** | Locally originated DATA without a route enters the bounded pending queue and triggers one route search per destination. Queue full/expiry has explicit failure evidence; DATA is neither leaked to another destination nor delivered through legacy flood. |
 | **AODV-06** | Route break processing invalidates all routes using the failed next hop, increments/retains destination serials with half-range rules, and sends bounded RERR to precursors. Unreachable entries are sorted by logical destination (numeric SID16 in AODV_ONLY; resolved canonical identity in FULL_TAVRN), segmented to at most three SID16 or four SID8 entries per wire frame, and consume at most eight pending AODV actions. A wire-valid metadata-augmented SID8 E_RERR remains valid at the router/AODV receive boundary: AODV parses its exact base RERR entries while the validated metadata suffix is retained byte-for-byte for controlled forwarding. The suffix MUST NOT make router/AODV ingestion `INVALID` or latch router fault-idle. External overflow backpressures before mutation; timer/link-driven overflow remains explicitly due and emits a counter/event, never truncates silently. For DATA-link evidence, only `RETRY_EXHAUSTED` invokes this path. |
-| **AODV-07** | Intermediate RREP generation may request `E_RREP_ACK` for the AODV unidirectional-link condition. The exact correlation tuple includes network, expected outer AdvA, identity width/receiver, route destination, **destination sequence**, RREQ origin, and request ID; wait and blacklist use `timer.aodv_rrep_ack_wait_ms` and `timer.aodv_blacklist_ms`. Missing ACK blacklists only that return neighbor and alone emits neither RERR, TC LEAVE, DATA `RETRY_EXHAUSTED`, nor local repair. |
+| **AODV-07** | Intermediate RREP generation may request `E_RREP_ACK` for the AODV unidirectional-link condition. The exact correlation tuple includes network, expected outer AdvA, identity width/receiver, route destination, **destination sequence**, RREQ origin, and request ID; wait and blacklist use `timer.aodv_rrep_ack_wait_ms` and `timer.aodv_blacklist_ms`. The sent/ACK wait begins only at the original E_RREP's matching TX_DONE, never at enqueue admission. Missing ACK blacklists only that return neighbor and alone emits neither RERR, TC LEAVE, DATA `RETRY_EXHAUSTED`, nor local repair. |
 | **AODV-08** | The single `aodv_core` exposes a typed deferred-RERR command for optional local repair. Begin immediately invalidates routes through the failed next hop and records one bounded repair token while withholding only the affected precursor RERR; success cancels that deferred destination, while timeout, disabled repair, capacity failure, or explicit release resumes normal segmented RERR. Repair calls this public command/action seam and never edits a route table, stores a second route, or creates another discovery engine. |
 | **AODV-09** | At terminal exhaustion of an ordinary or scoped discovery for destination D, `aodv_core` MUST first have capacity for one action. It MUST enqueue exactly one existing `PENDING_DATA_FAILED(D)` action, then clear that destination's discovery and every pending DATA item whose final destination is D. If the action queue is full, it MUST retain all of that state and retry the same terminal release on a later tick. This rule is distinct from independent per-item pending-DATA deadline expiry, applies at wrap/equality, permits a later fresh discovery for D, and MUST NOT originate or relay TC_UPDATE, JOIN, or LEAVE. |
 
@@ -136,7 +147,7 @@ Audited inputs:
 | **BOOT-03** | The mentee collects offers for `timer.mentor_offer_window_ms`, then chooses largest advertised GTT, strongest observed RSSI, and lexicographically lowest full mentor identity. BALANCED uses 2 s; FAST_TEST/SOAK use their table values. This total order removes source iteration-order dependence. |
 | **BOOT-04** | The selected mentor creates one immutable, canonical-identity-sorted snapshot of at most `TAVRN_MAX_NODES` entries for the session. Join/leave mutation during paging applies after the snapshot and never changes page indices or total count. |
 | **BOOT-05** | Each nonempty BLE SYNC_DATA page carries exactly one complete snapshot record with full AdvA, 16-bit serial, active/departed TTL bucket, and four-bit mentor hop estimate; an empty snapshot has one explicit empty final page. `lastSeen` is not transferred: receipt time becomes local evidence. Pull index/count and the SYNC_OFFER snapshot total are bounds checked; the mentee stores `min(15, mentor_hop+1)`. |
-| **BOOT-06** | `tavrn_router` owns routed-common incarnation establishment. AODV_ONLY repeats its reboot announcement during `timer.router_reboot_announce_ms`, then self-establishes without GTT/mentorship. FULL_TAVRN continues mentorship; each pull uses `timer.mentor_page_timeout_ms` and at most `timer.mentor_page_attempts`, then clears mentor state and restarts HELLO. With no usable offer by `timer.mentor_self_bootstrap_ms`, FULL self-bootstraps with self only and originates JOIN. |
+| **BOOT-06** | `tavrn_router` owns routed-common incarnation establishment. AODV_ONLY repeats its reboot announcement during `timer.router_reboot_announce_ms`, then self-establishes without GTT/mentorship. FULL_TAVRN continues mentorship; each pull uses `timer.mentor_page_timeout_ms` and at most `timer.mentor_page_attempts`, and every mentorship response/page wait begins only at its matching TX_DONE, then clears mentor state and restarts HELLO. With no usable offer by `timer.mentor_self_bootstrap_ms`, FULL self-bootstraps with self only and originates JOIN. |
 
 ## Bounded post-bootstrap GTT gossip
 
@@ -254,6 +265,8 @@ duration is below the 32-bit half range.
 | Dedicated mesh scheduler poll maximum | `timer.scheduler_poll_max_ms` | scheduler/mesh loop | 2 | 2 | 2 |
 | Radio state wait timeout | `timer.radio_state_timeout_ms` | radio driver/scheduler | 2 | 2 | 2 |
 | Radio TX event bound (derived) | `timer.radio_tx_event_bound_ms` | radio driver/scheduler | 8 | 8 | 8 |
+| Radio TX repeated-event bound (derived) | `timer.radio_tx_repeated_event_bound_ms` | radio driver/scheduler | 14 | 14 | 14 |
+| Radio TX fault-cleanup bound (derived) | `timer.radio_tx_fault_cleanup_bound_ms` | radio driver/scheduler | 18 | 18 | 18 |
 | Legacy relay jitter minimum | `timer.legacy_relay_min_ms` | legacy flood | 20 | 20 | 20 |
 | Legacy relay jitter maximum | `timer.legacy_relay_max_ms` | legacy flood | 120 | 120 | 120 |
 | Legacy dedupe retention | `timer.legacy_dedupe_ms` | legacy flood | 10000 | 10000 | 10000 |
@@ -262,9 +275,9 @@ duration is below the 32-bit half range.
 | HACK response deadline | `timer.link_hack_timeout_ms` | routed link-v2 | 250 | 250 | 250 |
 | HACK maximum attempts (count) | `timer.link_max_attempts` | routed link-v2 | 3 | 3 | 3 |
 | HACK retry backoff | `timer.link_retry_backoff_ms` | routed link-v2 | 0 | 0 | 0 |
-| Eligibility-to-TX_DONE attempt bound (derived) | `timer.link_tx_scheduler_attempt_bound_ms` | scheduler/link-v2 | 30 | 30 | 30 |
+| Conservative eligible-custody attempt bound (derived) | `timer.link_tx_scheduler_attempt_bound_ms` | scheduler/link-v2 | 3048 | 3048 | 3048 |
 | HACK response-window sum (derived) | `timer.link_response_window_sum_ms` | routed link-v2 | 750 | 750 | 750 |
-| No-response wall bound (derived) | `timer.link_no_response_wall_bound_ms` | routed link-v2 | 840 | 840 | 840 |
+| Unconstrained three-attempt wall bound (derived) | `timer.link_no_response_wall_bound_ms` | routed link-v2 | 9894 | 9894 | 9894 |
 | RX candidate defensive resolution | `timer.link_candidate_resolve_ms` | routed link-v2/router | 10 | 10 | 10 |
 | BUSY backoff | `timer.link_busy_backoff_ms` | routed link-v2 | 500 | 500 | 500 |
 | BUSY maximum responses (count) | `timer.link_busy_max_responses` | routed link-v2 | 3 | 3 | 3 |
@@ -336,23 +349,59 @@ for `max(path_discovery, 10000)`, so its actual manifest value is 10000 in all
 three profiles even though the path/RREQ response window is 600/2400 ms. DATA
 dedupe remains live beyond its 10000 ms minimum while custody is held; SYNC
 dedupe remains live through the active session plus the listed post-completion
-retention. Radio TX event bound is
-`(1 pre-disable + 3 selected-channel waits) * radio_state_timeout = 8`.
-Eligibility-to-TX_DONE bound is
-`(scheduler_custody_bypass_max + 1) * (radio_tx_event_bound + scheduler_poll_max) = 30`.
+retention. Radio one-sweep success is
+`(1 pre-disable + 3 selected-channel waits) * radio_state_timeout = 8 ms`.
+The two-sweep repeated-operation success bound is
+`(1 pre-disable + 6 selected-channel waits) * radio_state_timeout = 14 ms`,
+and its fault-cleanup plus RX-restore bound is
+`(1 + 6 + 2) * radio_state_timeout = 18 ms`.
+The conservative eligible-custody attempt bound is
+`(scheduler_custody_bypass_max + 1) * (1000 + two_sweep_success + scheduler_poll_max) = (2 + 1) * (1000 + 14 + 2) = 3048 ms`.
 `timer.scheduler_poll_max_ms` is the maximum from completion of one bounded
 scheduler operation to the start of the next scheduler poll in the dedicated
 mesh loop; it is not `timer.loop_delay_ms`, which remains a generic firmware-loop
 setting and is not used in this service proof. The testbed's preemptible logger
 yield uses only the operation-return gap still unconsumed by healthy-cycle mesh
 work; it is skipped when that work has spent the voluntary-yield budget.
-HACK response-window sum is `3 * 250 = 750`; no-response wall bound is
-`response_window_sum + 3 * link_tx_scheduler_attempt_bound = 840`.
+HACK response-window sum is `3 * 250 = 750`; the unconstrained three-attempt
+wall is `3 * 3048 + 750 = 9894 ms`. `timer.link_data_deadline_ms=5000` is the
+absolute custody terminal bound and may truncate that wall or the third attempt.
+It therefore makes `timer.link_max_attempts=3` a ceiling, not a promised number
+of physical attempts.
 `hack_turnaround_ms` is a validated link-config field set from the existing
 8 ms radio TX-event bound, not a new timer-table row or timer formula input.
-Configure-time validation recomputes every derived row, rejects min/max or
-timeout-order violations, and requires exact timer-key set equality between this
-table, architecture, generated configuration, and artifact manifest.
+The generated timer/configuration implementation emits these canonical formula
+values and validates the derived bounds at configure time. This timer slice does
+not by itself close the separate `BEARER-05`/`LINK-07` implementation gates.
+
+## Approved routed bearer operation and token contract
+
+| ID | Normative requirement |
+| --- | --- |
+| **LINK-07** | Every routed queued item has mandatory wrap-safe release and expiry timestamps. Token zero remains anonymous; a nonzero existing protocol token is the sole tracked discriminator. At the start of routed poll, one bounded queue pass purges due anonymous entries up to physical capacity and increments `tx_expired_anonymous`; it then retires at most one earliest token-bearing item and emits `TX_EXPIRED`, incrementing `tx_expired_tracked`. A tracked item is not retired when no event buffer is supplied. `TX_EXPIRED` carries the queued token, requested channel mask, and requested sweep count; attempted count, completed mask, all per-sweep completion masks, and fault are zero. No queue owner kind/domain, terminal callback, or global owner reset exists. |
+| **BEARER-06** | Wire type determines sweep and reserve policy. Every RREQ and RREP uses two sweeps; DATA and bootstrap HELLO use two; all other current frames use one. Only HACK, RREP, RREP_ACK, SYNC_OFFER, and SYNC_DATA are critical-reserve eligible. RREQ, DATA, bootstrap HELLO, and every other frame are general. Enqueue remains admission; only matching nonzero-mask `TX_DONE` starts sent/response waits. Fixed first-copy response state prevents duplicate postponement. |
+
+| Existing token path | Expiry action |
+| --- | --- |
+| Anonymous controls/relay | Purge and count; no event is fabricated. |
+| Custody DATA | Emit link/router `LOCAL_TX_NOT_ATTEMPTED` with `DEADLINE_EXPIRED`; preserve copied DATA and zero physical evidence. |
+| Metadata-decorated control | Abandon only the stale pending control; uncommitted metadata remains available for a future fresh control. |
+| Targeted control | A local request advances to verification; response/relay work retires. The expired PDU is not retried. |
+| Verification RREQ | Clear the expired attempt, PDU, and token; any later owner tick must create a fresh request after revalidation. |
+| Repair RREQ | Mark the repair episode failed and release its token; expiry does not use the radio-`TX_FAILED` scope fallback. |
+| Other token-bearing work | Surface the exact `TX_EXPIRED` event to its existing producer path; the scheduler invents no ownership metadata. |
+
+The fixed first-copy response keys are mandatory: DATA
+`(origin, data_seq, app_kind, app_source)` fixes one pending HACK; RREQ dedupe
+key fixes RREP release; RREP key fixes RREP_ACK release; and bootstrap HELLO
+incarnation key fixes `pending_offer_due_ms` for SYNC_OFFER. A later redundant
+copy suppresses/reuses the retained work and never recreates or postpones the
+fixed due/status. Each response due uses the 14 ms repeated-operation maximum
+plus its existing protocol guard/jitter and remains below the 32-bit half range.
+
+| ID | Normative requirement |
+| --- | --- |
+| **BUILD-05** | The physical queue is routed-only capacity 4, 8, 16, or 40; LEGACY and LINK compile fixed capacity 4. The production capacity is deliberately unselected until acceptance, and no report may promote the configuration default as the selection. Before capacity choice, capacity-40 target evidence must measure full EDF scan, forty-anonymous-entry one-pass expiry purge, one-token-event-per-poll draining, full budget rings, and exact-token cancellation over at least 10,000 iterations; maximum scheduler poll duration must be at most 2 ms or all dependent formulas are regenerated. The reproducible offered load is five nodes with one root and one benchmark wearable, 2 Hz heartbeat plus one deterministic incident each 60 s, three 30-minute runs for each viable capacity in one-sweep and selective-redundant modes. Select the smallest capacity with zero overflow, no silent tracked expiry, useful typed expiry at most 1%, incident delivery at least 95%, no delivery/retry regression, and poll/stack limits; ties choose lower BSS. |
 
 | ID | Normative requirement |
 | --- | --- |
@@ -416,7 +465,7 @@ observable limits without revising this profile.
 | --- | ---: | --- |
 | Raw AdvData / routed custom PDU | 31 / 24 bytes | Reject before driver truncation. |
 | Public DATA application bytes | 10 bytes | SID16 encoder admits at most 7; SID8 opaque admits at most 10; patient kind `01` requires exactly 7. |
-| Scheduler physical TX queue | 4 items | Strict-priority admission; return full or the synchronously evicted lower-priority token. |
+| Scheduler physical TX queue | routed 4/8/16/40; LEGACY/LINK 4 | Routed selection is priority-banded EDF under `BEARER-05`; return full or the synchronously evicted lower-priority token. Production routed capacity remains unselected pending `BUILD-05`. |
 | Routed link custody TX | 4 DATA | `SEND_NO_SLOT`; caller retains input. |
 | Link accepted/duplicate cache | 16 keys | Purge expired, then deterministic oldest; never duplicate-deliver. |
 | AODV routes | 16 destinations | Purge expired/invalid; reject a worse/new route rather than evict active fresher state. |

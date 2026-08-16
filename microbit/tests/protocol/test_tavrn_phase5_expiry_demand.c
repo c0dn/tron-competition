@@ -5324,6 +5324,9 @@ static int test_maint_04_real_owner_contract(void)
             copied.priority = BLE_MESH_TX_PRIORITY_DATA;
             copied.service_class = BLE_MESH_TX_SERVICE_BEST_EFFORT;
             copied.not_before_ms = now_ms;
+            copied.expiry_ms = now_ms + 10000u;
+            copied.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
+            copied.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
             copied.adv_data[0] = (uint8_t)subject_sid8.value;
             ok &= ble_mesh_scheduler_enqueue_ex(&fixture.scheduler, &copied).status ==
                 BLE_MESH_SCHED_ENQUEUE_OK;

@@ -288,6 +288,7 @@ static unsigned int g_snapshot_calls;
 static unsigned int g_poll_calls;
 static unsigned int g_try_listen_once_calls;
 static unsigned int g_try_advertise_calls;
+static unsigned int g_try_advertise_sweeps_calls;
 static unsigned int g_try_snapshot_calls;
 static UINT g_last_listen_channel;
 static UINT g_last_adv_mask;
@@ -377,6 +378,7 @@ static void reset_mock_radio(void)
     g_poll_calls = 0u;
     g_try_listen_once_calls = 0u;
     g_try_advertise_calls = 0u;
+    g_try_advertise_sweeps_calls = 0u;
     g_try_snapshot_calls = 0u;
     g_last_listen_channel = 0u;
     g_last_adv_mask = 0u;
@@ -538,24 +540,23 @@ ble_radio_op_result_t ble_radio_try_listen_once(UINT channel, UINT state_timeout
     return BLE_RADIO_OP_OK;
 }
 
-ble_radio_tx_result_t ble_radio_try_advertise_channels(
+static ble_radio_tx_result_t mock_try_advertise_sweeps(
     const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
-    UINT state_timeout_ms)
+    uint8_t sweep_count, UINT state_timeout_ms)
 {
-    ble_radio_tx_result_t result;
+    ble_radio_tx_result_t result = { 0 };
+    uint8_t sweep_index;
 
-    result.requested_channel_mask = (uint8_t)channel_mask;
-    result.completed_channel_mask = 0u;
     result.fault = BLE_RADIO_OP_INVALID_ARGUMENT;
     if (state_timeout_ms == 0u || addr6 == NULL ||
         (adv == NULL && adv_len != 0u) || adv_len > BLE_ADV_MAX_DATA ||
-        channel_mask == 0u || (channel_mask & ~BLE_RADIO_ADV_CH_ALL) != 0u) {
+        channel_mask == 0u || (channel_mask & ~BLE_RADIO_ADV_CH_ALL) != 0u ||
+        sweep_count == 0u || sweep_count > BLE_RADIO_MAX_ADV_SWEEPS) {
         return result;
     }
 
     record_op('A');
     g_advertise_calls++;
-    g_try_advertise_calls++;
     g_radio_listening = 0;
     g_radio_listening_once = 0;
     g_last_adv_mask = channel_mask;
@@ -566,10 +567,37 @@ ble_radio_tx_result_t ble_radio_try_advertise_channels(
     if (adv != NULL && adv_len > 0u) {
         memcpy(g_last_adv_data, adv, adv_len);
     }
+    result.requested_channel_mask = (uint8_t)channel_mask;
+    result.requested_sweep_count = sweep_count;
+    result.attempted_sweep_count = g_tx_fault == BLE_RADIO_OP_OK ?
+        sweep_count : BLE_MESH_TX_SWEEP_COUNT_ONE;
     result.completed_channel_mask =
         (uint8_t)(g_tx_completed_channel_mask & channel_mask);
+    for (sweep_index = 0u; sweep_index < result.attempted_sweep_count;
+         sweep_index++) {
+        result.completed_channel_masks[sweep_index] =
+            result.completed_channel_mask;
+    }
     result.fault = g_tx_fault;
     return result;
+}
+
+ble_radio_tx_result_t ble_radio_try_advertise_sweeps(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    uint8_t sweep_count, UINT state_timeout_ms)
+{
+    g_try_advertise_sweeps_calls++;
+    return mock_try_advertise_sweeps(adv, adv_len, addr6, channel_mask,
+                                     sweep_count, state_timeout_ms);
+}
+
+ble_radio_tx_result_t ble_radio_try_advertise_channels(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    UINT state_timeout_ms)
+{
+    g_try_advertise_calls++;
+    return mock_try_advertise_sweeps(adv, adv_len, addr6, channel_mask, 1u,
+                                     state_timeout_ms);
 }
 
 ble_radio_op_result_t ble_radio_try_poll_snapshot(

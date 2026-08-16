@@ -27,4 +27,7 @@ target_include_directories(ble_link_v2_testbed PRIVATE
 # headers also use size_t, so make the kernel definition visible before the
 # toolchain stddef wrapper for every harness translation unit.
 target_compile_definitions(ble_link_v2_testbed PRIVATE _SIZE_T_DEFINED _SIZE_T_DECLARED)
-target_compile_options(ble_link_v2_testbed PRIVATE -include tk/tkernel.h)
+target_compile_options(ble_link_v2_testbed PRIVATE
+  "SHELL:-include ${TRON_BLE_LINK_GENERATED_DIR}/tron_build_config.h"
+)
+target_compile_options(ble_link_v2_testbed PRIVATE "SHELL:-include tk/tkernel.h")
