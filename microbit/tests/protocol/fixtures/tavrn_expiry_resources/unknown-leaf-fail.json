@@ -1,0 +1,17 @@
+{
+  "root": "routed_mesh_task",
+  "edges": [
+    {"from": "routed_mesh_task", "to": "kernel_wrapper", "kind": "call", "when": "always"}
+  ],
+  "graph": {
+    "routed_mesh_task": ["kernel_wrapper"],
+    "kernel_wrapper": ["unknown_prebuilt_leaf"],
+    "unknown_prebuilt_leaf": []
+  },
+  "frames": [
+    {"source": "mesh.c", "function": "routed_mesh_task", "bytes": 16},
+    {"source": "kernel.c", "function": "kernel_wrapper", "bytes": 24}
+  ],
+  "declared_leaves": [],
+  "expected_failure": "stack"
+}

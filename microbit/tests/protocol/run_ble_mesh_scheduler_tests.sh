@@ -16,6 +16,7 @@ mkdir -p "$BUILD_DIR"
   -DBLE_RADIO_HOST_TEST \
   -I"$MICROBIT_DIR/app/protocol" \
   -I"$MICROBIT_DIR/app/drivers" \
+  "$MICROBIT_DIR/app/protocol/tron_timer_config.c" \
   "$MICROBIT_DIR/app/protocol/ble_mesh_scheduler.c" \
   "$SCRIPT_DIR/test_ble_mesh_scheduler.c" \
   -o "$BUILD_DIR/test_ble_mesh_scheduler"

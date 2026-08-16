@@ -10,6 +10,8 @@ mtkernel_add_microbit_firmware(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sound.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fusion.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ble_emit.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tx_adapter.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/tron_mesh_packet.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/ble_radio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/imu.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/mic.c
@@ -18,5 +20,6 @@ mtkernel_add_microbit_firmware(
 target_include_directories(wearable_app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/../drivers
+  ${CMAKE_CURRENT_SOURCE_DIR}/../protocol
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../shared   # shared BLE beacon contract (schema.h)
 )

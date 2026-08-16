@@ -1,0 +1,16 @@
+{
+  "map_lines": [
+    "Memory Configuration",
+    "RAM             0x20000000         0x00001000",
+    "vector          0x20000000         0x00000100",
+    ".data           0x20000100         0x00000080",
+    ".bss            0x20000180         0x00000100",
+    ".bss.overlap    0x200001c0         0x00000040"
+  ],
+  "expected": {
+    "data_bytes": 128,
+    "bss_bytes": 256,
+    "allocated_bytes": 640,
+    "unallocated_bytes": 3456
+  }
+}

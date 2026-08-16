@@ -286,10 +286,15 @@ static unsigned int g_idle_calls;
 static unsigned int g_advertise_calls;
 static unsigned int g_snapshot_calls;
 static unsigned int g_poll_calls;
+static unsigned int g_try_listen_once_calls;
+static unsigned int g_try_advertise_calls;
+static unsigned int g_try_snapshot_calls;
 static UINT g_last_listen_channel;
 static UINT g_last_adv_mask;
 static UINT g_last_adv_len;
 static UB g_last_adv_data[BLE_ADV_MAX_DATA];
+static UB g_last_adv_addr[6];
+static int g_last_adv_addr_present;
 static int g_radio_listening;
 static int g_radio_listening_once;
 
@@ -301,6 +306,14 @@ static UINT g_rx_rssi;
 static int g_snapshot_saw_listening;
 static int g_snapshot_saw_one_shot;
 static int g_snapshot_disabled_before_copy;
+static ble_radio_op_result_t g_listen_result;
+static ble_radio_op_result_t g_snapshot_result;
+static ble_radio_op_result_t g_tx_fault;
+static uint8_t g_tx_completed_channel_mask;
+
+static const UB g_local_adva[6] = {
+    0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu,
+};
 
 #define ASSERT_TRUE(expr, msg) \
     do { \
@@ -362,10 +375,15 @@ static void reset_mock_radio(void)
     g_advertise_calls = 0u;
     g_snapshot_calls = 0u;
     g_poll_calls = 0u;
+    g_try_listen_once_calls = 0u;
+    g_try_advertise_calls = 0u;
+    g_try_snapshot_calls = 0u;
     g_last_listen_channel = 0u;
     g_last_adv_mask = 0u;
     g_last_adv_len = 0u;
     memset(g_last_adv_data, 0, sizeof(g_last_adv_data));
+    memset(g_last_adv_addr, 0, sizeof(g_last_adv_addr));
+    g_last_adv_addr_present = 0;
     g_radio_listening = 0;
     g_radio_listening_once = 0;
     g_rx_available = 0;
@@ -376,6 +394,10 @@ static void reset_mock_radio(void)
     g_snapshot_saw_listening = 0;
     g_snapshot_saw_one_shot = 0;
     g_snapshot_disabled_before_copy = 0;
+    g_listen_result = BLE_RADIO_OP_OK;
+    g_snapshot_result = BLE_RADIO_OP_OK;
+    g_tx_fault = BLE_RADIO_OP_OK;
+    g_tx_completed_channel_mask = BLE_RADIO_ADV_CH_ALL;
 }
 
 static void make_adv(UB *adv, UINT adv_len, UB seed)
@@ -498,24 +520,120 @@ int ble_radio_poll_snapshot(UB *buf, UINT *len, UINT *rssi_dbm)
     return 1;
 }
 
+ble_radio_op_result_t ble_radio_try_listen_once(UINT channel, UINT state_timeout_ms)
+{
+    if (state_timeout_ms == 0u) {
+        return BLE_RADIO_OP_INVALID_ARGUMENT;
+    }
+    record_op('L');
+    g_listen_calls++;
+    g_listen_once_calls++;
+    g_try_listen_once_calls++;
+    g_last_listen_channel = channel;
+    if (g_listen_result != BLE_RADIO_OP_OK) {
+        return g_listen_result;
+    }
+    g_radio_listening = 1;
+    g_radio_listening_once = 1;
+    return BLE_RADIO_OP_OK;
+}
+
+ble_radio_tx_result_t ble_radio_try_advertise_channels(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    UINT state_timeout_ms)
+{
+    ble_radio_tx_result_t result;
+
+    result.requested_channel_mask = (uint8_t)channel_mask;
+    result.completed_channel_mask = 0u;
+    result.fault = BLE_RADIO_OP_INVALID_ARGUMENT;
+    if (state_timeout_ms == 0u || addr6 == NULL ||
+        (adv == NULL && adv_len != 0u) || adv_len > BLE_ADV_MAX_DATA ||
+        channel_mask == 0u || (channel_mask & ~BLE_RADIO_ADV_CH_ALL) != 0u) {
+        return result;
+    }
+
+    record_op('A');
+    g_advertise_calls++;
+    g_try_advertise_calls++;
+    g_radio_listening = 0;
+    g_radio_listening_once = 0;
+    g_last_adv_mask = channel_mask;
+    g_last_adv_len = adv_len;
+    memcpy(g_last_adv_addr, addr6, sizeof(g_last_adv_addr));
+    g_last_adv_addr_present = 1;
+    memset(g_last_adv_data, 0, sizeof(g_last_adv_data));
+    if (adv != NULL && adv_len > 0u) {
+        memcpy(g_last_adv_data, adv, adv_len);
+    }
+    result.completed_channel_mask =
+        (uint8_t)(g_tx_completed_channel_mask & channel_mask);
+    result.fault = g_tx_fault;
+    return result;
+}
+
+ble_radio_op_result_t ble_radio_try_poll_snapshot(
+    UB *buf, UINT *len, UINT *rssi_dbm, UINT state_timeout_ms)
+{
+    if (buf == NULL || len == NULL || rssi_dbm == NULL || state_timeout_ms == 0u) {
+        return BLE_RADIO_OP_INVALID_ARGUMENT;
+    }
+
+    record_op('S');
+    g_snapshot_calls++;
+    g_try_snapshot_calls++;
+    if (g_radio_listening) {
+        g_snapshot_saw_listening = 1;
+    }
+    if (g_radio_listening_once) {
+        g_snapshot_saw_one_shot = 1;
+    }
+    if (!g_rx_available) {
+        return BLE_RADIO_OP_NO_EVENT;
+    }
+
+    g_rx_available = 0;
+    g_radio_listening = 0;
+    g_radio_listening_once = 0;
+    g_snapshot_disabled_before_copy = 1;
+    if (g_snapshot_result != BLE_RADIO_OP_OK) {
+        return g_snapshot_result;
+    }
+    if (g_rx_result <= 0) {
+        return BLE_RADIO_OP_CRC_DROP;
+    }
+
+    memcpy(buf, g_rx_pdu, g_rx_pdu_len);
+    *len = g_rx_pdu_len;
+    *rssi_dbm = g_rx_rssi;
+    return BLE_RADIO_OP_OK;
+}
+
+static void init_legacy(ble_mesh_scheduler_t *sched, uint32_t now_ms)
+{
+    ble_mesh_scheduler_init_legacy(sched, now_ms, g_local_adva);
+}
+
 static void test_rx_default_state(void)
 {
     ble_mesh_scheduler_t sched;
     ble_mesh_sched_event_t event;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     ASSERT_EQ_U(0u, sched.rx_started, "init does not claim RX before first poll");
     ASSERT_EQ_U(0u, ble_mesh_scheduler_poll(&sched, 0u, &event), "default poll has no event");
     ASSERT_EQ_U(1u, sched.rx_started, "poll starts passive RX");
     ASSERT_EQ_U(1u, g_listen_calls, "default poll listens once");
     ASSERT_EQ_U(1u, g_listen_once_calls, "default RX uses one-shot listen API");
+    ASSERT_EQ_U(1u, g_try_listen_once_calls, "default RX uses the typed one-shot seam");
     ASSERT_EQ_U(0u, g_continuous_listen_calls, "scheduler does not use continuous listen API");
     ASSERT_EQ_U(37u, g_last_listen_channel, "default RX channel is 37");
     ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_NONE, event.type, "default event is none");
     ASSERT_EQ_U(0u, g_advertise_calls, "default poll does not advertise");
     ASSERT_EQ_U(0u, g_poll_calls, "scheduler uses snapshot API, not unsafe poll");
+    ASSERT_EQ_U(1u, g_try_snapshot_calls, "default poll uses the typed snapshot seam");
 }
 
 static void test_enqueue_tx_disable_and_restore(void)
@@ -523,13 +641,12 @@ static void test_enqueue_tx_disable_and_restore(void)
     ble_mesh_scheduler_t sched;
     ble_mesh_sched_event_t event;
     UB adv[5];
-    int idle_pos;
     int adv_pos;
     int restore_pos;
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x10u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     (void)ble_mesh_scheduler_poll(&sched, 50u, &event);
@@ -542,21 +659,20 @@ static void test_enqueue_tx_disable_and_restore(void)
     clear_ops();
     (void)ble_mesh_scheduler_poll(&sched, 51u, &event);
 
-    idle_pos = op_index('I', 0);
     adv_pos = op_index('A', 0);
     restore_pos = op_index('L', adv_pos + 1);
 
-    ASSERT_TRUE(idle_pos >= 0, "TX poll idles RX before TX");
-    ASSERT_TRUE(adv_pos > idle_pos, "TX advertise happens after idle");
+    ASSERT_TRUE(adv_pos >= 0, "TX poll calls the typed advertise operation");
     ASSERT_TRUE(restore_pos > adv_pos, "RX is restored after TX");
-    ASSERT_EQ_U(1u, g_idle_calls, "one explicit idle call before TX");
+    ASSERT_EQ_U(0u, g_idle_calls, "scheduler does not call compatibility idle before typed TX");
+    ASSERT_EQ_U(1u, g_try_advertise_calls, "one typed advertising event is sent");
     ASSERT_EQ_U(1u, g_advertise_calls, "one advertising event sent");
     ASSERT_EQ_U(0u, g_continuous_listen_calls, "TX restore keeps using scheduler one-shot RX");
     ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, g_last_adv_mask, "TX uses all primary channels by default");
     ASSERT_EQ_U(sizeof(adv), g_last_adv_len, "TX length preserved");
     ASSERT_EQ_U(adv[0], g_last_adv_data[0], "TX payload copied");
     ASSERT_EQ_U(38u, g_last_listen_channel, "TX restores previous RX channel");
-    ASSERT_EQ_U(0u, sched.tx_count, "TX queue drained after one send");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "TX queue drained after one send");
     ASSERT_EQ_U(1u, sched.counters.tx_ok, "tx_ok counter increments");
 }
 
@@ -567,7 +683,7 @@ static void test_tx_restore_hops_when_dwell_expired(void)
     UB adv[1] = { 0x44u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(37u, g_last_listen_channel, "TX expiry test starts on channel 37");
@@ -593,15 +709,16 @@ static void test_queue_full_drop_policy(void)
     unsigned int i;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
-    for (i = 0u; i < BLE_MESH_SCHED_TX_QUEUE_CAPACITY; i++) {
+    for (i = 0u; i < BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY; i++) {
         ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
                                                    BLE_MESH_SCHED_CH_ALL,
                                                    BLE_MESH_SCHED_TX_OWN, 0u),
                     "fill queue with own packet");
     }
-    ASSERT_EQ_U(BLE_MESH_SCHED_TX_QUEUE_CAPACITY, sched.tx_count, "queue reaches capacity");
+    ASSERT_EQ_U(BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY, sched.legacy_tx_count,
+                "queue reaches capacity");
     ASSERT_EQ_U(0u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_OWN, 0u),
@@ -627,9 +744,9 @@ static void test_relay_priority_drop(void)
     unsigned int own_count = 0u;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
-    for (i = 0u; i < BLE_MESH_SCHED_TX_QUEUE_CAPACITY; i++) {
+    for (i = 0u; i < BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY; i++) {
         relay_adv[0] = (UB)(0x20u + i);
         ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, relay_adv, sizeof(relay_adv),
                                                    BLE_MESH_SCHED_CH_ALL,
@@ -641,12 +758,13 @@ static void test_relay_priority_drop(void)
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_OWN, 0u),
                 "own packet replaces oldest relay when queue is full");
-    ASSERT_EQ_U(BLE_MESH_SCHED_TX_QUEUE_CAPACITY, sched.tx_count, "queue remains at capacity");
+    ASSERT_EQ_U(BLE_MESH_SCHED_LEGACY_TX_QUEUE_CAPACITY, sched.legacy_tx_count,
+                "queue remains at capacity");
     ASSERT_EQ_U(1u, sched.counters.queue_drop, "queue_drop records replaced relay");
     ASSERT_EQ_U(1u, sched.counters.relay_drop, "relay_drop records replaced relay");
 
-    for (i = 0u; i < sched.tx_count; i++) {
-        if (sched.tx_queue[i].kind == BLE_MESH_SCHED_TX_OWN) {
+    for (i = 0u; i < sched.legacy_tx_count; i++) {
+        if (sched.legacy_tx_queue[i].kind == BLE_MESH_SCHED_TX_OWN) {
             own_count++;
         }
     }
@@ -665,7 +783,7 @@ static void test_relay_rate_limit(void)
     UB second[1] = { 0x32u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
     ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, first, sizeof(first),
                                                BLE_MESH_SCHED_CH_ALL,
                                                BLE_MESH_SCHED_TX_RELAY, 0u),
@@ -678,18 +796,20 @@ static void test_relay_rate_limit(void)
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(1u, g_advertise_calls, "first relay transmits immediately");
     ASSERT_EQ_U(first[0], g_last_adv_data[0], "first relay payload transmitted");
-    ASSERT_EQ_U(1u, sched.tx_count, "second relay remains queued");
+    ASSERT_EQ_U(1u, sched.legacy_tx_count, "second relay remains queued");
 
     (void)ble_mesh_scheduler_poll(&sched, 100u, &event);
     ASSERT_EQ_U(1u, g_advertise_calls, "second relay is rate-limited at 100 ms");
-    ASSERT_EQ_U(1u, sched.tx_count, "rate-limited relay remains queued");
+    ASSERT_EQ_U(1u, sched.legacy_tx_count, "rate-limited relay remains queued");
     ASSERT_TRUE(sched.counters.relay_rate_limited >= 1u,
                 "relay_rate_limited counter increments");
 
-    (void)ble_mesh_scheduler_poll(&sched, BLE_MESH_SCHED_RELAY_TX_INTERVAL_MS, &event);
+    (void)ble_mesh_scheduler_poll(&sched,
+                                  tron_timer_config.scheduler_relay_spacing_ms,
+                                  &event);
     ASSERT_EQ_U(2u, g_advertise_calls, "second relay transmits after interval");
     ASSERT_EQ_U(second[0], g_last_adv_data[0], "second relay payload transmitted");
-    ASSERT_EQ_U(0u, sched.tx_count, "relay queue drained after rate interval");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "relay queue drained after rate interval");
 }
 
 static void test_channel_dwell_hop(void)
@@ -698,7 +818,7 @@ static void test_channel_dwell_hop(void)
     ble_mesh_sched_event_t event;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(37u, g_last_listen_channel, "initial listen channel 37");
@@ -728,7 +848,7 @@ static void test_repeated_rx_does_not_extend_dwell(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x80u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(50u, sched.hop_at_ms, "initial dwell deadline is 50 ms");
@@ -771,7 +891,7 @@ static void test_due_own_tx_preempts_continuous_rx(void)
     UB tx_adv[1] = { 0xA5u };
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, tx_adv, sizeof(tx_adv),
                                                BLE_MESH_SCHED_CH_ALL,
@@ -784,7 +904,7 @@ static void test_due_own_tx_preempts_continuous_rx(void)
     ASSERT_EQ_U(1u, g_advertise_calls,
                 "due own TX is serviced even when an RX snapshot is ready");
     ASSERT_EQ_U(tx_adv[0], g_last_adv_data[0], "due own payload transmitted");
-    ASSERT_EQ_U(0u, sched.tx_count, "due own queue entry drained");
+    ASSERT_EQ_U(0u, sched.legacy_tx_count, "due own queue entry drained");
 }
 
 static void test_safe_rx_snapshot_ownership(void)
@@ -795,7 +915,7 @@ static void test_safe_rx_snapshot_ownership(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x70u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
     load_rx_adv(adv, sizeof(adv), 61u);
@@ -804,7 +924,8 @@ static void test_safe_rx_snapshot_ownership(void)
     ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 1u, &event), "RX snapshot produces event");
     ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_RX_ADV, event.type, "event type is RX_ADV");
     ASSERT_EQ_U(37u, event.channel, "RX event reports current channel");
-    ASSERT_EQ_U(61u, event.rssi_dbm, "RX event reports RSSI snapshot");
+    ASSERT_EQ_U(61u, event.rssi_magnitude_db,
+                "RX event reports RSSI magnitude snapshot");
     ASSERT_EQ_U(sizeof(adv), event.adv_len, "RX AdvData length copied");
     ASSERT_EQ_U(adv[0], event.adv_data[0], "RX AdvData bytes copied");
     ASSERT_EQ_U(0u, g_poll_calls, "unsafe ble_radio_poll was not used");
@@ -824,7 +945,7 @@ static void test_null_event_consumes_valid_rx_without_error_count(void)
 
     reset_mock_radio();
     make_adv(adv, sizeof(adv), 0x90u);
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, NULL);
     load_rx_adv(adv, sizeof(adv), 64u);
@@ -842,7 +963,7 @@ static void test_null_event_malformed_rx_counts_error(void)
     ble_mesh_scheduler_t sched;
 
     reset_mock_radio();
-    ble_mesh_scheduler_init(&sched, 0u);
+    init_legacy(&sched, 0u);
 
     (void)ble_mesh_scheduler_poll(&sched, 0u, NULL);
     g_rx_pdu[0] = 0x42u;
@@ -860,6 +981,192 @@ static void test_null_event_malformed_rx_counts_error(void)
     ASSERT_EQ_U(1u, g_radio_listening, "RX is restored after malformed NULL-event RX");
 }
 
+static void test_legacy_scheduler_stores_and_transmits_canonical_adva(void)
+{
+    ble_mesh_scheduler_t sched;
+    ble_mesh_sched_event_t event;
+    UB canonical_adva[6] = { 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu };
+    UB expected_adva[6];
+    UB copied_adva[6];
+    UB adv[1] = { 0xa5u };
+
+    reset_mock_radio();
+    memcpy(expected_adva, canonical_adva, sizeof(expected_adva));
+    ble_mesh_scheduler_init_legacy(&sched, 0u, canonical_adva);
+    canonical_adva[0] = 0u;
+
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_copy_local_adva(&sched, copied_adva),
+                "legacy scheduler accepts its canonical AdvA");
+    ASSERT_TRUE(memcmp(copied_adva, expected_adva, sizeof(copied_adva)) == 0,
+                "legacy scheduler retains an AdvA copy rather than the caller pointer");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
+                                                BLE_MESH_SCHED_CH_ALL,
+                                                BLE_MESH_SCHED_TX_OWN, 0u),
+                "canonical AdvA test enqueues TX");
+    (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
+
+    ASSERT_EQ_U(1u, g_last_adv_addr_present,
+                "legacy typed TX receives a non-NULL AdvA");
+    ASSERT_TRUE(memcmp(g_last_adv_addr, expected_adva, sizeof(g_last_adv_addr)) == 0,
+                "legacy typed TX uses the stored canonical AdvA");
+}
+
+static void test_typed_snapshot_crc_drop_restores_rx(void)
+{
+    ble_mesh_scheduler_t sched;
+    ble_mesh_sched_event_t event;
+
+    reset_mock_radio();
+    init_legacy(&sched, 0u);
+    (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
+    g_rx_available = 1;
+    g_snapshot_result = BLE_RADIO_OP_CRC_DROP;
+
+    ASSERT_EQ_U(0u, ble_mesh_scheduler_poll(&sched, 1u, &event),
+                "typed CRC drop produces no legacy RX event");
+    ASSERT_EQ_U(1u, sched.counters.rx_crc_or_empty,
+                "typed CRC drop increments the legacy invalid-RX counter");
+    ASSERT_EQ_U(1u, g_radio_listening,
+                "typed CRC drop restores one-shot RX");
+    ASSERT_EQ_U(2u, g_try_snapshot_calls,
+                "typed snapshot seam is used for no-event and CRC paths");
+}
+
+static void test_typed_tx_completion_accounting_and_fault_diagnostic(void)
+{
+    ble_mesh_scheduler_t sched;
+    ble_mesh_sched_event_t event;
+    UB adv[1] = { 0x5au };
+
+    reset_mock_radio();
+    init_legacy(&sched, 0u);
+    g_tx_completed_channel_mask = BLE_RADIO_ADV_CH37;
+    g_tx_fault = BLE_RADIO_OP_STATE_TIMEOUT;
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
+                                                BLE_MESH_SCHED_CH_ALL,
+                                                BLE_MESH_SCHED_TX_OWN, 0u),
+                "partial typed TX enqueues");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 0u, &event),
+                "partial typed TX emits its current TX event");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_TX_DONE, event.type,
+                "partial typed TX remains TX_DONE after one completed channel");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "legacy TX_DONE uses the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "partial typed TX event reports requested channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH37, event.tx_completed_channel_mask,
+                "partial typed TX event reports completed channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "partial typed TX event retains its timeout");
+    ASSERT_EQ_U(1u, sched.counters.tx_ok,
+                "a completed typed channel counts one physical legacy TX");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 1u, &event),
+                "partial typed TX reports the latched radio fault");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_RADIO_FAULT, event.type,
+                "partial typed TX fault is radio-visible");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "partial typed TX fault retains the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "partial typed TX retains its timeout reason");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "partial typed TX reports requested channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH37, event.tx_completed_channel_mask,
+                "partial typed TX reports completed channels");
+
+    reset_mock_radio();
+    init_legacy(&sched, 0u);
+    g_tx_completed_channel_mask = 0u;
+    g_tx_fault = BLE_RADIO_OP_STATE_TIMEOUT;
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
+                                                BLE_MESH_SCHED_CH_ALL,
+                                                BLE_MESH_SCHED_TX_OWN, 0u),
+                "zero-completion typed TX enqueues");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 0u, &event),
+                "zero-completion typed TX emits its current TX event");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_TX_FAILED, event.type,
+                "zero-completion typed TX emits TX_FAILED");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "legacy TX_FAILED uses the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "zero-completion typed TX event reports requested channels");
+    ASSERT_EQ_U(0u, event.tx_completed_channel_mask,
+                "zero-completion typed TX event reports no completed channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "zero-completion typed TX event retains its timeout");
+    ASSERT_EQ_U(0u, sched.counters.tx_ok,
+                "zero completed typed channels do not count as TX success");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 1u, &event),
+                "zero-completion typed TX reports the latched fault");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_RADIO_FAULT, event.type,
+                "zero-completion typed TX fault is radio-visible");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "zero-completion fault retains the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "zero-completion fault retains its timeout reason");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "zero-completion fault preserves requested channels");
+    ASSERT_EQ_U(0u, event.tx_completed_channel_mask,
+                "zero-completion typed TX diagnostic stays zero");
+
+    reset_mock_radio();
+    init_legacy(&sched, 0u);
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
+                                                BLE_MESH_SCHED_CH_ALL,
+                                                BLE_MESH_SCHED_TX_OWN, 0u),
+                "successful typed TX enqueues");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 0u, &event),
+                "successful typed TX emits TX_DONE");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_TX_DONE, event.type,
+                "successful typed TX event is TX_DONE");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "successful legacy TX uses the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "successful typed TX reports requested channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_completed_channel_mask,
+                "successful typed TX reports completed channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_NONE, event.fault,
+                "successful typed TX reports no fault");
+    ASSERT_EQ_U(1u, sched.counters.tx_ok,
+                "successful typed TX increments the legacy TX counter");
+    ASSERT_EQ_U(0u, ble_mesh_scheduler_poll(&sched, 1u, &event),
+                "successful typed TX does not emit a following fault");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_NONE, event.type,
+                "successful typed TX leaves the scheduler healthy");
+
+    reset_mock_radio();
+    init_legacy(&sched, 0u);
+    (void)ble_mesh_scheduler_poll(&sched, 0u, &event);
+    g_listen_result = BLE_RADIO_OP_STATE_TIMEOUT;
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_enqueue(&sched, adv, sizeof(adv),
+                                                BLE_MESH_SCHED_CH_ALL,
+                                                BLE_MESH_SCHED_TX_OWN, 1u),
+                "restore-failure typed TX enqueues");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 1u, &event),
+                "restore-failure typed TX emits its current TX event");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_TX_DONE, event.type,
+                "restore failure preserves completed TX_DONE");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "restore-failure legacy TX uses the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "restore failure preserves TX requested channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_completed_channel_mask,
+                "restore failure preserves TX completed channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "restore failure is retained on the current TX event");
+    ASSERT_EQ_U(1u, ble_mesh_scheduler_poll(&sched, 2u, &event),
+                "restore failure emits its following radio fault");
+    ASSERT_EQ_U(BLE_MESH_SCHED_EVENT_RADIO_FAULT, event.type,
+                "restore failure is radio-visible");
+    ASSERT_EQ_U(BLE_MESH_TX_TOKEN_NONE, event.tx_token,
+                "restore fault retains the untracked token");
+    ASSERT_EQ_U(BLE_MESH_SCHED_FAULT_RADIO_TIMEOUT, event.fault,
+                "restore fault retains its timeout reason");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_requested_channel_mask,
+                "restore fault preserves TX requested channels");
+    ASSERT_EQ_U(BLE_MESH_SCHED_CH_ALL, event.tx_completed_channel_mask,
+                "restore fault preserves TX completed channels");
+}
+
 int main(void)
 {
     test_rx_default_state();
@@ -874,6 +1181,9 @@ int main(void)
     test_safe_rx_snapshot_ownership();
     test_null_event_consumes_valid_rx_without_error_count();
     test_null_event_malformed_rx_counts_error();
+    test_legacy_scheduler_stores_and_transmits_canonical_adva();
+    test_typed_snapshot_crc_drop_restores_rx();
+    test_typed_tx_completion_accounting_and_fault_diagnostic();
 
     if (g_failures != 0u) {
         printf("ble_mesh_scheduler tests failed: %u\n", g_failures);

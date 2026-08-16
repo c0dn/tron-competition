@@ -7,7 +7,7 @@ source "$(cd "$(dirname "$0")" && pwd)/scripts/common.sh"
 target="${1:-$DEFAULT_TARGET}"
 build_dir="$DEFAULT_BUILD_DIR"
 
-configure_build "$build_dir"
+configure_build "$build_dir" "$target"
 cmake --build "$build_dir" --target "$target" --parallel
 
 printf 'Built target: %s\n' "$target"

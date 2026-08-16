@@ -26,7 +26,22 @@ find_tool() {
 
 configure_build() {
     local build_dir="$1"
-    cmake -S "${REPO_ROOT}" -B "$build_dir" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+    local target="${2:-ble_mesh_node}"
+    local phase1_target="LEGACY"
+    local node_mode="LEGACY_FLOOD"
+    local feature_level=""
+
+    case "$target" in
+        ble_mesh_node|wearable_app) phase1_target="LEGACY" ;;
+        ble_link_v2_testbed) phase1_target="LINK"; node_mode="NOT_APPLICABLE" ;;
+        tavrn_routed_node) phase1_target="ROUTED"; node_mode="TAVRN_ROUTED"; feature_level="AODV_ONLY" ;;
+        *) printf 'Unknown firmware target: %s\n' "$target" >&2; return 2 ;;
+    esac
+    cmake -S "${REPO_ROOT}" -B "$build_dir" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+        -DTRON_PHASE1_TARGET="$phase1_target" \
+        -DTRON_NODE_MODE="$node_mode" \
+        -DTAVRN_FEATURE_LEVEL="$feature_level"
 }
 
 firmware_output_dir() {

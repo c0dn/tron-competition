@@ -22,6 +22,7 @@
 #include "fall.h"
 #include "sound.h"
 #include "fusion.h"
+#include "tx_adapter.h"
 #include "ble_emit.h"
 #include "imu.h"        /* LSM303AGR_WHOAMI */
 
@@ -37,9 +38,16 @@ static struct {
     sound_event_t   sound_evt;      /* pending shout event                */
     UW              fall_peak;      /* peak SVM of the last fall window    */
     UB              sound_level;    /* scaled loudness of the last shout  */
-    incident_state_t incident;      /* current incident to burst-advertise */
-    INT             burst_remaining;/* remaining burst adverts (>0 = burst)*/
+    tx_adapter_t    tx;
+    UW              next_msg_id;
 } g;
+
+/* One device-local id space serves events and heartbeats.  The low 24 bits
+ * reach TM/01; retransmissions retain the id assigned at admission. */
+static UW next_msg_id(void)
+{
+    return g.next_msg_id++;
+}
 
 static void lock(void)   { tk_loc_mtx(g_mtx, TMO_FEVR); }
 static void unlock(void) { tk_unl_mtx(g_mtx); }
@@ -137,8 +145,13 @@ LOCAL void fusion_task(INT stacd, void *exinf)
         }
 
         lock();
-        g.incident = inc;
-        g.burst_remaining = BURST_COUNT;
+        inc.event_id = next_msg_id();
+        inc.seq = (UB)(inc.event_id & 0xFFu);
+        if (!tx_adapter_admit(&g.tx, &inc, now_ms())) {
+            unlock();
+            tm_printf((UB *)"EVENT type=%u dropped\n", inc.event_type);
+            continue;
+        }
         unlock();
 
         tm_printf((UB *)"EVENT type=%u conf=%u svm=%u mic=%u seq=%u\n",
@@ -147,32 +160,31 @@ LOCAL void fusion_task(INT stacd, void *exinf)
     }
 }
 
-/* ---- advertise_task: adaptive cadence, schema-v1 emit ------------------- */
+/* ---- advertise_task: fixed-tick transmit policy ------------------------- */
 LOCAL void advertise_task(INT stacd, void *exinf)
 {
-    UB hb_seq = 0;
-
     while (1) {
         incident_state_t out;
-        BOOL burst;
+        tx_adapter_send_t send;
 
         lock();
-        if (g.burst_remaining > 0) {
-            out = g.incident;
-            g.burst_remaining--;
-            burst = TRUE;
-        } else {
+        send = tx_adapter_next(&g.tx, now_ms(), &out);
+        if (send == TX_ADAPTER_SEND_HEARTBEAT) {
+            UW id = next_msg_id();
+
             out.event_type = MIND_EVT_HEARTBEAT;
             out.confidence = 0;
             out.accel_svm = g.cur_svm;
             out.mic_level = 0;
-            out.seq = hb_seq++;
-            burst = FALSE;
+            out.event_id = id;
+            out.seq = (UB)(id & 0xFFu);
         }
         unlock();
 
-        ble_emit_advertise(&out);
-        tk_dly_tsk(burst ? BURST_INTERVAL_MS : HEARTBEAT_INTERVAL_MS);
+        if (send != TX_ADAPTER_SEND_NONE) {
+            ble_emit_advertise(&out);
+        }
+        tk_dly_tsk(TX_TICK_MS);
     }
 }
 
@@ -213,6 +225,8 @@ EXPORT INT usermain(void)
     fall_init();
     sound_init();
     fusion_init();
+    tx_adapter_init(&g.tx, EVENT_TX_BUDGET_MS, EVENT_TX_INTERVAL_MS,
+                    EVENT_TX_MIN_COUNT, HEARTBEAT_INTERVAL_MS, now_ms());
 
     g_mtx = tk_cre_mtx(&cmtx);
     g_flg = tk_cre_flg(&cflg);

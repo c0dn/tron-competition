@@ -1,0 +1,6 @@
+# Strict TSV fixture: blank lines and comments whose first non-whitespace byte
+# is # are ignored.  Data records have no surrounding whitespace.
+
+   # This indented comment is also ignored.
+board-a	18:42:de:52:4a:dd
+board-b	dc:4b:0a:06:03:f8

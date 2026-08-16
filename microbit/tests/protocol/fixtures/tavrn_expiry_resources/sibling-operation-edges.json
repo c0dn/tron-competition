@@ -1,0 +1,42 @@
+{
+  "root": "routed_mesh_task",
+  "edges": [
+    {"from": "routed_mesh_task", "to": "routed_cycle_run_task", "kind": "call", "when": "always"},
+    {"from": "routed_cycle_run_task", "to": "routed_cycle_run_once", "kind": "call", "when": "always"},
+    {"from": "routed_cycle_run_once", "to": "routed_cycle_operations.router_scheduler_event", "kind": "indirect", "when": "always"},
+    {"from": "routed_cycle_run_once", "to": "routed_cycle_operations.router_tick", "kind": "indirect", "when": "always"},
+    {"from": "routed_cycle_router_tick", "to": "tavrn_full_maintenance_binding_tick", "kind": "call", "when": "binding"}
+  ],
+  "resolvers": {
+    "routed_cycle_operations.router_scheduler_event": "routed_cycle_router_scheduler_event",
+    "routed_cycle_operations.router_tick": "routed_cycle_router_tick"
+  },
+  "graph": {
+    "routed_mesh_task": ["routed_cycle_run_task"],
+    "routed_cycle_run_task": ["routed_cycle_run_once"],
+    "routed_cycle_run_once": [],
+    "routed_cycle_router_scheduler_event": ["scheduler_leaf"],
+    "scheduler_leaf": [],
+    "routed_cycle_router_tick": ["tavrn_full_maintenance_binding_tick"],
+    "tavrn_full_maintenance_binding_tick": ["binding_leaf"],
+    "binding_leaf": []
+  },
+  "frames": [
+    {"source": "cycle.c", "function": "routed_mesh_task", "bytes": 16},
+    {"source": "cycle.c", "function": "routed_cycle_run_task", "bytes": 16},
+    {"source": "cycle.c", "function": "routed_cycle_run_once", "bytes": 32},
+    {"source": "main.c", "function": "routed_cycle_router_scheduler_event", "bytes": 24},
+    {"source": "main.c", "function": "scheduler_leaf", "bytes": 8},
+    {"source": "main.c", "function": "routed_cycle_router_tick", "bytes": 24},
+    {"source": "binding.c", "function": "tavrn_full_maintenance_binding_tick", "bytes": 32},
+    {"source": "binding.c", "function": "binding_leaf", "bytes": 8}
+  ],
+  "expected_path": [
+    "routed_mesh_task",
+    "routed_cycle_run_task",
+    "routed_cycle_run_once",
+    "routed_cycle_router_tick",
+    "tavrn_full_maintenance_binding_tick",
+    "binding_leaf"
+  ]
+}

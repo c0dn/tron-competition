@@ -1,0 +1,13 @@
+{
+  "schema": "tron.tavrn.expiry.required-stack-edges.v2",
+  "root": "routed_logger_task",
+  "edges": [
+    {"from": "routed_logger_task", "to": "log_benchmark_control", "kind": "call", "when": "always"},
+    {"from": "log_benchmark_control", "to": "tm_printf", "kind": "call", "when": "always"}
+  ],
+  "declared_leaves": [
+    {"symbol": "memcmp", "frame_bytes": 8, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memcpy", "frame_bytes": 0, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memset", "frame_bytes": 12, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}}
+  ]
+}

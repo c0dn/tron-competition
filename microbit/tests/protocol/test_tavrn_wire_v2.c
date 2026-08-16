@@ -1,0 +1,755 @@
+#include "tavrn_wire_v2.h"
+#include "ble_radio.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+static unsigned int failures;
+static unsigned int emitted;
+
+static int first_for(const char *requirement)
+{
+    unsigned int bit = requirement[8] == '1' ? 0u : 1u;
+    unsigned int mask = 1u << bit;
+
+    if ((emitted & mask) != 0u) {
+        return 0;
+    }
+    emitted |= mask;
+    return 1;
+}
+
+#define CHECK(requirement, expression) \
+    do { \
+        if (!(expression)) { \
+            if (first_for(requirement)) { \
+                printf("FAIL %s: %s:%d: assertion failed: %s\n", \
+                       (requirement), __FILE__, __LINE__, #expression); \
+            } \
+            failures++; \
+        } \
+    } while (0)
+
+static const uint8_t adva_a[6] = { 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu };
+static const uint8_t adva_b[6] = { 0xdcu, 0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u };
+static const uint8_t adva_c[6] = { 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u };
+
+static const uint8_t data16[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x10u, 0x20u, 0x30u,
+    0xdcu, 0x4bu, 0x18u, 0x42u, 0x11u, 0x22u, 0x34u,
+    0x12u, 0x01u, 0x07u, 0x01u, 0x05u, 0x64u, 0x34u,
+    0x12u, 0x50u, 0x7eu,
+};
+static const uint8_t data8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x10u, 0x80u, 0xf0u,
+    0xdcu, 0x18u, 0x11u, 0x34u, 0x56u, 0x7fu, 0x00u,
+    0x00u, 0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u,
+    0x07u, 0x08u, 0x09u,
+};
+static const uint8_t hack16[] = {
+    0x02u, 0x01u, 0x06u, 0x14u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x11u, 0x00u, 0x18u,
+    0x42u, 0x18u, 0x42u, 0x11u, 0x22u, 0x34u, 0x12u,
+    0x01u, 0x07u, 0x00u,
+};
+static const uint8_t hack8_rejected[] = {
+    0x02u, 0x01u, 0x06u, 0x11u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x11u, 0x80u, 0x18u,
+    0x18u, 0x11u, 0x34u, 0x12u, 0x01u, 0x07u, 0x03u,
+};
+static const uint8_t flood16[] = {
+    0x02u, 0x01u, 0x06u, 0x13u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x12u, 0x00u, 0x40u,
+    0x18u, 0x42u, 0x02u, 0x01u, 0x01u, 0x03u, 0xaau,
+    0xbbu, 0xccu,
+};
+static const uint8_t flood8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x12u, 0x80u, 0xf0u,
+    0x18u, 0x02u, 0x01u, 0x01u, 0x0cu, 0xa0u, 0xa1u,
+    0xa2u, 0xa3u, 0xa4u, 0xa5u, 0xa6u, 0xa7u, 0xa8u,
+    0xa9u, 0xaau, 0xabu,
+};
+static const uint8_t rrep_ack8[] = {
+    0x02u, 0x01u, 0x06u, 0x10u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x09u, 0x80u, 0x11u,
+    0x11u, 0x03u, 0x02u, 0x18u, 0x01u, 0x10u,
+};
+static const uint8_t rreq8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x01u, 0x88u, 0xf0u,
+    0x18u, 0x01u, 0x10u, 0x11u, 0x03u, 0x02u, 0x05u,
+    0x04u, 0x04u, 0xdcu, 0xa1u, 0x11u, 0x50u, 0xaau,
+    0x42u, 0xbbu, 0x32u,
+};
+static const uint8_t rrep8_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x02u, 0xc8u, 0x42u,
+    0xdcu, 0x11u, 0x03u, 0x02u, 0x18u, 0x01u, 0x10u,
+    0x2cu, 0x81u, 0x03u, 0xdcu, 0xa0u, 0x11u, 0x50u,
+    0xaau, 0x41u,
+};
+static const uint8_t rerr16_max[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x00u, 0xf0u,
+    0x18u, 0x42u, 0x01u, 0x00u, 0x03u, 0x11u, 0x22u,
+    0x01u, 0x00u, 0x18u, 0x42u, 0x02u, 0x00u, 0xdcu,
+    0x4bu, 0x03u, 0x00u,
+};
+static const uint8_t rerr8_d1_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x01u, 0x20u, 0x01u, 0x11u, 0x01u, 0x01u,
+    0x04u, 0xdcu, 0xa1u, 0x11u, 0x50u, 0xaau, 0x42u,
+    0xbbu, 0x32u,
+};
+static const uint8_t rerr8_d2_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x02u, 0x20u, 0x02u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0x03u, 0xdcu, 0xa1u, 0x11u,
+    0x50u, 0xaau, 0x42u,
+};
+static const uint8_t rerr8_d3_meta[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x90u, 0xf0u,
+    0x18u, 0x03u, 0x20u, 0x03u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0xbbu, 0x03u, 0x01u, 0x01u,
+    0xdcu, 0xa1u,
+};
+static const uint8_t rerr8_d4[] = {
+    0x02u, 0x01u, 0x06u, 0x1au, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x03u, 0x80u, 0xf0u,
+    0x18u, 0x04u, 0x20u, 0x04u, 0x11u, 0x01u, 0x01u,
+    0xaau, 0x02u, 0x01u, 0xbbu, 0x03u, 0x01u, 0xdcu,
+    0x04u, 0x01u,
+};
+static const uint8_t hello8_verification[] = {
+    0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x04u, 0xb8u, 0x10u,
+    0xdcu, 0xdcu, 0x18u, 0x42u, 0xdeu, 0x52u, 0x4au,
+    0xddu, 0x02u, 0x00u, 0x01u, 0xdcu, 0x01u,
+};
+static const uint8_t hello8_ordinary[] = {
+    0x02u, 0x01u, 0x06u, 0x17u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x04u, 0x80u, 0x10u,
+    0xffu, 0xffu, 0xdcu, 0x4bu, 0x0au, 0x06u, 0x03u,
+    0xf8u, 0x34u, 0x12u, 0x0fu, 0x00u, 0x00u,
+};
+static const uint8_t sync_offer[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x05u, 0x00u, 0x10u,
+    0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x02u, 0x44u,
+    0x33u, 0x01u, 0x00u,
+};
+static const uint8_t sync_pull[] = {
+    0x02u, 0x01u, 0x06u, 0x19u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x06u, 0x00u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x18u, 0x42u,
+    0xdeu, 0x52u, 0x4au, 0xddu, 0x44u, 0x33u, 0x00u,
+    0x01u,
+};
+static const uint8_t sync_data_present[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x07u, 0xc0u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x44u, 0x33u,
+    0x00u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u,
+    0x05u, 0x04u, 0xa2u,
+};
+static const uint8_t sync_data_empty[] = {
+    0x02u, 0x01u, 0x06u, 0x12u, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x07u, 0x40u, 0xdcu,
+    0x4bu, 0x0au, 0x06u, 0x03u, 0xf8u, 0x44u, 0x33u,
+    0x00u,
+};
+static const uint8_t tc_update[] = {
+    0x02u, 0x01u, 0x06u, 0x1bu, 0xffu, 0xffu, 0xffu,
+    0x54u, 0x52u, 0x02u, 0x2au, 0x08u, 0x00u, 0x30u,
+    0x18u, 0x42u, 0xdeu, 0x52u, 0x4au, 0xddu, 0x88u,
+    0x77u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0xc1u,
+    0x00u, 0x34u, 0x12u,
+};
+
+typedef struct conflict_probe {
+    unsigned int direct_calls;
+    unsigned int remote_calls;
+    tavrn_logical_id_t last_direct;
+    tavrn_logical_id_t last_remote;
+    tavrn_adva_t last_adva;
+    int conflict;
+    uint16_t reject_direct_value;
+    uint16_t reject_remote_value;
+} conflict_probe_t;
+
+static int identity_probe(void *context, const tavrn_logical_id_t *logical_id,
+                          const tavrn_adva_t *direct_adva_or_null)
+{
+    conflict_probe_t *probe = (conflict_probe_t *)context;
+
+    if (direct_adva_or_null != NULL) {
+        probe->direct_calls++;
+        probe->last_direct = *logical_id;
+        probe->last_adva = *direct_adva_or_null;
+        return probe->conflict != 0 ||
+            (probe->reject_direct_value != 0u &&
+             logical_id->value == probe->reject_direct_value);
+    } else {
+        probe->remote_calls++;
+        probe->last_remote = *logical_id;
+        return probe->conflict != 0 ||
+            (probe->reject_remote_value != 0u &&
+             logical_id->value == probe->reject_remote_value);
+    }
+}
+
+static tavrn_direct_peer_t make_peer(const uint8_t adva[6],
+                                     tavrn_identity_width_t width)
+{
+    tavrn_direct_peer_t peer;
+
+    memset(&peer, 0, sizeof(peer));
+    peer.logical_id.width = width;
+    peer.logical_id.value = width == TAVRN_IDENTITY_SID8 ? adva[0] :
+        (uint16_t)adva[0] | ((uint16_t)adva[1] << 8);
+    memcpy(peer.adva.bytes, adva, sizeof(peer.adva.bytes));
+    return peer;
+}
+
+static tavrn_codec_config_t make_config(const uint8_t local_adva[6],
+                                        tavrn_identity_width_t width,
+                                        conflict_probe_t *probe)
+{
+    tavrn_codec_config_t config;
+
+    memset(&config, 0, sizeof(config));
+    config.network_id = 0x2au;
+    config.local_peer = make_peer(local_adva, width);
+    config.identity_conflict = probe == NULL ? NULL : identity_probe;
+    config.identity_context = probe;
+    return config;
+}
+
+static int zero_bytes(const void *value, size_t length)
+{
+    const uint8_t *bytes = (const uint8_t *)value;
+    size_t i;
+
+    for (i = 0u; i < length; i++) {
+        if (bytes[i] != 0u) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void assert_data16_fields(const tavrn_decoded_frame_t *frame)
+{
+    CHECK("BEARER-01", frame->type == TAVRN_WIRE_DATA);
+    CHECK("BEARER-01", frame->network_id == 0x2au);
+    CHECK("BEARER-01", memcmp(frame->transmitter.adva.bytes, adva_a, 6u) == 0);
+    CHECK("BEARER-01", frame->transmitter.logical_id.width == TAVRN_IDENTITY_SID16);
+    CHECK("BEARER-01", frame->transmitter.logical_id.value == 0x4218u);
+    CHECK("BEARER-01", frame->detail.data.immediate_receiver.value == 0x4bdcu);
+    CHECK("BEARER-01", frame->detail.data.data.origin.value == 0x4218u);
+    CHECK("BEARER-01", frame->detail.data.data.final_destination.value == 0x2211u);
+    CHECK("BEARER-01", frame->detail.data.data.data_seq == 0x1234u);
+    CHECK("BEARER-01", frame->detail.data.data.ttl == 3u &&
+                         frame->detail.data.data.hops == 0u);
+    CHECK("BEARER-01", frame->detail.data.data.urgent == 1u);
+    CHECK("BEARER-01", frame->detail.data.data.app_kind == 0x01u &&
+                         frame->detail.data.data.app_source == 0x07u);
+    CHECK("BEARER-01", frame->detail.data.data.app_len == 7u);
+    CHECK("BEARER-01", memcmp(frame->detail.data.data.app_bytes,
+                                &data16[24], 7u) == 0);
+}
+
+static void test_bearer_01_wrapper_decode_and_exact_data16(void)
+{
+    tavrn_codec_config_t config = make_config(adva_b, TAVRN_IDENTITY_SID16, NULL);
+    tavrn_decoded_frame_t frame;
+    uint8_t encoded[sizeof(data16)];
+    size_t encoded_len = 0u;
+    uint8_t foreign[sizeof(data16)];
+    uint8_t unsupported[sizeof(data16)];
+    uint8_t legacy[sizeof(data16)];
+
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-01", tavrn_wire_v2_decode(&config, adva_a, data16,
+                                              sizeof(data16), &frame) ==
+                           TAVRN_CODEC_OK);
+    assert_data16_fields(&frame);
+    memset(encoded, 0, sizeof(encoded));
+    CHECK("BEARER-01", tavrn_wire_v2_encode(&config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-01", encoded_len == sizeof(data16));
+    CHECK("BEARER-01", memcmp(encoded, data16, sizeof(data16)) == 0);
+
+    memcpy(foreign, data16, sizeof(foreign));
+    foreign[10] = 0x2bu;
+    CHECK("BEARER-01", tavrn_wire_v2_decode(&config, adva_a, foreign,
+                                              sizeof(foreign), &frame) ==
+                           TAVRN_CODEC_FOREIGN_NETWORK);
+    memcpy(unsupported, data16, sizeof(unsupported));
+    unsupported[11] = 0x7eu;
+    CHECK("BEARER-01", tavrn_wire_v2_decode(&config, adva_a, unsupported,
+                                              sizeof(unsupported), &frame) ==
+                           TAVRN_CODEC_UNSUPPORTED_TYPE);
+    memcpy(legacy, data16, sizeof(legacy));
+    legacy[8] = 0x4du;
+    legacy[9] = 0x01u;
+    CHECK("BEARER-01", tavrn_wire_v2_decode(&config, adva_a, legacy,
+                                              sizeof(legacy), &frame) !=
+                           TAVRN_CODEC_OK);
+}
+
+static void test_bearer_02_exact_modes_callbacks_and_error_outputs(void)
+{
+    conflict_probe_t probe;
+    tavrn_codec_config_t sid8_config;
+    tavrn_codec_config_t sid16_config = make_config(adva_b, TAVRN_IDENTITY_SID16, NULL);
+    tavrn_codec_config_t hack_config = make_config(adva_a, TAVRN_IDENTITY_SID16, NULL);
+    tavrn_codec_config_t rrep_ack_config;
+    tavrn_decoded_frame_t frame;
+    tavrn_decoded_frame_t before;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    uint8_t malformed[sizeof(data8_max)];
+    uint8_t hack[sizeof(hack16)];
+    size_t encoded_len;
+    uint8_t status;
+
+    CHECK("BEARER-02", TAVRN_LINK_CONTROL_PDU_MAX == 24u);
+    CHECK("BEARER-02", BLE_ADV_MAX_DATA == 31u);
+    CHECK("BEARER-02", sizeof(((tavrn_link_data_t *)0)->app_bytes) == 10u);
+
+    memset(&probe, 0, sizeof(probe));
+    sid8_config = make_config(adva_b, TAVRN_IDENTITY_SID8, &probe);
+    memset(&frame, 0, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, data8_max,
+                                              sizeof(data8_max), &frame) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.detail.data.immediate_receiver.width ==
+                           TAVRN_IDENTITY_SID8 &&
+                           frame.detail.data.immediate_receiver.value == 0xdcu);
+    CHECK("BEARER-02", frame.detail.data.data.app_kind == 0x7fu &&
+                           frame.detail.data.data.app_source == 0u &&
+                           frame.detail.data.data.app_len == 10u);
+    CHECK("BEARER-02", memcmp(frame.detail.data.data.app_bytes, &data8_max[21],
+                                10u) == 0);
+    CHECK("BEARER-02", probe.direct_calls == 1u && probe.remote_calls >= 2u);
+    CHECK("BEARER-02", probe.last_direct.width == TAVRN_IDENTITY_SID8 &&
+                           probe.last_direct.value == 0x18u &&
+                           memcmp(probe.last_adva.bytes, adva_a, 6u) == 0);
+    CHECK("BEARER-02", probe.last_remote.width == TAVRN_IDENTITY_SID8 &&
+                           probe.last_remote.value == 0x11u);
+    memset(encoded, 0, sizeof(encoded));
+    encoded_len = 0u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid8_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == sizeof(data8_max) &&
+                           memcmp(encoded, data8_max, sizeof(data8_max)) == 0);
+
+    for (status = TAVRN_HACK_ACCEPTED; status <= TAVRN_HACK_REJECTED; status++) {
+        memcpy(hack, hack16, sizeof(hack));
+        hack[23] = status;
+        CHECK("BEARER-02", tavrn_wire_v2_decode(&hack_config, adva_b, hack,
+                                                  sizeof(hack), &frame) ==
+                               TAVRN_CODEC_OK);
+        CHECK("BEARER-02", frame.type == TAVRN_WIRE_HACK &&
+                               frame.detail.hack.status == (tavrn_hack_status_t)status &&
+                               frame.detail.hack.immediate_receiver.value == 0x4218u &&
+                               frame.detail.hack.data_origin.value == 0x4218u &&
+                               frame.detail.hack.final_destination.value == 0x2211u &&
+                               frame.detail.hack.data_seq == 0x1234u);
+        memset(encoded, 0, sizeof(encoded));
+        encoded_len = 0u;
+        CHECK("BEARER-02", tavrn_wire_v2_encode(&hack_config, &frame, encoded,
+                                                  sizeof(encoded), &encoded_len) ==
+                               TAVRN_CODEC_OK);
+        CHECK("BEARER-02", encoded_len == sizeof(hack) &&
+                               memcmp(encoded, hack, sizeof(hack)) == 0);
+    }
+
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid16_config, adva_a, flood16,
+                                              sizeof(flood16), &frame) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_FLOOD &&
+                           frame.detail.flood.origin.value == 0x4218u &&
+                           frame.detail.flood.flood_seq == 0x0102u &&
+                           frame.detail.flood.ttl == 4u && frame.detail.flood.hops == 0u &&
+                            frame.detail.flood.body_len == 3u &&
+                            memcmp(frame.detail.flood.body, "\xaa\xbb\xcc", 3u) == 0);
+    memset(encoded, 0, sizeof(encoded));
+    encoded_len = 0u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid16_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == sizeof(flood16) &&
+                           memcmp(encoded, flood16, sizeof(flood16)) == 0);
+    rrep_ack_config = make_config(adva_c, TAVRN_IDENTITY_SID8, &probe);
+    probe.conflict = 0;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&rrep_ack_config, adva_b, rrep_ack8,
+                                              sizeof(rrep_ack8), &frame) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_E_RREP_ACK &&
+                           frame.detail.control.type == TAVRN_WIRE_E_RREP_ACK &&
+                           frame.detail.control.pdu_len == 13u &&
+                           memcmp(frame.detail.control.pdu, &rrep_ack8[7], 13u) == 0);
+    memset(encoded, 0, sizeof(encoded));
+    encoded_len = 0u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&rrep_ack_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == sizeof(rrep_ack8) &&
+                           memcmp(encoded, rrep_ack8, sizeof(rrep_ack8)) == 0);
+
+    memcpy(malformed, data8_max, sizeof(malformed));
+    malformed[3] = 0x1au;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, malformed,
+                                              sizeof(malformed), &frame) ==
+                           TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+
+    probe.conflict = 1;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, data8_max,
+                                              sizeof(data8_max), &frame) ==
+                           TAVRN_CODEC_IDENTITY_CONFLICT);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+
+    memset(&frame, 0, sizeof(frame));
+    frame.type = TAVRN_WIRE_DATA;
+    frame.network_id = 0x2au;
+    frame.detail.data.immediate_receiver = make_peer(adva_b, TAVRN_IDENTITY_SID16).logical_id;
+    frame.detail.data.data.origin = make_peer(adva_a, TAVRN_IDENTITY_SID16).logical_id;
+    frame.detail.data.data.final_destination = make_peer(adva_c, TAVRN_IDENTITY_SID16).logical_id;
+    frame.detail.data.data.data_seq = 0x1234u;
+    frame.detail.data.data.ttl = 3u;
+    frame.detail.data.data.urgent = 1u;
+    frame.detail.data.data.app_kind = 0x01u;
+    frame.detail.data.data.app_source = 0x07u;
+    frame.detail.data.data.app_len = 7u;
+    memcpy(frame.detail.data.data.app_bytes, &data16[24], 7u);
+    before = frame;
+    memset(encoded, 0xa5, sizeof(encoded));
+    encoded_len = 0x1234u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid16_config, &frame, encoded,
+                                              30u, &encoded_len) ==
+                           TAVRN_CODEC_OUTPUT_TOO_SMALL);
+    CHECK("BEARER-02", encoded[0] == 0xa5u && encoded_len == 0x1234u &&
+                           memcmp(&frame, &before, sizeof(frame)) == 0);
+
+    frame.detail.data.data.app_kind = 0x7fu;
+    frame.detail.data.data.app_source = 0u;
+    frame.detail.data.data.app_len = 8u;
+    memset(encoded, 0xa5, sizeof(encoded));
+    encoded_len = 0x4321u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid16_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", encoded[0] == 0xa5u && encoded_len == 0x4321u);
+
+    frame.detail.data.data.app_kind = 0x01u;
+    frame.detail.data.data.app_source = 0x07u;
+    frame.detail.data.data.app_len = 6u;
+    memset(encoded, 0xa5, sizeof(encoded));
+    encoded_len = 0x4321u;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid16_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) !=
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded[0] == 0xa5u && encoded_len == 0x4321u);
+
+    frame.detail.data.immediate_receiver = make_peer(adva_b, TAVRN_IDENTITY_SID8).logical_id;
+    frame.detail.data.data.origin = make_peer(adva_a, TAVRN_IDENTITY_SID8).logical_id;
+    frame.detail.data.data.final_destination = make_peer(adva_c, TAVRN_IDENTITY_SID8).logical_id;
+    frame.detail.data.data.data_seq = 0x5634u;
+    frame.detail.data.data.ttl = 15u;
+    frame.detail.data.data.app_kind = 0x01u;
+    frame.detail.data.data.app_source = 0x07u;
+    frame.detail.data.data.app_len = 7u;
+    memcpy(frame.detail.data.data.app_bytes, &data16[24], 7u);
+    memset(encoded, 0, sizeof(encoded));
+    encoded_len = 0u;
+    probe.conflict = 0;
+    CHECK("BEARER-02", tavrn_wire_v2_encode(&sid8_config, &frame, encoded,
+                                              sizeof(encoded), &encoded_len) ==
+                           TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == 28u && encoded[3] == 0x18u &&
+                             encoded[11] == TAVRN_WIRE_DATA && encoded[12] == 0xa0u &&
+                            encoded[19] == 0x01u && encoded[20] == 0x07u &&
+                            memcmp(&encoded[21], &data16[24], 7u) == 0);
+}
+
+static void test_bearer_02_sid8_hack_custody_correlation_identity_exception(void)
+{
+    conflict_probe_t probe;
+    tavrn_codec_config_t sid8_config;
+    tavrn_codec_config_t no_callback_config;
+    tavrn_codec_config_t sid16_config;
+    tavrn_decoded_frame_t frame;
+    uint8_t malformed[sizeof(hack8_rejected)];
+
+    memset(&probe, 0, sizeof(probe));
+    sid8_config = make_config(adva_a, TAVRN_IDENTITY_SID8, &probe);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_HACK &&
+                            frame.detail.hack.immediate_receiver.value == adva_a[0] &&
+                            frame.detail.hack.data_origin.value == adva_a[0] &&
+                            frame.detail.hack.final_destination.value == adva_c[0] &&
+                            frame.detail.hack.data_seq == 0x1234u &&
+                            frame.detail.hack.status == TAVRN_HACK_REJECTED);
+    CHECK("BEARER-02", probe.direct_calls == 1u && probe.remote_calls == 1u &&
+                            probe.last_direct.width == TAVRN_IDENTITY_SID8 &&
+                            probe.last_direct.value == adva_b[0] &&
+                            memcmp(probe.last_adva.bytes, adva_b, TAVRN_ADVA_LEN) == 0 &&
+                            probe.last_remote.width == TAVRN_IDENTITY_SID8 &&
+                            probe.last_remote.value == adva_a[0]);
+
+    no_callback_config = make_config(adva_a, TAVRN_IDENTITY_SID8, NULL);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&no_callback_config, adva_b,
+                                               hack8_rejected, sizeof(hack8_rejected),
+                                               &frame) == TAVRN_CODEC_IDENTITY_CONFLICT);
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&no_callback_config, adva_a,
+                                               sync_offer, sizeof(sync_offer), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            zero_bytes(&frame, sizeof(frame)));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(NULL, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_INVALID_ARGUMENT);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_direct_value = adva_b[0];
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            probe.direct_calls == 1u && probe.remote_calls == 0u);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_remote_value = adva_a[0];
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, hack8_rejected,
+                                               sizeof(hack8_rejected), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT &&
+                            probe.direct_calls == 1u && probe.remote_calls == 1u);
+
+    memset(&probe, 0, sizeof(probe));
+    memcpy(malformed, hack8_rejected, sizeof(malformed));
+    malformed[14] = 0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, malformed,
+                                               sizeof(malformed), &frame) ==
+                            TAVRN_CODEC_MALFORMED_FIELD && probe.direct_calls == 0u &&
+                            probe.remote_calls == 0u);
+    memcpy(malformed, hack8_rejected, sizeof(malformed));
+    malformed[15] = 0xffu;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, malformed,
+                                               sizeof(malformed), &frame) ==
+                            TAVRN_CODEC_MALFORMED_FIELD && probe.direct_calls == 0u &&
+                            probe.remote_calls == 0u);
+
+    memset(&probe, 0, sizeof(probe));
+    probe.reject_remote_value = adva_c[0];
+    sid8_config = make_config(adva_b, TAVRN_IDENTITY_SID8, &probe);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, data8_max,
+                                               sizeof(data8_max), &frame) ==
+                            TAVRN_CODEC_IDENTITY_CONFLICT);
+
+    sid16_config = make_config(adva_a, TAVRN_IDENTITY_SID16, NULL);
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid16_config, adva_b, hack16,
+                                               sizeof(hack16), &frame) == TAVRN_CODEC_OK);
+}
+
+static void check_control_round_trip(const tavrn_codec_config_t *config,
+                                     const uint8_t outer_adva[6],
+                                     const uint8_t *vector, size_t vector_len)
+{
+    tavrn_decoded_frame_t frame;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    uint8_t malformed[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+    tavrn_codec_result_t result;
+
+    memset(&frame, 0, sizeof(frame));
+    result = tavrn_wire_v2_decode(config, outer_adva, vector, vector_len, &frame);
+    CHECK("BEARER-02", result == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.detail.control.type == frame.type &&
+                       frame.detail.control.pdu_len == vector_len - 7u);
+    CHECK("BEARER-02", tavrn_wire_v2_encode(config, &frame, encoded, sizeof(encoded),
+                                               &encoded_len) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == vector_len &&
+                       memcmp(encoded, vector, vector_len) == 0);
+    memcpy(malformed, vector, vector_len);
+    malformed[3]--;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, malformed,
+                                               vector_len, &frame) ==
+                       TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+}
+
+static void check_flood_round_trip(const tavrn_codec_config_t *config,
+                                   const uint8_t outer_adva[6],
+                                   const uint8_t *vector, size_t vector_len)
+{
+    tavrn_decoded_frame_t frame;
+    uint8_t encoded[BLE_ADV_MAX_DATA];
+    uint8_t malformed[BLE_ADV_MAX_DATA];
+    size_t encoded_len = 0u;
+
+    memset(&frame, 0, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, vector, vector_len,
+                                               &frame) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", frame.type == TAVRN_WIRE_FLOOD &&
+                       frame.detail.flood.body_len == 12u);
+    CHECK("BEARER-02", tavrn_wire_v2_encode(config, &frame, encoded, sizeof(encoded),
+                                               &encoded_len) == TAVRN_CODEC_OK);
+    CHECK("BEARER-02", encoded_len == vector_len &&
+                       memcmp(encoded, vector, vector_len) == 0);
+    memcpy(malformed, vector, vector_len);
+    malformed[3]--;
+    memset(&frame, 0xa5, sizeof(frame));
+    CHECK("BEARER-02", tavrn_wire_v2_decode(config, outer_adva, malformed,
+                                               vector_len, &frame) ==
+                       TAVRN_CODEC_MALFORMED_EXACT_LENGTH);
+    CHECK("BEARER-02", zero_bytes(&frame, sizeof(frame)));
+}
+
+static void test_bearer_02_control_budget_shapes_and_hello_q(void)
+{
+    typedef struct control_vector_case {
+        const uint8_t *vector;
+        size_t length;
+        const uint8_t *outer_adva;
+        tavrn_identity_width_t width;
+    } control_vector_case_t;
+    static const control_vector_case_t control_vectors[] = {
+        { rreq8_max, sizeof(rreq8_max), adva_a, TAVRN_IDENTITY_SID8 },
+        { rrep8_max, sizeof(rrep8_max), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr16_max, sizeof(rerr16_max), adva_a, TAVRN_IDENTITY_SID16 },
+        { rerr8_d1_meta, sizeof(rerr8_d1_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d2_meta, sizeof(rerr8_d2_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d3_meta, sizeof(rerr8_d3_meta), adva_a, TAVRN_IDENTITY_SID8 },
+        { rerr8_d4, sizeof(rerr8_d4), adva_a, TAVRN_IDENTITY_SID8 },
+        { rrep_ack8, sizeof(rrep_ack8), adva_b, TAVRN_IDENTITY_SID8 },
+        { hello8_verification, sizeof(hello8_verification), adva_a,
+          TAVRN_IDENTITY_SID8 },
+        { hello8_ordinary, sizeof(hello8_ordinary), adva_b,
+          TAVRN_IDENTITY_SID8 },
+        { sync_offer, sizeof(sync_offer), adva_a, TAVRN_IDENTITY_SID16 },
+        { sync_pull, sizeof(sync_pull), adva_b, TAVRN_IDENTITY_SID16 },
+        { sync_data_present, sizeof(sync_data_present), adva_a,
+          TAVRN_IDENTITY_SID16 },
+        { sync_data_empty, sizeof(sync_data_empty), adva_a,
+          TAVRN_IDENTITY_SID16 },
+        { tc_update, sizeof(tc_update), adva_b, TAVRN_IDENTITY_SID16 },
+    };
+    conflict_probe_t probe;
+    tavrn_codec_config_t sid8_config;
+    tavrn_codec_config_t sid16_config;
+    tavrn_decoded_frame_t frame;
+    uint8_t mutation[sizeof(hello8_verification)];
+    uint8_t invalid_rerr8_d4[sizeof(rerr8_d4)];
+    size_t i;
+
+    memset(&probe, 0, sizeof(probe));
+    sid8_config = make_config(adva_b, TAVRN_IDENTITY_SID8, &probe);
+    sid16_config = make_config(adva_b, TAVRN_IDENTITY_SID16, NULL);
+
+    CHECK("BEARER-02", sizeof(rreq8_max) == BLE_ADV_MAX_DATA &&
+                       sizeof(rrep8_max) == 30u &&
+                       sizeof(rerr16_max) == BLE_ADV_MAX_DATA &&
+                       sizeof(rerr8_d1_meta) == 30u &&
+                       sizeof(rerr8_d2_meta) == BLE_ADV_MAX_DATA &&
+                       sizeof(rerr8_d3_meta) == 30u &&
+                        sizeof(rerr8_d4) == 30u &&
+                        sizeof(hello8_verification) == 27u &&
+                        sizeof(hello8_ordinary) == 27u &&
+                       sizeof(sync_offer) == BLE_ADV_MAX_DATA &&
+                       sizeof(sync_pull) == 29u &&
+                       sizeof(sync_data_present) == BLE_ADV_MAX_DATA &&
+                       sizeof(sync_data_empty) == 22u &&
+                       sizeof(tc_update) == BLE_ADV_MAX_DATA);
+    CHECK("BEARER-02", sizeof(flood8_max) == BLE_ADV_MAX_DATA);
+    check_flood_round_trip(&sid8_config, adva_a, flood8_max, sizeof(flood8_max));
+    for (i = 0u; i < sizeof(control_vectors) / sizeof(control_vectors[0]); i++) {
+        check_control_round_trip(control_vectors[i].width == TAVRN_IDENTITY_SID8 ?
+                                 &sid8_config : &sid16_config,
+                                 control_vectors[i].outer_adva,
+                                 control_vectors[i].vector,
+                                 control_vectors[i].length);
+    }
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[3] = 20u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               24u, &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[24] = 16u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               sizeof(mutation), &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_ordinary, sizeof(mutation));
+    mutation[25] = 1u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_b, mutation,
+                                               sizeof(mutation), &frame) ==
+                             TAVRN_CODEC_MALFORMED_FIELD);
+
+    memcpy(invalid_rerr8_d4, rerr8_d4, sizeof(invalid_rerr8_d4));
+    invalid_rerr8_d4[12] |= 0x10u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a,
+                                               invalid_rerr8_d4,
+                                               sizeof(invalid_rerr8_d4), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FIELD);
+
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0xb0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0x98u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0x38u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FLAGS);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[12] = 0xa8u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                       TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[26] = 0xa0u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                        TAVRN_CODEC_MALFORMED_FIELD);
+    memcpy(mutation, hello8_verification, sizeof(mutation));
+    mutation[25] = 0x18u;
+    CHECK("BEARER-02", tavrn_wire_v2_decode(&sid8_config, adva_a, mutation,
+                                               sizeof(mutation), &frame) ==
+                        TAVRN_CODEC_MALFORMED_FIELD);
+}
+
+int main(void)
+{
+    test_bearer_01_wrapper_decode_and_exact_data16();
+    test_bearer_02_exact_modes_callbacks_and_error_outputs();
+    test_bearer_02_sid8_hack_custody_correlation_identity_exception();
+    test_bearer_02_control_budget_shapes_and_hello_q();
+    if (failures != 0u) {
+        printf("tavrn_wire_v2 RED tests failed: %u assertion(s)\n", failures);
+        return 1;
+    }
+    printf("tavrn_wire_v2 tests passed\n");
+    return 0;
+}

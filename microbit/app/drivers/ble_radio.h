@@ -12,9 +12,10 @@
 #ifndef BLE_RADIO_H
 #define BLE_RADIO_H
 
+#include <stdint.h>
+
 #ifdef BLE_RADIO_HOST_TEST
 #include <stddef.h>
-#include <stdint.h>
 typedef uint8_t UB;
 typedef int INT;
 typedef unsigned int UINT;
@@ -29,6 +30,32 @@ typedef uintptr_t UW;
 #define BLE_RADIO_ADV_CH38  (1u << 1)
 #define BLE_RADIO_ADV_CH39  (1u << 2)
 #define BLE_RADIO_ADV_CH_ALL (BLE_RADIO_ADV_CH37 | BLE_RADIO_ADV_CH38 | BLE_RADIO_ADV_CH39)
+
+typedef enum ble_radio_op_result {
+    BLE_RADIO_OP_OK = 0,
+    BLE_RADIO_OP_NO_EVENT,
+    BLE_RADIO_OP_CRC_DROP,
+    BLE_RADIO_OP_INVALID_ARGUMENT,
+    BLE_RADIO_OP_STATE_TIMEOUT,
+} ble_radio_op_result_t;
+
+typedef struct ble_radio_tx_result {
+    uint8_t requested_channel_mask;
+    uint8_t completed_channel_mask;
+    ble_radio_op_result_t fault;
+} ble_radio_tx_result_t;
+
+/* Bounded mesh-only operations. Legacy declarations below remain unchanged. */
+ble_radio_op_result_t ble_radio_try_init(UINT state_timeout_ms);
+ble_radio_op_result_t ble_radio_try_idle(UINT state_timeout_ms);
+ble_radio_op_result_t ble_radio_try_listen_once(UINT channel,
+                                                UINT state_timeout_ms);
+ble_radio_op_result_t ble_radio_try_poll_snapshot(
+    UB *buf, UINT *len, UINT *rssi_magnitude_db, UINT state_timeout_ms);
+ble_radio_tx_result_t ble_radio_try_advertise_channels(
+    const UB *adv, UINT adv_len, const UB *addr6, UINT channel_mask,
+    UINT state_timeout_ms);
+ble_radio_op_result_t ble_radio_read_default_adva(UB out_adva[6]);
 
 /* Configure the RADIO for BLE 1M advertising. The kernel already starts the
    HFXO crystal the radio needs. Call once at boot. */

@@ -1,0 +1,6 @@
+#include "tron_build_info.h"
+
+const char *tron_build_info_line(void)
+{
+    return "tron_ble profile=@TRON_BUILD_TIMER_PROFILE@ target=@TRON_BUILD_TARGET@ behavior=@TRON_BUILD_BEHAVIOR@ candidate=@TRON_BUILD_CANDIDATE_CONFIGURED@ identity=@TRON_BUILD_IDENTITY@ identity_source=@TRON_BUILD_IDENTITY_SOURCE@ role=@TRON_BUILD_ROLE@";
+}

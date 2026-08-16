@@ -1,18 +1,16 @@
 /*
- * MIND — Wearable BLE Beacon Contract (schema v1)
+ * MIND — Wearable Direct-Ingress Payload Contract (schema v1)
  * TRON Competition 2026 — Multimodal Incident Detection
  *
- * SIDE: Tier A only — micro:bit wearable  --BLE advertising-->  ESP32-C3.
- * This is the SINGLE source of truth for the on-air binary payload.
- * Both the micro:bit firmware (encoder) and the ESP32-C3 observer (decoder)
- * MUST include this header (or an exact copy) so the bytes agree.
+ * The micro:bit wearable carries this seven-byte payload in a TM/01
+ * MIND_EVENT advertisement. TAVRN backbone firmware consumes that envelope
+ * as direct Layer-7 application ingress; it is not legacy-relayed.
  *
  * Status: schema v1, drafted from plans/02-message-schema/PLAN.md.
  *         FREEZE with the team before writing encode/decode against it.
  *
- * Endianness: both targets (nRF52833, ESP32-C3) are little-endian, so the
- *             packed struct below maps byte-for-byte onto the wire. Keep all
- *             multi-byte fields little-endian if you ever hand-pack instead.
+ * Endianness: the packed payload uses little-endian multi-byte fields. Keep
+ *             that ordering when hand-packing on any target.
  */
 
 #ifndef MIND_SCHEMA_H
@@ -24,16 +22,9 @@
 /* Advertising framing                                                 */
 /* ------------------------------------------------------------------ */
 /*
- * The beacon advertises EXACTLY two AD structures, nothing else:
- *   1. Flags            (AD type 0x01)
- *   2. Manufacturer Specific Data (AD type 0xFF) carrying the payload below
- *
- * REMOVED (legacy waste — do NOT include):
- *   - Complete Local Name  ("uTK-sensor")   <-- drop it
- *   - any human-readable / company-name AD structures
- *
- * On-air budget: Flags(3) + MSD[len(1)+type(1)+company(2)+payload(7)=11] = 14 B
- *                Legacy AdvData cap = 31 B  ->  17 B headroom.
+ * The complete advertisement is the TM/01 manufacturer envelope defined by
+ * tron_mesh_packet.h. This header defines only its schema-v1 seven-byte
+ * payload; it does not define the complete AD structure or its byte budget.
  */
 #define MIND_AD_TYPE_FLAGS      0x01
 #define MIND_AD_TYPE_MSD        0xFF   /* Manufacturer Specific Data          */
@@ -58,7 +49,7 @@ enum mind_event_type {
 };
 
 /* ------------------------------------------------------------------ */
-/* Payload — 7 bytes, carried inside the MSD after the company id      */
+/* Payload — 7 bytes, carried verbatim inside TM/01 MIND_EVENT          */
 /* ------------------------------------------------------------------ */
 #if defined(__GNUC__)
 #  define MIND_PACKED __attribute__((packed))
@@ -74,7 +65,7 @@ typedef struct MIND_PACKED {
                              /*       0..8000 @ ±8g, little-endian            */
     uint8_t  mic_level;      /* [5]  scaled loudness 0..255 (shout /          */
                              /*       corroboration); 0 on plain heartbeat    */
-    uint8_t  seq;            /* [6]  monotonic counter, wraps 255->0 (dedup)  */
+    uint8_t  seq;            /* [6]  compatibility low byte of packet_id24    */
 } mind_adv_payload_t;
 
 /* Compile-time guard: payload must be exactly 7 bytes. */
@@ -88,20 +79,20 @@ typedef char mind_payload_size_check[(sizeof(mind_adv_payload_t) == 7) ? 1 : -1]
 #define MIND_PAYLOAD_SIZE 7
 
 /* ------------------------------------------------------------------ */
-/* Identity — carried in the advertising address (AdvA), 0 payload B   */
+/* RF advertiser address                                                   */
 /* ------------------------------------------------------------------ */
 /*
- * The wearable uses a FIXED random-static address (NOT the FICR-derived
- * random address the current firmware uses — that is a bug for identity).
+ * Logical event identity is the stable pair (wearable source, packet_id24)
+ * in the TM/01 envelope. wearable source is 0x0100 | DEVICE_ID; packet_id24
+ * is stable across every copy of one event spray, and payload seq is its low
+ * compatibility byte. The AdvA below remains a fixed random-static RF address
+ * for radio-level filtering.
  *
  *   AdvA = { 0x00, 0x00, 0x00, 0x00, DEVICE_ID, 0xC0 }   // LSB .. MSB
  *                                                 ^^^^  0xC0 = random-static
  *
- * DEVICE_ID is a per-unit uint8 set at flash time. The ESP32-C3 maps
- * AdvA -> human device label via a small static table.
- *
- * ble_radio_advertise() already takes an addr6 arg: pass MIND_ADVA(id),
- * not NULL.
+ * DEVICE_ID is a per-unit uint8 set at flash time. Pass MIND_ADVA(id) to
+ * ble_radio_advertise() rather than NULL.
  */
 #ifndef MIND_DEVICE_ID
 #  define MIND_DEVICE_ID 1   /* override per unit at build time */

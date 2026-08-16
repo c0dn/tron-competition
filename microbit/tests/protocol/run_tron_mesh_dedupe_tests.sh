@@ -17,6 +17,7 @@ cc \
     -Werror \
     -I"${MICROBIT_ROOT}/app/protocol" \
     "${MICROBIT_ROOT}/tests/protocol/test_tron_mesh_dedupe.c" \
+    "${MICROBIT_ROOT}/app/protocol/tron_timer_config.c" \
     "${MICROBIT_ROOT}/app/protocol/tron_mesh_dedupe.c" \
     -o "${BUILD_DIR}/test_tron_mesh_dedupe"
 
