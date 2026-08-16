@@ -15,14 +15,14 @@ set(TRON_BLE_PROFILE_VERSION "TAVRN-BLE-PoC-0.1")
 set(TRON_BLE_TIMER_KEYS "")
 # One generated authority for the routed task allocation.  Resource tooling
 # reads the generated header rather than carrying a second checker constant.
-set(TRON_ROUTED_MESH_TASK_STACK_BYTES 4096)
+set(TRON_ROUTED_MESH_TASK_STACK_BYTES 4864)
 # The lower-priority routed logger has an independent, generated allocation.
 # Fresh benchmark-rooted stack evidence is required before changing this value.
 set(TRON_ROUTED_LOGGER_TASK_STACK_BYTES 1840)
 # Routed startup has a separate initial task.  Keep these profile values as the
 # single build authority; target CMake only consumes them.
 set(TRON_ROUTED_INITIAL_TASK_STACK_BYTES 4096)
-set(TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES 12592)
+set(TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES 13360)
 set(TRON_ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024)
 # The routed scheduler is the only target permitted to vary this fixed storage.
 # Keep the control value as the cache default so every existing configuration is
@@ -37,6 +37,42 @@ if(NOT TRON_ROUTED_TX_QUEUE_CAPACITY STREQUAL "4" AND
   message(FATAL_ERROR
       "TRON_ROUTED_TX_QUEUE_CAPACITY must be exactly 4, 8, 16, or 40")
 endif()
+# Layer-7 uses independent static application capacities.  These are neither
+# derived from nor coupled to corrected TAVRN/GTT capacities.
+set(TRON_MIND_ROOT_CAPACITY 16)
+set(TRON_MIND_CAMPAIGN_CAPACITY 16)
+set(TRON_MIND_ROOT_ACK_CAPACITY 16)
+set(TRON_MIND_EVENT_CAPACITY 16)
+set(TRON_MIND_INGRESS_SEEN_CAPACITY 16)
+set(TRON_MIND_INGRESS_QUEUE_CAPACITY 8)
+set(TRON_MIND_FINAL_INBOX_CAPACITY 8)
+set(TRON_MIND_LOG_CAPACITY 8)
+set(TRON_MIND_UART_RX_RING_CAPACITY 32)
+set(TRON_MIND_COMMAND_MAILBOX_CAPACITY 8)
+set(TRON_MIND_UART_TASK_STACK_BYTES 512)
+set(TRON_MIND_UI_TASK_STACK_BYTES 512)
+set(TRON_MIND_DISPLAY_TASK_STACK_BYTES 512)
+# μT-Kernel ARMv7-M adds DEFAULT_SYS_STKSZ to every task's requested user
+# stack, including TA_USERBUF tasks. Keep the resulting aligned buffers under
+# this generated profile authority.
+set(TRON_MIND_TASK_SYSTEM_STACK_BYTES 128)
+set(TRON_MIND_TASK_STACK_ALIGNMENT_BYTES 8)
+math(EXPR TRON_MIND_UART_TASK_STATIC_BUFFER_BYTES
+     "${TRON_MIND_UART_TASK_STACK_BYTES}+${TRON_MIND_TASK_SYSTEM_STACK_BYTES}")
+math(EXPR TRON_MIND_UI_TASK_STATIC_BUFFER_BYTES
+     "${TRON_MIND_UI_TASK_STACK_BYTES}+${TRON_MIND_TASK_SYSTEM_STACK_BYTES}")
+math(EXPR TRON_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES
+     "${TRON_MIND_DISPLAY_TASK_STACK_BYTES}+${TRON_MIND_TASK_SYSTEM_STACK_BYTES}")
+foreach(_mind_task_buffer IN ITEMS TRON_MIND_UART_TASK_STATIC_BUFFER_BYTES
+                                    TRON_MIND_UI_TASK_STATIC_BUFFER_BYTES
+                                    TRON_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES)
+  math(EXPR _mind_task_buffer_remainder
+       "${${_mind_task_buffer}} % ${TRON_MIND_TASK_STACK_ALIGNMENT_BYTES}")
+  if(NOT _mind_task_buffer_remainder EQUAL 0)
+    message(FATAL_ERROR "${_mind_task_buffer} must retain ${TRON_MIND_TASK_STACK_ALIGNMENT_BYTES}-byte alignment")
+  endif()
+endforeach()
+
 set(TRON_PHASE1_TARGET "LEGACY" CACHE STRING
     "Selected firmware target: LEGACY, LINK, or ROUTED")
 set_property(CACHE TRON_PHASE1_TARGET PROPERTY STRINGS LEGACY LINK ROUTED)
@@ -414,6 +450,12 @@ if(TRON_BENCHMARK_MODE STREQUAL "ON")
     message(FATAL_ERROR "TRON_BENCHMARK_MODE=ON requires TRON_TIMER_PROFILE=BALANCED")
   endif()
 endif()
+if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON" AND
+   TRON_BENCHMARK_MODE STREQUAL "ON")
+  message(FATAL_ERROR
+      "TRON_ENABLE_WEARABLE_INGRESS=ON is incompatible with TRON_BENCHMARK_MODE=ON")
+endif()
+
 # The selected Phase 1 target is the authority for which inputs can have an
 # effect.  CMake configures only that target, and contamination is fatal rather
 # than merely manifested as unused state.
@@ -688,6 +730,40 @@ set(TRON_BLE_ROUTED_FULL_SOURCES
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_mentorship.c"
     "${TRON_BLE_APP_SOURCE_DIR}/protocol/tavrn_smart_ttl.c")
 
+# Direct wearable ingress and the runtime root plane are one production
+# FULL-only Layer-7 closure.  They carry opaque generic DATA only and do not
+# add any source to protocol/tavrn_*.
+if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
+  list(APPEND TRON_BLE_ROUTED_FULL_SOURCE_LABELS
+        "app/mind_application/mind_application_wire.c"
+         "app/mind_application/mind_application_ingress.c"
+         "app/mind_application/mind_event_forwarder.c"
+        "app/mind_application/mind_topology_adapter.c"
+        "app/mind_application/mind_root_plane.c"
+        "app/mind_application/mind_root_coordinator.c"
+        "app/mind_application/mind_root_inbox.c"
+        "app/mind_application/mind_command.c"
+         "app/mind_application/mind_log.c"
+         "app/mind_application/mind_log_formatter.c"
+        "app/mind_application/mind_uart.c"
+        "app/mind_application/mind_audio.c"
+        "app/mind_application/mind_ui.c")
+  list(APPEND TRON_BLE_ROUTED_FULL_SOURCES
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_application_wire.c"
+         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_application_ingress.c"
+         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_event_forwarder.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_topology_adapter.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_root_plane.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_root_coordinator.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_root_inbox.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_command.c"
+         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_log.c"
+         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_log_formatter.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_uart.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_audio.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_ui.c")
+endif()
+
 # Continuous control observability owns its complete source closure.  Normal
 # routed candidates compile neither benchmark state nor benchmark callbacks or
 # strings; display code is likewise selected only for an explicit display mode.
@@ -707,7 +783,8 @@ if(TRON_BENCHMARK_MODE STREQUAL "ON")
          "app/tavrn_routed_node/src/routed_benchmark_full.c")
   endif()
 endif()
-if(TRON_BENCH_IDENTIFY_DISPLAY STREQUAL "ON" OR TRON_BENCHMARK_MODE STREQUAL "ON")
+if(TRON_BENCH_IDENTIFY_DISPLAY STREQUAL "ON" OR TRON_BENCHMARK_MODE STREQUAL "ON" OR
+   TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
   list(APPEND TRON_BLE_ROUTED_SOURCE_LABELS "app/drivers/display.c")
   list(APPEND TRON_BLE_ROUTED_SOURCES
        "${TRON_BLE_APP_SOURCE_DIR}/drivers/display.c")
@@ -925,6 +1002,10 @@ function(tron_ble_configure_phase1_target)
           else()
             set(TRON_BUILD_LOCAL_REPAIR 0)
           endif()
+          if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
+            set(TRON_BUILD_IMPLEMENTED_CAPABILITIES
+                "${TRON_BUILD_IMPLEMENTED_CAPABILITIES},mind-root-plane")
+          endif()
         set(_routed_feature_source_labels ";${TRON_BLE_ROUTED_FULL_SOURCE_LABELS}")
         set(_routed_feature_sources ${TRON_BLE_ROUTED_FULL_SOURCES})
       else()
@@ -1009,6 +1090,27 @@ function(tron_ble_configure_phase1_target)
       "${TRON_ROUTED_LOGGER_TASK_STACK_BYTES}")
   set(TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY
       "${TRON_ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY}")
+  set(TRON_BUILD_MIND_ROOT_CAPACITY "${TRON_MIND_ROOT_CAPACITY}")
+  set(TRON_BUILD_MIND_CAMPAIGN_CAPACITY "${TRON_MIND_CAMPAIGN_CAPACITY}")
+  set(TRON_BUILD_MIND_ROOT_ACK_CAPACITY "${TRON_MIND_ROOT_ACK_CAPACITY}")
+  set(TRON_BUILD_MIND_EVENT_CAPACITY "${TRON_MIND_EVENT_CAPACITY}")
+  set(TRON_BUILD_MIND_INGRESS_SEEN_CAPACITY "${TRON_MIND_INGRESS_SEEN_CAPACITY}")
+  set(TRON_BUILD_MIND_INGRESS_QUEUE_CAPACITY "${TRON_MIND_INGRESS_QUEUE_CAPACITY}")
+  set(TRON_BUILD_MIND_FINAL_INBOX_CAPACITY "${TRON_MIND_FINAL_INBOX_CAPACITY}")
+  set(TRON_BUILD_MIND_LOG_CAPACITY "${TRON_MIND_LOG_CAPACITY}")
+  set(TRON_BUILD_MIND_UART_RX_RING_CAPACITY "${TRON_MIND_UART_RX_RING_CAPACITY}")
+  set(TRON_BUILD_MIND_COMMAND_MAILBOX_CAPACITY "${TRON_MIND_COMMAND_MAILBOX_CAPACITY}")
+  set(TRON_BUILD_MIND_UART_TASK_STACK_BYTES "${TRON_MIND_UART_TASK_STACK_BYTES}")
+  set(TRON_BUILD_MIND_UI_TASK_STACK_BYTES "${TRON_MIND_UI_TASK_STACK_BYTES}")
+  set(TRON_BUILD_MIND_DISPLAY_TASK_STACK_BYTES "${TRON_MIND_DISPLAY_TASK_STACK_BYTES}")
+  set(TRON_BUILD_MIND_TASK_SYSTEM_STACK_BYTES "${TRON_MIND_TASK_SYSTEM_STACK_BYTES}")
+  set(TRON_BUILD_MIND_TASK_STACK_ALIGNMENT_BYTES "${TRON_MIND_TASK_STACK_ALIGNMENT_BYTES}")
+  set(TRON_BUILD_MIND_UART_TASK_STATIC_BUFFER_BYTES
+      "${TRON_MIND_UART_TASK_STATIC_BUFFER_BYTES}")
+  set(TRON_BUILD_MIND_UI_TASK_STATIC_BUFFER_BYTES
+      "${TRON_MIND_UI_TASK_STATIC_BUFFER_BYTES}")
+  set(TRON_BUILD_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES
+      "${TRON_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES}")
   if(TRON_TARGET_KIND STREQUAL "ROUTED")
     set(TRON_BUILD_INITIAL_TASK_STACK_BYTES
         "${TRON_ROUTED_INITIAL_TASK_STACK_BYTES}")
@@ -1111,9 +1213,11 @@ function(tron_ble_configure_phase1_target)
   if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
     set(TRON_BUILD_ENABLE_WEARABLE_INGRESS 1)
     set(TRON_BUILD_WEARABLE_INGRESS_EFFECTIVE "ON")
+    set(TRON_BUILD_ROOT_PLANE_EFFECTIVE "ON")
   else()
     set(TRON_BUILD_ENABLE_WEARABLE_INGRESS 0)
     set(TRON_BUILD_WEARABLE_INGRESS_EFFECTIVE "OFF")
+    set(TRON_BUILD_ROOT_PLANE_EFFECTIVE "OFF")
   endif()
   set(TRON_BUILD_FEATURE_REQUESTED "${TAVRN_FEATURE_LEVEL}")
   if(TRON_BUILD_FEATURE_REQUESTED STREQUAL "")

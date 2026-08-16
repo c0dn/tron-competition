@@ -193,6 +193,22 @@ typedef enum tavrn_router_fault_reason {
     TAVRN_ROUTER_FAULT_CANDIDATE_ROLLBACK_INVALID,
 } tavrn_router_fault_reason_t;
 
+/* Compact first-site evidence for DATA_TERMINAL_HOOK_INVALID.  Known hook
+ * INVALID results that occur before an ownership handoff are recoverable and
+ * therefore never populate this terminal-only field. */
+typedef enum tavrn_router_fault_subreason {
+    TAVRN_ROUTER_FAULT_SUBREASON_NONE = 0,
+    TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_EVENT_INVALID,
+    TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_OWNED_TRANSFER_INVALID,
+    TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_DISPOSITION_UNEXPECTED,
+    TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_SLOT_INVALID,
+    TAVRN_ROUTER_FAULT_SUBREASON_IMMEDIATE_DISPOSITION_UNEXPECTED,
+    TAVRN_ROUTER_FAULT_SUBREASON_BUSY_NON_RETRY,
+    TAVRN_ROUTER_FAULT_SUBREASON_OWNED_CONTRACT_INVALID,
+    TAVRN_ROUTER_FAULT_SUBREASON_OWNED_TRANSFER_INVALID,
+    TAVRN_ROUTER_FAULT_SUBREASON_TRANSFERRED_DISPOSITION_UNEXPECTED,
+} tavrn_router_fault_subreason_t;
+
 typedef struct tavrn_router_delivery_reservation {
     tavrn_direct_peer_t transmitter;
     tavrn_link_data_t data;
@@ -448,6 +464,7 @@ typedef struct tavrn_router {
     tavrn_router_fault_reason_t fault_reason;
     uint8_t retained_action_valid;
     ble_mesh_tx_token_t retained_action_tx_token;
+    uint8_t fault_subreason;
     tavrn_router_incarnation_t incarnation;
     tavrn_router_local_broadcast_snapshot_t local_broadcast;
     tavrn_router_control_interceptor_t control_interceptor;
@@ -685,6 +702,8 @@ tavrn_router_subject_demand_snapshot_t tavrn_router_subject_demand_snapshot(
 tavrn_router_delivery_state_t tavrn_router_delivery_state(
     const tavrn_router_t *router);
 tavrn_router_fault_reason_t tavrn_router_fault_reason(
+    const tavrn_router_t *router);
+tavrn_router_fault_subreason_t tavrn_router_fault_subreason(
     const tavrn_router_t *router);
 tavrn_router_observe_status_t tavrn_router_observe_frame(
     tavrn_router_t *router,

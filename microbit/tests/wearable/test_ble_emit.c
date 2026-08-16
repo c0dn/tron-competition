@@ -11,6 +11,10 @@
 
 static int failures;
 static int checks;
+static UB advertised[BLE_ADV_MAX_DATA];
+static UB advertised_addr[6];
+static UINT advertised_len;
+static UINT advertised_calls;
 
 static void check(int condition, const char *what)
 {
@@ -28,9 +32,10 @@ void ble_radio_init(void)
 
 void ble_radio_advertise(const UB *adv, UINT adv_len, const UB *addr6)
 {
-    (void)adv;
-    (void)adv_len;
-    (void)addr6;
+    advertised_calls++;
+    advertised_len = adv_len;
+    memcpy(advertised, adv, adv_len);
+    memcpy(advertised_addr, addr6, sizeof(advertised_addr));
 }
 
 static void test_tm01_vector_and_repeated_copy(void)
@@ -47,6 +52,7 @@ static void test_tm01_vector_and_repeated_copy(void)
         MIND_SCHEMA_VERSION, MIND_EVT_FALL_AND_SHOUT, 73u, 0x1fu, 0x1au,
         0x7du, 0xefu,
     };
+    static const UB expected_adva[] = MIND_ADVA(DEVICE_ID);
 
     memset(&incident, 0, sizeof(incident));
     incident.event_type = MIND_EVT_FALL_AND_SHOUT;
@@ -54,7 +60,7 @@ static void test_tm01_vector_and_repeated_copy(void)
     incident.accel_svm = 0x1a1fu;
     incident.mic_level = 0x7du;
     incident.event_id = 0x12abcdefu;
-    incident.seq = 0xefu;
+    incident.seq = 0u; /* Encoder must derive schema seq from event_id. */
 
     first_len = ble_emit_pack(&incident, first);
     second_len = ble_emit_pack(&incident, second);
@@ -73,9 +79,19 @@ static void test_tm01_vector_and_repeated_copy(void)
           first[14] == 0x01u,
           "network and wearable source are encoded");
     check(first[15] == 0xefu && first[16] == 0xcdu && first[17] == 0xabu,
-          "packet id is masked to its low 24 bits");
+           "packet id is masked to its low 24 bits");
+    check(first[25] == (UB)(incident.event_id & 0xFFu),
+          "schema seq matches the packet id low byte");
     check(memcmp(&first[19], expected + 19u, MIND_PAYLOAD_SIZE) == 0,
-          "all seven schema bytes are preserved");
+           "all seven schema bytes are preserved");
+
+    ble_emit_advertise(&incident);
+    check(advertised_calls == 1u, "direct-ingress packet advertises once");
+    check(advertised_len == first_len &&
+          memcmp(advertised, first, first_len) == 0,
+          "advertise emits the tested TM/01 packet");
+    check(memcmp(advertised_addr, expected_adva, sizeof(expected_adva)) == 0,
+          "advertise uses the configured wearable AdvA");
 }
 
 int main(void)

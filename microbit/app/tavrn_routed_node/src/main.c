@@ -14,18 +14,31 @@
 #include "ble_mesh_scheduler.h"
 #include "ble_radio.h"
 #include "routed_cycle.h"
+#include "routed_expiry_telemetry.h"
 #include "tavrn_link_v2.h"
 #include "tavrn_router.h"
 #include "tron_build_config.h"
 #include "tron_build_info.h"
 #include "tron_timer_config.h"
 
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+#include "mind_application_ingress.h"
+#include "mind_log.h"
+#include "mind_log_formatter.h"
+#include "mind_phase5_provenance.h"
+#include "mind_root_coordinator.h"
+#include "mind_root_inbox.h"
+#include "mind_uart.h"
+#include "mind_ui.h"
+#endif
+
 #if TRON_BUILD_BENCHMARK_MODE
 #include "routed_benchmark.h"
 #include "routed_benchmark_observer.h"
 #endif
 
-#if TRON_BUILD_BENCHMARK_MODE || TRON_BUILD_BENCH_IDENTIFY_DISPLAY
+#if TRON_BUILD_BENCHMARK_MODE || TRON_BUILD_BENCH_IDENTIFY_DISPLAY || \
+    (TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS)
 #include "display.h"
 #endif
 
@@ -46,8 +59,26 @@
 
 #define ROUTED_DELIVERY_CAPACITY 8u
 #define ROUTED_MESH_TASK_PRIORITY 10u
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS && \
+    !TRON_BUILD_BENCHMARK_MODE && !TRON_BUILD_ENABLE_TEST_HOOKS
+#define ROUTED_VERBOSE_RUNTIME_TELEMETRY 0
+#else
+#define ROUTED_VERBOSE_RUNTIME_TELEMETRY 1
+#endif
+#if ROUTED_VERBOSE_RUNTIME_TELEMETRY
 #define ROUTED_LOGGER_TASK_PRIORITY 11u
+#else
+#define ROUTED_LOGGER_TASK_PRIORITY MIND_UI_TASK_PRIORITY
+#endif
 #define ROUTED_RELEASE_BIT 0x00000001u
+#define ROUTED_LOGGER_PROGRESS_BIT 0x00000002u
+#define ROUTED_LOGGER_REQUEST_BIT 0x00000004u
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+#define ROUTED_RELEASE_WAIT_BITS \
+    (ROUTED_RELEASE_BIT | ROUTED_LOGGER_PROGRESS_BIT)
+#else
+#define ROUTED_RELEASE_WAIT_BITS ROUTED_RELEASE_BIT
+#endif
 #define ROUTED_MESH_TASK_STACK_BYTES TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES
 #define ROUTED_LOGGER_TASK_STACK_BYTES TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES
 #define ROUTED_RNG_BASE 0x4000D000UL
@@ -57,7 +88,6 @@
 #define ROUTED_RNG_VALUE (ROUTED_RNG_BASE + 0x508UL)
 #define ROUTED_BOOT_NONCE_RNG_POLLS 4096u
 #define ROUTED_BOOT_NONCE_RNG_ATTEMPTS 4u
-#define ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY 1u
 
 typedef struct routed_ring {
     uint8_t head;
@@ -104,6 +134,7 @@ typedef struct routed_expiry_sweep_record {
     uint32_t complete_passes;
     uint32_t max_scheduler_gap_ms;
     uint32_t scheduler_fault_count;
+    uint32_t telemetry_dropped_records;
     tavrn_router_fault_reason_t router_fault;
     uint8_t trace_count;
     uint8_t cursor;
@@ -122,9 +153,7 @@ typedef struct routed_expiry_sweep_record {
 
 typedef struct routed_expiry_sweep_queue {
     routed_expiry_sweep_record_t records[ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY];
-    uint8_t head;
-    uint8_t tail;
-    uint8_t count;
+    routed_expiry_telemetry_queue_state_t state;
 } routed_expiry_sweep_queue_t;
 #endif
 
@@ -140,11 +169,13 @@ typedef struct routed_snapshot {
     uint8_t diagnostic_queue_count;
     uint8_t rreq_queue_count;
     uint8_t retry_log_pending;
+    uint8_t expiry_queue_count;
     uint32_t diagnostic_dropped;
     uint32_t diagnostic_evicted_healthy;
     uint32_t diagnostic_dropped_fault;
     uint32_t rreq_dropped;
     uint32_t retry_log_dropped;
+    uint32_t expiry_telemetry_dropped;
     uint32_t phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     tavrn_mentorship_state_snapshot_t mentorship;
@@ -248,7 +279,8 @@ static routed_full_logger_storage_t routed_full_logger_storage;
 static routed_snapshot_t routed_aodv_logger_summary;
 #endif
 static uint32_t routed_phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_UNKNOWN];
-#if !TRON_BUILD_BENCHMARK_MODE
+#if !TRON_BUILD_BENCHMARK_MODE && \
+    !(TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS)
 static uint32_t routed_next_submit_at;
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
@@ -316,9 +348,66 @@ static tavrn_router_delivery_token_t next_delivery_token;
 static tavrn_router_fault_reason_t pending_router_fault;
 static tavrn_router_fault_reason_t logged_router_fault;
 static uint8_t mesh_fault_latched;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static mind_application_ingress_t routed_mind_ingress;
+static mind_root_coordinator_t routed_mind_root_coordinator;
+static mind_root_inbox_t routed_mind_root_inbox;
+static mind_uart_t routed_mind_uart;
+static mind_ui_t routed_mind_ui;
+static mind_log_queue_t routed_mind_log_queue;
+static mind_log_record_t routed_mind_logged_record;
+static mind_root_coordinator_request_t routed_mind_pending_request;
+static aodv_status_t routed_mind_last_submit_status;
+static uint8_t routed_cycle_fault_logged;
+static volatile uint8_t routed_logger_progress_wake_armed;
+/* This is ingress-only application evidence.  It is populated by the sole
+ * mesh owner and becomes immutable before the lower-priority logger observes
+ * its valid bit. */
+static mind_phase5_provenance_snapshot_t routed_mind_phase5_first_invalid;
+#endif
 static ID routed_release_flag_id;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static volatile uint32_t routed_logger_dispatch_epoch;
+#endif
+/* Diagnostic progress remains a distinct successful-dequeue contract. */
 static volatile uint32_t routed_logger_progress_epoch;
 static uint32_t routed_max_scheduler_gap_ms;
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static void routed_logger_publish_dispatch_progress(void)
+{
+    ER dispatch_status = E_CTX;
+
+    if (routed_release_flag_id > 0) {
+        dispatch_status = tk_dis_dsp();
+    }
+    routed_logger_dispatch_epoch++;
+    if (dispatch_status != E_OK) {
+        return;
+    }
+    if (routed_logger_progress_wake_armed != 0u) {
+        routed_logger_progress_wake_armed = 0u;
+        (void)tk_set_flg(routed_release_flag_id, ROUTED_LOGGER_PROGRESS_BIT);
+    }
+    if (ROUTED_VERBOSE_RUNTIME_TELEMETRY == 0) {
+        (void)tk_rot_rdq(MIND_UI_TASK_PRIORITY);
+    }
+    (void)tk_ena_dsp();
+}
+
+/* Only FULL wearable-ingress firmware links with --wrap=tm_snd_dat.  Sending
+ * one byte through the real backend before publishing progress keeps this
+ * bounded and prevents recursive T-monitor use. */
+void __real_tm_snd_dat(const UB *buffer, INT size);
+void __wrap_tm_snd_dat(const UB *buffer, INT size)
+{
+    while (size-- > 0) {
+        __real_tm_snd_dat(buffer, 1);
+        routed_logger_publish_dispatch_progress();
+        buffer++;
+    }
+}
+#endif
 
 static const UB configured_local_adva[6] = TRON_BUILD_LOCAL_ADVA_BYTES;
 static const UB configured_peer_adva[6] = TRON_BUILD_LINK_PEER_ADVA_BYTES;
@@ -468,6 +557,12 @@ static tavrn_router_delivery_status_t router_delivery_reserve(
     if (token_out != NULL) {
         *token_out = TAVRN_ROUTER_DELIVERY_TOKEN_NONE;
     }
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    if (mind_root_inbox_handles(data)) {
+        return mind_root_inbox_reserve(&routed_mind_root_inbox, transmitter, data,
+                                       token_out);
+    }
+#endif
     if (transmitter == NULL || data == NULL || token_out == NULL ||
         !delivery_callback_begin()) {
         return TAVRN_ROUTER_DELIVERY_INVALID;
@@ -499,6 +594,12 @@ static tavrn_router_delivery_status_t router_delivery_commit(
     uint8_t index;
 
     (void)context;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    if (mind_root_inbox_handles(data)) {
+        return mind_root_inbox_commit(&routed_mind_root_inbox, token, transmitter,
+                                      data, delivered_at_ms);
+    }
+#endif
     if (transmitter == NULL || data == NULL || !delivery_callback_begin()) {
         return TAVRN_ROUTER_DELIVERY_INVALID;
     }
@@ -531,6 +632,12 @@ static tavrn_router_delivery_status_t router_delivery_cancel(
 {
     (void)context;
     (void)now;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    if (mind_root_inbox_handles(data)) {
+        return mind_root_inbox_cancel(&routed_mind_root_inbox, token, transmitter,
+                                      data);
+    }
+#endif
     if (transmitter == NULL || data == NULL || !delivery_callback_begin()) {
         return TAVRN_ROUTER_DELIVERY_INVALID;
     }
@@ -564,6 +671,188 @@ static int delivery_pop(routed_delivery_t *delivery)
     queue_guard_end();
     return result;
 }
+
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static mind_root_resolver_status_t mind_root_resolver_status(
+    tavrn_esc_context_status_t status)
+{
+    switch (status) {
+    case TAVRN_ESC_CONTEXT_UNIQUE:
+        return MIND_ROOT_RESOLVER_UNIQUE;
+    case TAVRN_ESC_CONTEXT_UNKNOWN:
+        return MIND_ROOT_RESOLVER_UNKNOWN;
+    case TAVRN_ESC_CONTEXT_COLLIDING:
+        return MIND_ROOT_RESOLVER_COLLIDING;
+    case TAVRN_ESC_CONTEXT_RESERVED:
+        return MIND_ROOT_RESOLVER_RESERVED;
+    default:
+        return MIND_ROOT_RESOLVER_INVALID;
+    }
+}
+
+static int routed_mind_snapshot(void *context, uint32_t now,
+                                routed_cycle_gtt_snapshot_t *snapshot_out)
+{
+    (void)context;
+    return routed_full_telemetry_snapshot_gtt(&routed_gtt, now, snapshot_out) ==
+        ROUTED_FULL_TELEMETRY_OK;
+}
+
+static uint8_t routed_mind_sid8_ready(void *context)
+{
+    tavrn_mentorship_state_snapshot_t mentorship;
+
+    (void)context;
+    memset(&mentorship, 0, sizeof(mentorship));
+    return tavrn_mentorship_state_snapshot(&routed_mentorship, &mentorship) ==
+            TAVRN_MENTORSHIP_OK &&
+        mentorship.state == TAVRN_MENTORSHIP_SID8_ACTIVE &&
+        mentorship.active_width == TAVRN_IDENTITY_SID8;
+}
+
+static mind_root_resolver_status_t routed_mind_resolve_outgoing(
+    void *context, const tavrn_adva_t *canonical, tavrn_logical_id_t *sid8_out)
+{
+    tavrn_esc_context_status_t status;
+
+    (void)context;
+    if (canonical == NULL || sid8_out == NULL) {
+        return MIND_ROOT_RESOLVER_INVALID;
+    }
+    status = tavrn_full_resolve_unique_sid8(&routed_full, canonical, sid8_out);
+    return status == TAVRN_ESC_CONTEXT_UNIQUE && sid8_out->width != TAVRN_IDENTITY_SID8 ?
+        MIND_ROOT_RESOLVER_INVALID : mind_root_resolver_status(status);
+}
+
+static mind_root_resolver_status_t routed_mind_resolve_incoming(
+    void *context, uint8_t sid8, uint32_t now, tavrn_adva_t *canonical_out)
+{
+    tavrn_esc_context_match_t match;
+    tavrn_esc_context_status_t status;
+
+    (void)context;
+    if (canonical_out == NULL) {
+        return MIND_ROOT_RESOLVER_INVALID;
+    }
+    memset(&match, 0, sizeof(match));
+    status = tavrn_esc_resolve_sid8(&routed_gtt, sid8, now, &match);
+    if (status == TAVRN_ESC_CONTEXT_UNIQUE) {
+        *canonical_out = match.identity;
+    }
+    return mind_root_resolver_status(status);
+}
+
+static int routed_mind_command_peek(void *context,
+                                     mind_command_attempt_t *attempt_out)
+{
+    (void)context;
+    return mind_uart_command_peek(&routed_mind_uart, attempt_out);
+}
+
+static int routed_mind_command_consume(void *context)
+{
+    (void)context;
+    return mind_uart_command_consume(&routed_mind_uart);
+}
+
+static int routed_mind_final_peek(void *context, mind_root_inbox_entry_t *entry_out)
+{
+    (void)context;
+    return mind_root_inbox_peek(&routed_mind_root_inbox, entry_out);
+}
+
+static int routed_mind_final_consume(void *context)
+{
+    (void)context;
+    return mind_root_inbox_consume(&routed_mind_root_inbox);
+}
+
+static int routed_mind_final_pin_observer(void *context,
+                                          const tavrn_adva_t *observer)
+{
+    (void)context;
+    return mind_root_inbox_pin_observer(&routed_mind_root_inbox, observer);
+}
+
+static mind_application_ingress_take_status_t routed_mind_ingress_take(
+    void *context, mind_application_ingress_event_t *event_out)
+{
+    (void)context;
+    return mind_application_ingress_take(&routed_mind_ingress, event_out);
+}
+
+static tavrn_router_delivery_status_t routed_mind_final_publish_local(
+    void *context, const mind_application_wire_record_t *record,
+    const tavrn_adva_t *local_observer, uint32_t now)
+{
+    (void)context;
+    return mind_root_inbox_publish_local(&routed_mind_root_inbox, record,
+                                         local_observer, now);
+}
+
+static int routed_mind_log_reserve(void *context, uint8_t count,
+                                   mind_log_reservation_t *reservation_out)
+{
+    (void)context;
+    return mind_log_queue_reserve(&routed_mind_log_queue, count, reservation_out);
+}
+
+static int routed_mind_log_commit(void *context, mind_log_reservation_t *reservation,
+                                  const mind_log_record_t *records)
+{
+    (void)context;
+    return mind_log_queue_commit(&routed_mind_log_queue, reservation, records);
+}
+
+static void routed_mind_log_cancel(void *context, mind_log_reservation_t *reservation)
+{
+    (void)context;
+    mind_log_queue_cancel(reservation);
+}
+
+static void routed_mind_ui_publish(void *context, uint8_t local_active,
+                                   uint8_t active_roots)
+{
+    (void)context;
+    mind_ui_publish(&routed_mind_ui, local_active, active_roots);
+}
+
+static mind_root_coordinator_submit_status_t routed_mind_generic_submit(
+    void *context, const tron_application_data_t *data, uint32_t now)
+{
+    (void)context;
+    routed_mind_last_submit_status =
+        tavrn_mentorship_submit_application(&routed_mentorship, data, now);
+    if (routed_mind_last_submit_status == AODV_STATUS_OK) {
+        return MIND_ROOT_COORDINATOR_SUBMIT_ACCEPTED;
+    }
+    if (routed_mind_last_submit_status == AODV_STATUS_QUEUED) {
+        return MIND_ROOT_COORDINATOR_SUBMIT_QUEUED;
+    }
+    if (routed_mind_last_submit_status == AODV_STATUS_REJOINING) {
+        return MIND_ROOT_COORDINATOR_SUBMIT_NOT_READY;
+    }
+    return routed_mind_last_submit_status == AODV_STATUS_BUSY ?
+        MIND_ROOT_COORDINATOR_SUBMIT_BUSY : MIND_ROOT_COORDINATOR_SUBMIT_INVALID;
+}
+
+static routed_cycle_application_request_t routed_mind_coordinator_prepare_request(
+    uint32_t now)
+{
+    routed_cycle_application_request_t request;
+
+    memset(&request, 0, sizeof(request));
+    if (mind_root_coordinator_prepare(&routed_mind_root_coordinator, now,
+                                      &routed_mind_pending_request)) {
+        request.data = routed_mind_pending_request.data;
+        request.status = ROUTED_CYCLE_APPLICATION_READY;
+    } else {
+        request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
+    }
+    request.prepared_at_ms = now_ms();
+    return request;
+}
+#endif
 
 #if TRON_BUILD_BENCHMARK_MODE
 static void routed_benchmark_increment_saturating(uint32_t *value)
@@ -801,6 +1090,9 @@ static void snapshot(routed_snapshot_t *out)
         out->pending_offer_valid = routed_mentorship.pending_offer_valid;
         out->serving_session_valid = routed_mentorship.serving_session_valid;
         out->page_session_valid = routed_mentorship.page_session_valid;
+        out->expiry_queue_count = routed_expiry_sweep_queue.state.count;
+        out->expiry_telemetry_dropped =
+            routed_expiry_sweep_queue.state.dropped_records;
     }
 #endif
     queue_guard_end();
@@ -875,7 +1167,7 @@ static void log_summary(uint32_t now)
 #endif
 
     snapshot(state);
-    tm_printf((UB *)"routed stats now=%lu submitted=%lu delivered=%lu pending_failed=%lu blacklisted=%lu local_fault=%lu router_fault=%lu scheduler_fault=%lu rx_blocked=%lu router_delivery=%u router_failures=%lu overflow=%lu aodv_backpressure=%lu delivery_q=%u provisional=%u mesh_fault=%u router_fault_reason=%u diag_q=%u diag_dropped=%lu diag_evicted_healthy=%lu diag_dropped_fault=%lu rreq_q=%u rreq_dropped=%lu max_pre_poll_ms=%lu max_scheduler_poll_ms=%lu max_scheduler_event_ms=%lu max_router_tick_ms=%lu max_application_submit_ms=%lu max_dispatch_ms=%lu max_link_service_ms=%lu max_healthy_yield_ms=%lu max_fault_idle_ms=%lu\n",
+    tm_printf((UB *)"routed stats now=%lu submitted=%lu delivered=%lu pending_failed=%lu blacklisted=%lu local_fault=%lu router_fault=%lu scheduler_fault=%lu rx_blocked=%lu router_delivery=%u router_failures=%lu overflow=%lu aodv_backpressure=%lu delivery_q=%u provisional=%u mesh_fault=%u router_fault_reason=%u diag_q=%u diag_dropped=%lu diag_evicted_healthy=%lu diag_dropped_fault=%lu rreq_q=%u rreq_dropped=%lu expiry_q=%u expiry_telemetry_dropped=%lu max_pre_poll_ms=%lu max_scheduler_poll_ms=%lu max_scheduler_event_ms=%lu max_router_tick_ms=%lu max_application_submit_ms=%lu max_dispatch_ms=%lu max_link_service_ms=%lu max_healthy_yield_ms=%lu max_fault_idle_ms=%lu\n",
               (UW)now, (UW)state->routed.submitted, (UW)state->routed.delivered,
               (UW)state->routed.pending_failed, (UW)state->routed.blacklisted,
               (UW)state->routed.local_custody_fault, (UW)state->routed.router_fault,
@@ -887,10 +1179,12 @@ static void log_summary(uint32_t now)
               (UINT)state->delivery_queue_count, (UINT)state->delivery_provisional,
               (UINT)state->mesh_fault_latched, (UINT)state->router_fault_reason,
               (UINT)state->diagnostic_queue_count, (UW)state->diagnostic_dropped,
-              (UW)state->diagnostic_evicted_healthy,
-              (UW)state->diagnostic_dropped_fault, (UINT)state->rreq_queue_count,
-              (UW)state->rreq_dropped,
-              (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_PRE_POLL_BOUND],
+               (UW)state->diagnostic_evicted_healthy,
+               (UW)state->diagnostic_dropped_fault, (UINT)state->rreq_queue_count,
+               (UW)state->rreq_dropped,
+               (UINT)state->expiry_queue_count,
+               (UW)state->expiry_telemetry_dropped,
+               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_PRE_POLL_BOUND],
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_SCHEDULER_POLL],
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_SCHEDULER_EVENT],
               (UW)state->phase_max_elapsed_ms[ROUTED_CYCLE_PHASE_ROUTER_TICK],
@@ -1730,17 +2024,19 @@ static tavrn_router_control_intercept_status_t routed_verification_rrep_receive(
 }
 
 #if !TRON_BUILD_BENCHMARK_MODE
-static int routed_expiry_sweep_enqueue(
+static routed_expiry_sweep_enqueue_status_t routed_expiry_sweep_enqueue(
     uint32_t now, const tavrn_maintenance_expiry_sweep_snapshot_t *sweep)
 {
     routed_expiry_sweep_record_t *record;
+    routed_expiry_sweep_enqueue_status_t status;
 
     if (sweep == NULL || sweep->pass_performed == 0u || !queue_guard_begin()) {
-        return 0;
+        return ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID;
     }
-    if (routed_expiry_sweep_queue.count == ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY) {
+    status = routed_expiry_telemetry_queue_offer(&routed_expiry_sweep_queue.state);
+    if (status != ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED) {
         queue_guard_end();
-        return 0;
+        return status;
     }
     routed_expiry_sweep_passes++;
     if (routed_expiry_sweep_passes == 0u) {
@@ -1752,7 +2048,8 @@ static int routed_expiry_sweep_enqueue(
             routed_expiry_complete_passes = 1u;
         }
     }
-    record = &routed_expiry_sweep_queue.records[routed_expiry_sweep_queue.tail];
+    record = &routed_expiry_sweep_queue.records[
+        routed_expiry_sweep_queue.state.tail];
     memset(record, 0, sizeof(*record));
     record->now_ms = now;
     record->received_evidence_count = sweep->received_evidence_count;
@@ -1760,6 +2057,8 @@ static int routed_expiry_sweep_enqueue(
     record->complete_passes = routed_expiry_complete_passes;
     record->max_scheduler_gap_ms = routed_max_scheduler_gap_ms;
     record->scheduler_fault_count = routed_counters.scheduler_fault;
+    record->telemetry_dropped_records =
+        routed_expiry_sweep_queue.state.dropped_records;
     record->router_fault = tavrn_router_fault_reason(&routed_router);
     record->trace_count = sweep->trace_count;
     record->cursor = sweep->next_cursor;
@@ -1774,11 +2073,13 @@ static int routed_expiry_sweep_enqueue(
     record->rreq_control_count = sweep->rreq_control_count;
     record->expiry_tc_control_count = sweep->expiry_tc_control_count;
     record->mesh_fault_latched = mesh_fault_latched;
-    routed_expiry_sweep_queue.tail = (uint8_t)(
-        (routed_expiry_sweep_queue.tail + 1u) % ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY);
-    routed_expiry_sweep_queue.count++;
+    if (!routed_expiry_telemetry_queue_commit_enqueue(
+            &routed_expiry_sweep_queue.state)) {
+        queue_guard_end();
+        return ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID;
+    }
     queue_guard_end();
-    return 1;
+    return ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED;
 }
 
 static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
@@ -1786,16 +2087,153 @@ static int routed_expiry_sweep_dequeue(routed_expiry_sweep_record_t *record_out)
     if (record_out == NULL || !queue_guard_begin()) {
         return 0;
     }
-    if (routed_expiry_sweep_queue.count == 0u) {
+    if (routed_expiry_sweep_queue.state.count == 0u) {
         queue_guard_end();
         return 0;
     }
-    *record_out = routed_expiry_sweep_queue.records[routed_expiry_sweep_queue.head];
-    routed_expiry_sweep_queue.head = (uint8_t)(
-        (routed_expiry_sweep_queue.head + 1u) % ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY);
-    routed_expiry_sweep_queue.count--;
+    *record_out = routed_expiry_sweep_queue.records[
+        routed_expiry_sweep_queue.state.head];
+    record_out->telemetry_dropped_records =
+        routed_expiry_sweep_queue.state.dropped_records;
+    if (!routed_expiry_telemetry_queue_commit_dequeue(
+            &routed_expiry_sweep_queue.state)) {
+        queue_guard_end();
+        return 0;
+    }
     queue_guard_end();
     return 1;
+}
+#endif
+
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+/* The mesh task is the only writer and has a higher priority than the logger.
+ * This ingress-only static capture therefore needs no mesh-stack aggregate;
+ * mind_phase5_provenance_publish() exposes it only after every field below is
+ * complete.  The UART observation itself is read-only and does not service its
+ * ISR ring or either mailbox endpoint. */
+static void routed_phase5_first_invalid_latch(
+    mind_phase5_invalid_branch_t branch, uint32_t now,
+    uint8_t application_present,
+    uint8_t mailbox_take_present,
+    tavrn_full_application_mailbox_status_t mailbox_take_status,
+    uint8_t binding_call_present,
+    tavrn_full_maintenance_binding_status_t binding_call_status,
+    uint8_t repair_call_present,
+    uint8_t repair_binding_status,
+    uint8_t expiry_enqueue_attempted, uint8_t expiry_enqueue_outcome,
+    uint8_t mailbox_publish_present,
+    tavrn_full_application_mailbox_status_t mailbox_publish_status)
+{
+    mind_phase5_provenance_snapshot_t *snapshot =
+        &routed_mind_phase5_first_invalid;
+    const tavrn_router_phase_trace_t *trace =
+        &routed_binding_result_storage.router_trace;
+
+    if (!mind_phase5_provenance_begin(snapshot, branch, now)) {
+        return;
+    }
+    snapshot->application_present = application_present;
+    snapshot->mailbox_take_present = mailbox_take_present;
+    if (mailbox_take_present != 0u) {
+        snapshot->mailbox_take_status = (uint8_t)mailbox_take_status;
+    }
+    snapshot->mailbox_publish_present = mailbox_publish_present;
+    if (mailbox_publish_present != 0u) {
+        snapshot->mailbox_publish_status = (uint8_t)mailbox_publish_status;
+    }
+    snapshot->mailbox_occupancy_present = 1u;
+    snapshot->mailbox_command_pending = routed_application_mailbox.command_pending;
+    snapshot->mailbox_owner_processing = routed_application_mailbox.owner_processing;
+    snapshot->mailbox_result_ready = routed_application_mailbox.result_ready;
+
+    snapshot->binding_call_present = binding_call_present;
+    if (binding_call_present != 0u) {
+        snapshot->binding_call_status = (uint8_t)binding_call_status;
+        snapshot->binding_result_status =
+            (uint8_t)routed_binding_result_storage.status;
+        snapshot->raw_router_status_present = 1u;
+        snapshot->raw_router_status =
+            (uint8_t)routed_binding_result_storage.router_status;
+        snapshot->mentorship_status =
+            (uint8_t)routed_binding_result_storage.mentorship_status;
+        snapshot->broadcast_snapshot_status =
+            (uint8_t)routed_binding_result_storage.broadcast_snapshot_status;
+        snapshot->broadcast_observation_status =
+            (uint8_t)routed_binding_result_storage.broadcast_observation_status;
+        snapshot->activation_status =
+            (uint8_t)routed_binding_result_storage.activation_status;
+        snapshot->targeted_owner_status =
+            (uint8_t)routed_binding_result_storage.targeted_owner_status;
+        snapshot->verification_owner_status =
+            (uint8_t)routed_binding_result_storage.verification_owner_status;
+        snapshot->metadata_owner_status =
+            (uint8_t)routed_binding_result_storage.metadata_owner_status;
+        snapshot->tc_owner_status =
+            (uint8_t)routed_binding_result_storage.tc_owner_status;
+        snapshot->application_result_status =
+            (uint8_t)routed_binding_result_storage.application_result.status;
+        snapshot->application_result_query_status =
+            (uint8_t)routed_binding_result_storage.application_result.query_status;
+        snapshot->post_tick_sweep_status =
+            (uint8_t)routed_binding_result_storage.post_tick.sweep_status;
+        snapshot->post_tick_maintenance_status =
+            (uint8_t)routed_binding_result_storage.post_tick.maintenance_status;
+        snapshot->expiry_sweep_present = 1u;
+        snapshot->expiry_sweep_pass =
+            routed_binding_result_storage.post_tick.sweep.pass_performed;
+    }
+
+    snapshot->repair_call_present = repair_call_present;
+    if (repair_call_present != 0u) {
+        snapshot->repair_binding_status = repair_binding_status;
+#if TRON_BUILD_LOCAL_REPAIR
+        snapshot->repair_action_present = routed_repair_tick_result.action_present;
+        snapshot->repair_action_type =
+            (uint8_t)routed_repair_tick_result.action.type;
+        snapshot->repair_status =
+            (uint8_t)routed_repair_tick_result.repair_status;
+        snapshot->repair_reforward_status =
+            (uint8_t)routed_repair_tick_result.reforward_status;
+        snapshot->repair_terminal_kind =
+            (uint8_t)routed_repair_tick_result.terminal.kind;
+        snapshot->repair_eviction_status =
+            (uint8_t)routed_repair_tick_result.eviction.external_status;
+#endif
+    }
+
+    snapshot->expiry_enqueue_attempted = expiry_enqueue_attempted;
+    if (expiry_enqueue_attempted != 0u) {
+        snapshot->expiry_enqueue_outcome = expiry_enqueue_outcome;
+    }
+#if !TRON_BUILD_BENCHMARK_MODE
+    snapshot->expiry_queue_occupancy_present = 1u;
+    snapshot->expiry_queue_count = routed_expiry_sweep_queue.state.count;
+#endif
+
+    snapshot->tick_trace_present = 1u;
+    snapshot->tick_trace_phase = (uint8_t)trace->phase;
+    snapshot->router_terminal_present = (uint8_t)trace->terminal_fault_present;
+    snapshot->router_terminal_fault = (uint8_t)trace->terminal_fault;
+    if (trace->phase == TAVRN_ROUTER_TRACE_TICK) {
+        snapshot->tick_status = (uint8_t)trace->detail.tick.status;
+        snapshot->tick_link_step_present =
+            (uint8_t)trace->detail.tick.link_step_present;
+        snapshot->tick_link_step_status =
+            (uint8_t)trace->detail.tick.link_step_status;
+        snapshot->tick_link_event_present =
+            (uint8_t)trace->detail.tick.link_event_present;
+        snapshot->tick_link_event_type =
+            (uint8_t)trace->detail.tick.link_event.type;
+    }
+    mind_uart_snapshot(&routed_mind_uart, &snapshot->uart);
+    snapshot->uart_present = 1u;
+    mind_phase5_provenance_publish(snapshot);
+}
+
+static int routed_phase5_first_invalid_log_pending(void)
+{
+    return routed_mind_phase5_first_invalid.valid != 0u &&
+        routed_mind_phase5_first_invalid.logged == 0u;
 }
 #endif
 
@@ -1999,6 +2437,31 @@ static routed_cycle_scheduler_poll_result_t routed_cycle_scheduler_poll(
     return result;
 }
 
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static routed_cycle_scheduler_event_filter_result_t
+routed_cycle_mind_ingress_filter(void *context,
+                                  const ble_mesh_sched_event_t *event,
+                                  uint32_t now)
+{
+    mind_application_ingress_result_t result;
+    routed_cycle_scheduler_event_filter_result_t filter_result;
+
+    (void)context;
+    result = mind_application_ingress_receive(&routed_mind_ingress, event, now);
+    filter_result.completed_at_ms = now_ms();
+    if (result.outcome == MIND_APPLICATION_INGRESS_PASSTHROUGH) {
+        filter_result.status = ROUTED_CYCLE_SCHEDULER_EVENT_PASSTHROUGH;
+        return filter_result;
+    }
+    if (result.outcome == MIND_APPLICATION_INGRESS_INVALID_STATE) {
+        filter_result.status = ROUTED_CYCLE_SCHEDULER_EVENT_FILTER_INVALID;
+        return filter_result;
+    }
+    filter_result.status = ROUTED_CYCLE_SCHEDULER_EVENT_CONSUMED;
+    return filter_result;
+}
+#endif
+
 static void routed_cycle_capture_scheduler_input(
     tavrn_router_phase_trace_t *trace, const ble_mesh_sched_event_t *event)
 {
@@ -2158,10 +2621,29 @@ static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
 #if TRON_BUILD_ROUTED_FULL_TAVRN
     {
         tavrn_router_phase_trace_t *trace = &routed_binding_result_storage.router_trace;
-        tavrn_full_maintenance_binding_status_t binding_status;
-        tavrn_full_application_mailbox_status_t mailbox_status;
+        tavrn_full_maintenance_binding_status_t binding_status =
+            TAVRN_FULL_MAINTENANCE_BINDING_UNAVAILABLE;
+        tavrn_full_application_mailbox_status_t mailbox_status =
+            TAVRN_FULL_APPLICATION_MAILBOX_UNAVAILABLE;
         uint8_t application_present = 0u;
         uint8_t scheduler_return_requested = 0u;
+#if !TRON_BUILD_BENCHMARK_MODE
+        routed_expiry_sweep_enqueue_status_t expiry_enqueue_status =
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID;
+#endif
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        tavrn_full_application_mailbox_status_t mailbox_publish_status =
+            TAVRN_FULL_APPLICATION_MAILBOX_UNAVAILABLE;
+        tavrn_full_application_mailbox_status_t mailbox_take_status =
+            TAVRN_FULL_APPLICATION_MAILBOX_UNAVAILABLE;
+        uint8_t mailbox_take_present = 0u;
+        uint8_t mailbox_publish_present = 0u;
+        uint8_t binding_call_present = 0u;
+        uint8_t repair_call_present = 0u;
+        uint8_t repair_binding_status = MIND_PHASE5_PROVENANCE_STATUS_UNKNOWN;
+        uint8_t expiry_enqueue_attempted = 0u;
+        uint8_t expiry_enqueue_outcome = MIND_PHASE5_PROVENANCE_STATUS_UNKNOWN;
+#endif
 
         memset(&routed_binding_input_storage, 0, sizeof(routed_binding_input_storage));
         memset(&routed_binding_command_storage, 0, sizeof(routed_binding_command_storage));
@@ -2170,82 +2652,201 @@ static tavrn_router_phase_trace_t routed_cycle_router_tick(void *context,
             memset(trace, 0, sizeof(*trace));
             trace->phase = TAVRN_ROUTER_TRACE_TICK;
             trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+            routed_phase5_first_invalid_latch(
+                MIND_PHASE5_INVALID_BRANCH_INITIAL_QUEUE_GUARD, now,
+                application_present, mailbox_take_present, mailbox_take_status,
+                binding_call_present, binding_status, repair_call_present,
+                repair_binding_status, expiry_enqueue_attempted,
+                expiry_enqueue_outcome, mailbox_publish_present, mailbox_publish_status);
+ #endif
         } else if ((mailbox_status = tavrn_full_application_mailbox_owner_take(
                         &routed_application_mailbox, &routed_binding_command_storage)) ==
                        TAVRN_FULL_APPLICATION_MAILBOX_PROCESSING ||
                    mailbox_status == TAVRN_FULL_APPLICATION_MAILBOX_EMPTY) {
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+            mailbox_take_present = 1u;
+            mailbox_take_status = mailbox_status;
+ #endif
             queue_guard_end();
-            if (mailbox_status == TAVRN_FULL_APPLICATION_MAILBOX_PROCESSING) {
-                application_present = 1u;
-                routed_binding_command_storage.now_ms = now;
-                routed_binding_command_storage.query_time_ms = now;
-            }
-            routed_binding_input_storage.router = &routed_router;
-            routed_binding_input_storage.mentorship = &routed_mentorship;
-            routed_binding_input_storage.maintenance = &routed_maintenance;
-            routed_binding_input_storage.application_command = routed_binding_command_storage;
-            routed_binding_input_storage.application_present = application_present;
-            binding_status = tavrn_full_maintenance_binding_tick(
-                routed_binding_input_storage, now, &routed_binding_result_storage);
-            if (binding_status == TAVRN_FULL_MAINTENANCE_BINDING_OK) {
-                status = routed_binding_result_storage.router_status;
-            } else {
-                status = AODV_STATUS_INVALID;
-            }
-#if TRON_BUILD_LOCAL_REPAIR
-            if (status != AODV_STATUS_INVALID &&
-                tavrn_full_repair_binding_tick(&routed_repair_binding, now,
-                                               &routed_repair_tick_result) ==
-                    TAVRN_FULL_REPAIR_BINDING_INVALID) {
-                status = AODV_STATUS_INVALID;
-                trace->detail.tick.status = AODV_STATUS_INVALID;
-            }
-#endif
-#if !TRON_BUILD_BENCHMARK_MODE
-            if (routed_binding_result_storage.post_tick.sweep_status ==
-                    TAVRN_MAINTENANCE_EXPIRY_SWEEP_OK &&
-                routed_binding_result_storage.post_tick.sweep.pass_performed != 0u) {
-                if (!routed_expiry_sweep_enqueue(
-                        now, &routed_binding_result_storage.post_tick.sweep)) {
-                    status = AODV_STATUS_INVALID;
-                    trace->detail.tick.status = AODV_STATUS_INVALID;
-                } else {
-                    scheduler_return_requested = 1u;
+                if (mailbox_status == TAVRN_FULL_APPLICATION_MAILBOX_PROCESSING) {
+                    application_present = 1u;
+                    routed_binding_command_storage.now_ms = now;
+                    routed_binding_command_storage.query_time_ms = now;
                 }
-            }
-#endif
-            if (application_present != 0u &&
-                routed_binding_result_storage.application_result.status <=
-                    TAVRN_GTT_APPLICATION_UNAVAILABLE) {
-                if (!queue_guard_begin()) {
-                    status = AODV_STATUS_INVALID;
-                    trace->detail.tick.status = AODV_STATUS_INVALID;
+                routed_binding_input_storage.router = &routed_router;
+                routed_binding_input_storage.mentorship = &routed_mentorship;
+                routed_binding_input_storage.maintenance = &routed_maintenance;
+                routed_binding_input_storage.application_command = routed_binding_command_storage;
+                routed_binding_input_storage.application_present = application_present;
+                binding_status = tavrn_full_maintenance_binding_tick(
+                    routed_binding_input_storage, now, &routed_binding_result_storage);
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                binding_call_present = 1u;
+ #endif
+                if (binding_status == TAVRN_FULL_MAINTENANCE_BINDING_OK) {
+                    status = routed_binding_result_storage.router_status;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    if (status == AODV_STATUS_INVALID) {
+                        routed_phase5_first_invalid_latch(
+                            MIND_PHASE5_INVALID_BRANCH_RAW_ROUTER_STATUS, now,
+                            application_present, mailbox_take_present, mailbox_take_status,
+                            binding_call_present, binding_status, repair_call_present,
+                            repair_binding_status, expiry_enqueue_attempted,
+                            expiry_enqueue_outcome, mailbox_publish_present,
+                            mailbox_publish_status);
+                    }
+ #endif
                 } else {
-                    mailbox_status = tavrn_full_application_mailbox_owner_publish(
-                        &routed_application_mailbox,
-                        routed_binding_result_storage.application_result);
-                    queue_guard_end();
-                    if (mailbox_status != TAVRN_FULL_APPLICATION_MAILBOX_READY) {
+                    status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    routed_phase5_first_invalid_latch(
+                        MIND_PHASE5_INVALID_BRANCH_BINDING_CALL, now,
+                        application_present, mailbox_take_present, mailbox_take_status,
+                        binding_call_present, binding_status, repair_call_present,
+                        repair_binding_status, expiry_enqueue_attempted,
+                        expiry_enqueue_outcome, mailbox_publish_present,
+                        mailbox_publish_status);
+ #endif
+                }
+#if TRON_BUILD_LOCAL_REPAIR
+                if (status != AODV_STATUS_INVALID) {
+                    tavrn_full_repair_binding_status_t repair_status =
+                        tavrn_full_repair_binding_tick(
+                            &routed_repair_binding, now, &routed_repair_tick_result);
+
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    repair_call_present = 1u;
+                    repair_binding_status = (uint8_t)repair_status;
+ #endif
+                    if (repair_status == TAVRN_FULL_REPAIR_BINDING_INVALID) {
                         status = AODV_STATUS_INVALID;
                         trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                        routed_phase5_first_invalid_latch(
+                            MIND_PHASE5_INVALID_BRANCH_REPAIR_BINDING, now,
+                            application_present, mailbox_take_present, mailbox_take_status,
+                            binding_call_present, binding_status, repair_call_present,
+                            repair_binding_status, expiry_enqueue_attempted,
+                            expiry_enqueue_outcome, mailbox_publish_present,
+                            mailbox_publish_status);
+ #endif
                     }
                 }
-            } else if (application_present != 0u) {
+#endif
+#if !TRON_BUILD_BENCHMARK_MODE
+                if (routed_binding_result_storage.post_tick.sweep_status ==
+                        TAVRN_MAINTENANCE_EXPIRY_SWEEP_OK &&
+                    routed_binding_result_storage.post_tick.sweep.pass_performed != 0u) {
+                    expiry_enqueue_status = routed_expiry_sweep_enqueue(
+                        now, &routed_binding_result_storage.post_tick.sweep);
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    expiry_enqueue_attempted = 1u;
+                    expiry_enqueue_outcome = (uint8_t)expiry_enqueue_status;
+ #endif
+                    if (expiry_enqueue_status ==
+                        ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID) {
+                        status = AODV_STATUS_INVALID;
+                        trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                        routed_phase5_first_invalid_latch(
+                            MIND_PHASE5_INVALID_BRANCH_EXPIRY_SWEEP_ENQUEUE, now,
+                            application_present, mailbox_take_present, mailbox_take_status,
+                            binding_call_present, binding_status, repair_call_present,
+                            repair_binding_status, expiry_enqueue_attempted,
+                            expiry_enqueue_outcome, mailbox_publish_present,
+                            mailbox_publish_status);
+ #endif
+                    } else if (routed_expiry_sweep_enqueue_needs_scheduler_return(
+                                   expiry_enqueue_status) != 0u) {
+                        scheduler_return_requested = 1u;
+                    }
+                }
+#endif
+                if (application_present != 0u &&
+                    routed_binding_result_storage.application_result.status <=
+                        TAVRN_GTT_APPLICATION_UNAVAILABLE) {
+                    if (!queue_guard_begin()) {
+                        status = AODV_STATUS_INVALID;
+                        trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                        routed_phase5_first_invalid_latch(
+                            MIND_PHASE5_INVALID_BRANCH_APPLICATION_PUBLISH_GUARD, now,
+                            application_present, mailbox_take_present, mailbox_take_status,
+                            binding_call_present, binding_status, repair_call_present,
+                            repair_binding_status, expiry_enqueue_attempted,
+                            expiry_enqueue_outcome, mailbox_publish_present,
+                            mailbox_publish_status);
+ #endif
+                    } else {
+                        mailbox_status = tavrn_full_application_mailbox_owner_publish(
+                            &routed_application_mailbox,
+                            routed_binding_result_storage.application_result);
+                        queue_guard_end();
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                        mailbox_publish_present = 1u;
+                        mailbox_publish_status = mailbox_status;
+ #endif
+                        if (mailbox_status != TAVRN_FULL_APPLICATION_MAILBOX_READY) {
+                            status = AODV_STATUS_INVALID;
+                            trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                            routed_phase5_first_invalid_latch(
+                                MIND_PHASE5_INVALID_BRANCH_APPLICATION_PUBLISH, now,
+                                application_present, mailbox_take_present, mailbox_take_status,
+                                binding_call_present, binding_status, repair_call_present,
+                                repair_binding_status, expiry_enqueue_attempted,
+                                expiry_enqueue_outcome, mailbox_publish_present,
+                                mailbox_publish_status);
+ #endif
+                        }
+                    }
+                } else if (application_present != 0u) {
+                    status = AODV_STATUS_INVALID;
+                    trace->phase = TAVRN_ROUTER_TRACE_TICK;
+                    trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    routed_phase5_first_invalid_latch(
+                        MIND_PHASE5_INVALID_BRANCH_APPLICATION_RESULT_RANGE, now,
+                        application_present, mailbox_take_present, mailbox_take_status,
+                        binding_call_present, binding_status, repair_call_present,
+                        repair_binding_status, expiry_enqueue_attempted,
+                        expiry_enqueue_outcome, mailbox_publish_present,
+                        mailbox_publish_status);
+ #endif
+                }
+                if (routed_binding_result_storage.status !=
+                    TAVRN_FULL_MAINTENANCE_BINDING_OK) {
+                    status = AODV_STATUS_INVALID;
+                    trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                    routed_phase5_first_invalid_latch(
+                        MIND_PHASE5_INVALID_BRANCH_FINAL_BINDING_RESULT, now,
+                        application_present, mailbox_take_present, mailbox_take_status,
+                        binding_call_present, binding_status, repair_call_present,
+                        repair_binding_status, expiry_enqueue_attempted,
+                        expiry_enqueue_outcome, mailbox_publish_present,
+                        mailbox_publish_status);
+ #endif
+                }
+            } else {
+                queue_guard_end();
                 status = AODV_STATUS_INVALID;
+                memset(trace, 0, sizeof(*trace));
                 trace->phase = TAVRN_ROUTER_TRACE_TICK;
                 trace->detail.tick.status = AODV_STATUS_INVALID;
+ #if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                mailbox_take_present = 1u;
+                mailbox_take_status = mailbox_status;
+                routed_phase5_first_invalid_latch(
+                    MIND_PHASE5_INVALID_BRANCH_FULL_MAILBOX_TAKE, now,
+                    application_present, mailbox_take_present, mailbox_take_status,
+                    binding_call_present, binding_status, repair_call_present,
+                    repair_binding_status, expiry_enqueue_attempted,
+                    expiry_enqueue_outcome, mailbox_publish_present,
+                    mailbox_publish_status);
+ #endif
             }
-            if (routed_binding_result_storage.status != TAVRN_FULL_MAINTENANCE_BINDING_OK) {
-                status = AODV_STATUS_INVALID;
-                trace->detail.tick.status = AODV_STATUS_INVALID;
-            }
-        } else {
-            queue_guard_end();
-            status = AODV_STATUS_INVALID;
-            memset(trace, 0, sizeof(*trace));
-            trace->phase = TAVRN_ROUTER_TRACE_TICK;
-            trace->detail.tick.status = AODV_STATUS_INVALID;
-        }
         if (status == AODV_STATUS_INVALID) {
             record_router_status(TAVRN_ROUTER_EVENT_INVALID);
         } else if (scheduler_return_requested != 0u) {
@@ -2385,6 +2986,9 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
         return request;
     }
 #else
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    return routed_mind_coordinator_prepare_request(now);
+#else
     request.status = ROUTED_CYCLE_APPLICATION_DISABLED;
     if (TRON_BUILD_LINK_INITIATOR == 0 ||
         TRON_BUILD_LINK_PEER_ADVA_ENABLED == 0 || mesh_fault_latched != 0u ||
@@ -2426,6 +3030,7 @@ static routed_cycle_application_request_t routed_cycle_application_prepare(
     request.prepared_at_ms = now_ms();
     return request;
 #endif
+#endif
 }
 
 static tavrn_router_phase_trace_t routed_cycle_router_submit(
@@ -2437,7 +3042,19 @@ static tavrn_router_phase_trace_t routed_cycle_router_submit(
     (void)context;
     memset(&trace, 0, sizeof(trace));
 #if TRON_BUILD_ROUTED_FULL_TAVRN
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    if (mind_root_coordinator_pending(&routed_mind_root_coordinator) != NULL) {
+        routed_mind_last_submit_status = AODV_STATUS_INVALID;
+        (void)mind_root_coordinator_submit(&routed_mind_root_coordinator,
+                                           &routed_mind_pending_request.token,
+                                           data, now);
+        status = routed_mind_last_submit_status;
+    } else {
+        status = AODV_STATUS_INVALID;
+    }
+#else
     status = tavrn_mentorship_submit_application(&routed_mentorship, data, now);
+#endif
     trace.phase = TAVRN_ROUTER_TRACE_APPLICATION_SUBMIT;
     trace.detail.submit.status = status;
 #else
@@ -2459,10 +3076,16 @@ static tavrn_router_phase_trace_t routed_cycle_router_submit(
         routed_benchmark_pending_attempt_valid = 0u;
     }
 #else
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    if (status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED) {
+        routed_counters.submitted++;
+    }
+#else
     if (status == AODV_STATUS_OK || status == AODV_STATUS_QUEUED) {
         routed_counters.submitted++;
     }
     routed_next_submit_at = trace.completed_at_ms + TRON_BUILD_LINK_TX_INTERVAL_MS;
+#endif
 #endif
     record_router_terminal(&trace);
     return trace;
@@ -2512,27 +3135,69 @@ static ER routed_wait_for_release(void)
 {
     UINT pattern;
     uint32_t progress_epoch;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    uint32_t dispatch_epoch;
+    uint32_t elapsed_since_scheduler_return_ms;
+    ER request_status;
+#endif
     int diagnostic_pending;
+    int release_progressed;
 
     diagnostic_pending = routed_diagnostic_pending(&progress_epoch);
     if (diagnostic_pending < 0) {
         return E_CTX;
     }
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    dispatch_epoch = routed_logger_dispatch_epoch;
+    routed_logger_progress_wake_armed = 1u;
+    request_status = tk_set_flg(routed_release_flag_id,
+                                ROUTED_LOGGER_REQUEST_BIT);
+    if (request_status != E_OK) {
+        routed_logger_progress_wake_armed = 0u;
+        return request_status;
+    }
+#endif
     for (;;) {
-        ER wait_status = tk_wai_flg(routed_release_flag_id, ROUTED_RELEASE_BIT,
+        ER wait_status = tk_wai_flg(routed_release_flag_id,
+                                    ROUTED_RELEASE_WAIT_BITS,
                                     TWF_ORW | TWF_BITCLR, &pattern, TMO_FEVR);
 
         if (wait_status != E_OK) {
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+            routed_logger_progress_wake_armed = 0u;
+#endif
             return wait_status;
         }
-        if (diagnostic_pending == 0 ||
-            routed_logger_progress_epoch != progress_epoch) {
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        release_progressed = routed_logger_dispatch_epoch != dispatch_epoch;
+#else
+        release_progressed = diagnostic_pending == 0 ||
+            routed_logger_progress_epoch != progress_epoch;
+#endif
+        if (release_progressed != 0) {
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+            routed_logger_progress_wake_armed = 0u;
+#endif
             return E_OK;
         }
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        elapsed_since_scheduler_return_ms =
+            (uint32_t)(now_ms() - routed_cycle_state.last_scheduler_return_ms);
+        if (elapsed_since_scheduler_return_ms >
+            tron_timer_config.scheduler_poll_max_ms) {
+            routed_logger_progress_wake_armed = 0u;
+            return E_TMOUT;
+        }
+        if (elapsed_since_scheduler_return_ms ==
+            tron_timer_config.scheduler_poll_max_ms) {
+            routed_logger_progress_wake_armed = 1u;
+        }
+#else
         if ((uint32_t)(now_ms() - routed_cycle_state.last_scheduler_return_ms) >=
             tron_timer_config.scheduler_poll_max_ms) {
             return E_TMOUT;
         }
+#endif
     }
 }
 
@@ -2803,7 +3468,7 @@ static void log_expiry_sweep(const routed_expiry_sweep_record_t *record)
     if (record == NULL) {
         return;
     }
-    tm_printf((UB *)"routed expiry_sweep now_ms=%lu pass=%lu trace_count=%u cursor=%u soft_selected=%u hard_selected=%u demand_deferred=%u unavailable_count=%u departed=%u purged=%u max_copied=%u targeted_controls=%u rreq_controls=%u expiry_tc_controls=%u received_evidence=%lu complete_passes=%lu max_scheduler_gap_ms=%lu scheduler_fault=%lu mesh_fault=%u router_fault=%u\n",
+    tm_printf((UB *)"routed expiry_sweep now_ms=%lu pass=%lu trace_count=%u cursor=%u soft_selected=%u hard_selected=%u demand_deferred=%u unavailable_count=%u departed=%u purged=%u max_copied=%u targeted_controls=%u rreq_controls=%u expiry_tc_controls=%u received_evidence=%lu complete_passes=%lu max_scheduler_gap_ms=%lu scheduler_fault=%lu mesh_fault=%u router_fault=%u telemetry_dropped=%lu\n",
                (UW)record->now_ms, (UW)record->pass, (UINT)record->trace_count,
                (UINT)record->cursor, (UINT)record->soft_selected_count,
                (UINT)record->hard_selected_count,
@@ -2815,9 +3480,10 @@ static void log_expiry_sweep(const routed_expiry_sweep_record_t *record)
               (UINT)record->rreq_control_count,
               (UINT)record->expiry_tc_control_count,
               (UW)record->received_evidence_count, (UW)record->complete_passes,
-              (UW)record->max_scheduler_gap_ms,
-               (UW)record->scheduler_fault_count,
-               (UINT)record->mesh_fault_latched, (UINT)record->router_fault);
+                (UW)record->max_scheduler_gap_ms,
+                (UW)record->scheduler_fault_count,
+                (UINT)record->mesh_fault_latched, (UINT)record->router_fault,
+                (UW)record->telemetry_dropped_records);
 }
 
 static void log_full_snapshot(void)
@@ -2853,6 +3519,102 @@ static void log_full_snapshot(void)
 #endif
 #endif
 
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+static void routed_mind_log_sink(void *context, const char *line)
+{
+    (void)context;
+    if (line != NULL) {
+        tm_printf((UB *)"%s", (UB *)line);
+    }
+}
+
+static void log_mind_record(const mind_log_record_t *record)
+{
+    mind_log_emit(record, routed_mind_log_sink, NULL);
+}
+
+/* This logger-only formatter accepts no caller aggregate.  The first valid
+ * snapshot remains immutable after mind_phase5_provenance_mark_logged(), so a
+ * failed phase-5 record produces bounded evidence exactly once. */
+static void log_phase5_first_invalid(void)
+{
+    mind_phase5_provenance_snapshot_t *snapshot =
+        &routed_mind_phase5_first_invalid;
+
+    if (!mind_phase5_provenance_mark_logged(snapshot)) {
+        return;
+    }
+    tm_printf((UB *)"routed phase5_provenance now_ms=%lu branch=%u app_present=%u take_present=%u take_status=%u publish_present=%u publish_status=%u mailbox_present=%u command_pending=%u owner_processing=%u result_ready=%u\n",
+              (UW)snapshot->timestamp_ms,
+              (UINT)snapshot->first_invalid_branch,
+              (UINT)snapshot->application_present,
+              (UINT)snapshot->mailbox_take_present,
+              (UINT)snapshot->mailbox_take_status,
+              (UINT)snapshot->mailbox_publish_present,
+              (UINT)snapshot->mailbox_publish_status,
+              (UINT)snapshot->mailbox_occupancy_present,
+              (UINT)snapshot->mailbox_command_pending,
+              (UINT)snapshot->mailbox_owner_processing,
+              (UINT)snapshot->mailbox_result_ready);
+    tm_printf((UB *)"routed phase5_provenance binding_present=%u binding_call=%u binding_result=%u raw_router_present=%u raw_router=%u mentorship=%u broadcast_snapshot=%u broadcast_observation=%u activation=%u targeted=%u verification=%u metadata=%u tc=%u application_result=%u application_query=%u post_sweep=%u post_maintenance=%u\n",
+              (UINT)snapshot->binding_call_present,
+              (UINT)snapshot->binding_call_status,
+              (UINT)snapshot->binding_result_status,
+              (UINT)snapshot->raw_router_status_present,
+              (UINT)snapshot->raw_router_status,
+              (UINT)snapshot->mentorship_status,
+              (UINT)snapshot->broadcast_snapshot_status,
+              (UINT)snapshot->broadcast_observation_status,
+              (UINT)snapshot->activation_status,
+              (UINT)snapshot->targeted_owner_status,
+              (UINT)snapshot->verification_owner_status,
+              (UINT)snapshot->metadata_owner_status,
+              (UINT)snapshot->tc_owner_status,
+              (UINT)snapshot->application_result_status,
+              (UINT)snapshot->application_result_query_status,
+              (UINT)snapshot->post_tick_sweep_status,
+              (UINT)snapshot->post_tick_maintenance_status);
+    tm_printf((UB *)"routed phase5_provenance repair_present=%u repair_binding=%u repair_action_present=%u repair_action=%u repair_status=%u repair_reforward=%u repair_terminal=%u repair_eviction=%u expiry_present=%u expiry_pass=%u expiry_enqueue_attempted=%u expiry_enqueue_outcome=%u expiry_queue_present=%u expiry_queue_count=%u\n",
+              (UINT)snapshot->repair_call_present,
+              (UINT)snapshot->repair_binding_status,
+              (UINT)snapshot->repair_action_present,
+              (UINT)snapshot->repair_action_type,
+              (UINT)snapshot->repair_status,
+              (UINT)snapshot->repair_reforward_status,
+              (UINT)snapshot->repair_terminal_kind,
+              (UINT)snapshot->repair_eviction_status,
+              (UINT)snapshot->expiry_sweep_present,
+              (UINT)snapshot->expiry_sweep_pass,
+              (UINT)snapshot->expiry_enqueue_attempted,
+              (UINT)snapshot->expiry_enqueue_outcome,
+              (UINT)snapshot->expiry_queue_occupancy_present,
+              (UINT)snapshot->expiry_queue_count);
+    tm_printf((UB *)"routed phase5_provenance tick_present=%u tick_phase=%u tick_status=%u link_step_present=%u link_step_status=%u link_event_present=%u link_event_type=%u terminal_present=%u terminal_fault=%u\n",
+              (UINT)snapshot->tick_trace_present,
+              (UINT)snapshot->tick_trace_phase,
+              (UINT)snapshot->tick_status,
+              (UINT)snapshot->tick_link_step_present,
+              (UINT)snapshot->tick_link_step_status,
+              (UINT)snapshot->tick_link_event_present,
+              (UINT)snapshot->tick_link_event_type,
+              (UINT)snapshot->router_terminal_present,
+              (UINT)snapshot->router_terminal_fault);
+    tm_printf((UB *)"routed phase5_provenance uart_present=%u bytes=%lu parsed=%lu published=%lu peeks=%lu consumes=%lu errors=%lu overflow=%lu mailbox_full=%lu ring_depth=%u mailbox_depth=%u pending=%u\n",
+              (UINT)snapshot->uart_present,
+              (UW)snapshot->uart.bytes_received,
+              (UW)snapshot->uart.commands_parsed,
+              (UW)snapshot->uart.mailbox_publications,
+              (UW)snapshot->uart.production_peeks,
+              (UW)snapshot->uart.production_consumes,
+              (UW)snapshot->uart.error_count,
+              (UW)snapshot->uart.overflow_count,
+              (UW)snapshot->uart.mailbox_full_count,
+              (UINT)snapshot->uart.ring_depth,
+              (UINT)snapshot->uart.mailbox_depth,
+              (UINT)snapshot->uart.pending_valid);
+}
+#endif
+
 LOCAL void routed_logger_task(INT stacd, void *exinf)
 {
 #if TRON_BUILD_BENCHMARK_MODE
@@ -2871,6 +3633,9 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     uint32_t next_clock_at = now_ms();
     uint32_t next_observation_at = now_ms();
 #endif
+#if !ROUTED_VERBOSE_RUNTIME_TELEMETRY
+    UINT logger_request_pattern;
+#endif
 
     (void)stacd;
     (void)exinf;
@@ -2880,43 +3645,104 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     log_benchmark_boot();
 #endif
     while (1) {
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        /* A stale release bit cannot count as a yield until the lower-priority
+         * logger has actually run.  Long tm_printf calls publish finer-grained
+         * progress through __wrap_tm_snd_dat(). */
+        routed_logger_publish_dispatch_progress();
+#endif
         uint32_t now = now_ms();
 
         if (pending_router_fault != TAVRN_ROUTER_FAULT_NONE &&
             pending_router_fault != logged_router_fault) {
-            tm_printf((UB *)"routed router_fault reason=%u\n",
-                      (UINT)pending_router_fault);
+            tm_printf((UB *)"routed router_fault reason=%u subreason=%u\n",
+                      (UINT)pending_router_fault,
+                      (UINT)tavrn_router_fault_subreason(&routed_router));
             logged_router_fault = pending_router_fault;
         }
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        if (ROUTED_VERBOSE_RUNTIME_TELEMETRY == 0 &&
+            routed_cycle_state.fault_latched != 0u &&
+            routed_cycle_fault_logged == 0u) {
+            tm_printf((UB *)"routed cycle_fault now_ms=%lu scheduler_return_ms=%lu scheduler_gap_ms=%lu poll_bound_ms=%lu over_budget_phase=%u\n",
+                      (UW)now, (UW)routed_cycle_state.last_scheduler_return_ms,
+                      (UW)(now - routed_cycle_state.last_scheduler_return_ms),
+                      (UW)routed_cycle_state.poll_bound_ms,
+                      (UINT)routed_cycle_state.first_over_budget_phase);
+            routed_cycle_fault_logged = 1u;
+        }
+        if (ROUTED_VERBOSE_RUNTIME_TELEMETRY == 0 &&
+            routed_phase5_first_invalid_log_pending()) {
+            (void)mind_phase5_provenance_mark_logged(
+                &routed_mind_phase5_first_invalid);
+        }
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
         if (routed_full_snapshot_is_ready()) {
-            log_full_snapshot();
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_full_snapshot();
+            }
             routed_full_snapshot_clear_ready();
         } else if (routed_expiry_sweep_dequeue(&routed_logged_expiry_sweep)) {
-            log_expiry_sweep(&routed_logged_expiry_sweep);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_expiry_sweep(&routed_logged_expiry_sweep);
+            }
+        } else
+#endif
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        if (mind_log_queue_take(&routed_mind_log_queue, &routed_mind_logged_record)) {
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0 ||
+                !mind_log_record_is_heartbeat(&routed_mind_logged_record)) {
+                log_mind_record(&routed_mind_logged_record);
+            }
         } else
 #endif
         if (routed_diagnostic_pop()) {
-            log_cycle_diagnostic(&routed_logger_record.diagnostic);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_cycle_diagnostic(&routed_logger_record.diagnostic);
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                if (routed_logger_record.diagnostic.phase ==
+                        ROUTED_CYCLE_PHASE_ROUTER_TICK &&
+                    routed_logger_record.diagnostic.detail.router.detail.tick.status ==
+                        AODV_STATUS_INVALID &&
+                    routed_phase5_first_invalid_log_pending()) {
+                    log_phase5_first_invalid();
+                }
+#endif
+            }
         } else if (routed_retry_log_pop()) {
-            log_retry_exhausted_event(&routed_logger_record.retry_event);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_retry_exhausted_event(&routed_logger_record.retry_event);
+            }
         } else if (routed_rreq_pop()) {
-            log_rreq_lifecycle(&routed_logged_rreq);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_rreq_lifecycle(&routed_logged_rreq);
+            }
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        } else if (routed_phase5_first_invalid_log_pending()) {
+            /* A saturated fault-diagnostic queue may drop the matching copied
+             * trace.  The static first-fault record still formats once here. */
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_phase5_first_invalid();
+            }
+#endif
         } else if (local_event_pop(local_event)) {
-            if (local_event->event.type ==
-                TAVRN_ROUTER_DISPATCH_EVENT_PENDING_DATA_FAILED) {
-                tm_printf((UB *)"routed pending_data_failed destination=0x%04x\n",
-                          (UINT)local_event->event.destination.value);
-            } else if (local_event->event.type ==
-                       TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR) {
-                tm_printf((UB *)"routed blacklist_neighbor destination=0x%04x peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                          (UINT)local_event->event.destination.value,
-                          (UINT)local_event->event.peer.adva.bytes[0],
-                          (UINT)local_event->event.peer.adva.bytes[1],
-                          (UINT)local_event->event.peer.adva.bytes[2],
-                          (UINT)local_event->event.peer.adva.bytes[3],
-                          (UINT)local_event->event.peer.adva.bytes[4],
-                          (UINT)local_event->event.peer.adva.bytes[5]);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                if (local_event->event.type ==
+                    TAVRN_ROUTER_DISPATCH_EVENT_PENDING_DATA_FAILED) {
+                    tm_printf((UB *)"routed pending_data_failed destination=0x%04x\n",
+                              (UINT)local_event->event.destination.value);
+                } else if (local_event->event.type ==
+                           TAVRN_ROUTER_DISPATCH_EVENT_BLACKLIST_NEIGHBOR) {
+                    tm_printf((UB *)"routed blacklist_neighbor destination=0x%04x peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                              (UINT)local_event->event.destination.value,
+                              (UINT)local_event->event.peer.adva.bytes[0],
+                              (UINT)local_event->event.peer.adva.bytes[1],
+                              (UINT)local_event->event.peer.adva.bytes[2],
+                              (UINT)local_event->event.peer.adva.bytes[3],
+                              (UINT)local_event->event.peer.adva.bytes[4],
+                              (UINT)local_event->event.peer.adva.bytes[5]);
+                }
             }
         } else if (delivery_pop(delivery)) {
 #if TRON_BUILD_BENCHMARK_MODE
@@ -2976,18 +3802,21 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                 }
             }
 #else
-            tm_printf((UB *)"routed final_data now=%lu origin=0x%04x destination=0x%04x seq=%u app_kind=0x%02x app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                       (UW)delivery->delivered_at_ms,
-                       (UINT)delivery->data.origin.value,
-                       (UINT)delivery->data.final_destination.value,
-                       (UINT)delivery->data.data_seq, (UINT)delivery->data.app_kind,
-                       (UINT)delivery->data.app_len,
-                       (UINT)delivery->transmitter.adva.bytes[0],
-                       (UINT)delivery->transmitter.adva.bytes[1],
-                       (UINT)delivery->transmitter.adva.bytes[2],
-                       (UINT)delivery->transmitter.adva.bytes[3],
-                        (UINT)delivery->transmitter.adva.bytes[4],
-                        (UINT)delivery->transmitter.adva.bytes[5]);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                tm_printf((UB *)"routed final_data now=%lu origin=0x%04x destination=0x%04x seq=%u app_kind=0x%02x app_len=%u peer=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                          (UW)delivery->delivered_at_ms,
+                          (UINT)delivery->data.origin.value,
+                          (UINT)delivery->data.final_destination.value,
+                          (UINT)delivery->data.data_seq,
+                          (UINT)delivery->data.app_kind,
+                          (UINT)delivery->data.app_len,
+                          (UINT)delivery->transmitter.adva.bytes[0],
+                          (UINT)delivery->transmitter.adva.bytes[1],
+                          (UINT)delivery->transmitter.adva.bytes[2],
+                          (UINT)delivery->transmitter.adva.bytes[3],
+                          (UINT)delivery->transmitter.adva.bytes[4],
+                          (UINT)delivery->transmitter.adva.bytes[5]);
+            }
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
         } else if (routed_benchmark_attempt_pop()) {
@@ -3018,14 +3847,25 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
 #endif
 #else
         } else if ((int32_t)(now - next_summary_at) >= 0) {
-            log_summary(now);
+            if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
+                log_summary(now);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
-            routed_full_snapshot_request();
+                routed_full_snapshot_request();
 #endif
+            }
             next_summary_at = now + tron_timer_config.stats_ms;
 #endif
         }
+#if ROUTED_VERBOSE_RUNTIME_TELEMETRY
         (void)tk_dly_tsk(1u);
+#else
+        (void)tk_rot_rdq(MIND_UI_TASK_PRIORITY);
+        if (tk_wai_flg(routed_release_flag_id, ROUTED_LOGGER_REQUEST_BIT,
+                       TWF_ORW | TWF_BITCLR, &logger_request_pattern,
+                       TMO_FEVR) != E_OK) {
+            return;
+        }
+#endif
     }
 }
 
@@ -3039,7 +3879,7 @@ EXPORT INT usermain(void)
                              .task = (FP)routed_logger_task,
                              .itskpri = ROUTED_LOGGER_TASK_PRIORITY,
                              .stksz = ROUTED_LOGGER_TASK_STACK_BYTES };
-    T_CFLG release_flag = { .exinf = NULL, .flgatr = TA_TFIFO,
+    T_CFLG release_flag = { .exinf = NULL, .flgatr = TA_TFIFO | TA_WMUL,
                              .iflgptn = 0u };
     T_CCYC release_cyclic = { .exinf = NULL, .cycatr = TA_HLNG | TA_PHS,
                                .cychdr = (FP)routed_release_cyclic,
@@ -3312,6 +4152,56 @@ EXPORT INT usermain(void)
 #endif
     }
 #endif
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    {
+        tavrn_router_incarnation_snapshot_t incarnation;
+        mind_root_coordinator_operations_t operations;
+
+        memset(&incarnation, 0, sizeof(incarnation));
+        if (tavrn_router_incarnation_snapshot(&routed_router, &incarnation) !=
+                TAVRN_ROUTER_INCARNATION_OK ||
+            incarnation.boot_nonce == 0u) {
+            tm_printf((UB *)"mind root router incarnation snapshot rejected\n");
+            return 1;
+        }
+        mind_application_ingress_init(&routed_mind_ingress, TRON_BUILD_NETWORK_ID);
+        mind_root_inbox_init(&routed_mind_root_inbox);
+        mind_uart_init_state(&routed_mind_uart);
+        mind_log_queue_init(&routed_mind_log_queue);
+        mind_ui_init_state(&routed_mind_ui, TRON_BUILD_APP_NODE_NUMBER);
+        memset(&operations, 0, sizeof(operations));
+        operations.snapshot = routed_mind_snapshot;
+        operations.sid8_ready = routed_mind_sid8_ready;
+        operations.resolve_outgoing = routed_mind_resolve_outgoing;
+        operations.resolve_incoming = routed_mind_resolve_incoming;
+        operations.command_peek = routed_mind_command_peek;
+        operations.command_consume = routed_mind_command_consume;
+        operations.final_peek = routed_mind_final_peek;
+        operations.final_consume = routed_mind_final_consume;
+        operations.final_pin_observer = routed_mind_final_pin_observer;
+        operations.ingress_take = routed_mind_ingress_take;
+        operations.final_publish_local = routed_mind_final_publish_local;
+        operations.log_reserve = routed_mind_log_reserve;
+        operations.log_commit = routed_mind_log_commit;
+        operations.log_cancel = routed_mind_log_cancel;
+        operations.ui_publish = routed_mind_ui_publish;
+        operations.generic_submit = routed_mind_generic_submit;
+        if (!mind_root_coordinator_init(&routed_mind_root_coordinator,
+                                        &local_peer.adva, incarnation.boot_nonce,
+                                        TRON_BUILD_APP_NODE_NUMBER, &operations)) {
+            tm_printf((UB *)"mind root coordinator initialization rejected\n");
+            return 1;
+        }
+        /* The inherited init task has installed UART0's sample vector.  Replace
+         * it before starting mesh/logger tasks; T-monitor remains TX owner. */
+        if (!mind_uart_install(&routed_mind_uart) ||
+            !mind_ui_start(&routed_mind_ui) ||
+            !mind_uart_start_task(&routed_mind_uart)) {
+            tm_printf((UB *)"mind application UART/UI initialization rejected\n");
+            return 1;
+        }
+    }
+#endif
     routed_cycle_diagnostic_queue_init(&routed_diagnostic_queue);
     routed_cycle_retry_log_init(&routed_retry_log);
     routed_cycle_rreq_queue_init(&routed_rreq_queue);
@@ -3319,6 +4209,9 @@ EXPORT INT usermain(void)
     routed_cycle_operations.context = NULL;
     routed_cycle_operations.start_rx = routed_cycle_start_rx;
     routed_cycle_operations.scheduler_poll = routed_cycle_scheduler_poll;
+#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+    routed_cycle_operations.scheduler_event_filter = routed_cycle_mind_ingress_filter;
+#endif
     routed_cycle_operations.router_scheduler_event =
         routed_cycle_router_scheduler_event;
     routed_cycle_operations.router_tick = routed_cycle_router_tick;
@@ -3347,7 +4240,7 @@ EXPORT INT usermain(void)
         tm_printf((UB *)"routed benchmark configuration rejected\n");
         return 1;
     }
-#else
+#elif !(TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS)
     routed_next_submit_at = now_ms();
 #endif
     if (routed_cycle_init(&routed_cycle_state,

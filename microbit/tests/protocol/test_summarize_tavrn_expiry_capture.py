@@ -42,6 +42,7 @@ def main() -> int:
             "targeted_controls": 0,
             "rreq_controls": 0,
             "tc_expiry_controls": 0,
+            "telemetry_dropped": 0,
         }
         if any(capture.get(key) != value for key, value in expected.items()):
             return 1

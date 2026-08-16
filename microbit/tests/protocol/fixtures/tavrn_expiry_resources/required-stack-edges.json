@@ -1,5 +1,5 @@
 {
-  "schema": "tron.tavrn.expiry.required-stack-edges.v2",
+  "schema": "tron.tavrn.expiry.required-stack-edges.v3",
   "root": "routed_mesh_task",
   "edges": [
     {"from": "routed_mesh_task", "to": "routed_cycle_run_task", "kind": "call", "when": "always"},
@@ -8,6 +8,31 @@
     {"from": "routed_cycle_run_once", "to": "routed_cycle_operations.router_tick", "kind": "indirect", "when": "always"},
     {"from": "routed_cycle_router_tick", "to": "tavrn_full_maintenance_binding_tick", "kind": "call", "when": "binding"},
     {"from": "tavrn_full_maintenance_binding_tick", "to": "tavrn_maintenance_targeted_owner_tick", "kind": "call", "when": "binding"}
+  ],
+  "indirect_calls": [
+    {"from": "emit_rreq_lifecycle", "site": 0, "to": "routed_rreq_lifecycle"},
+    {"from": "remove_peer_actions", "site": 0, "to": "discard_queued_transit_custody"},
+    {"from": "clear_router_peer_work", "site": 0, "to": "router_delivery_cancel"},
+    {"from": "report_observation", "site": 0, "to": "tavrn_full_observe"},
+    {"from": "tavrn_router_data_terminal_hook", "site": 0, "to": "__inactive__"},
+    {"from": "cancel_pre_ack_delivery", "site": 0, "to": "router_delivery_cancel"},
+    {"from": "rollback_candidate_reservation", "site": 0, "to": "__inactive__"},
+    {"from": "handle_data_candidate", "site": 0, "to": "__inactive__"},
+    {"from": "handle_data_candidate", "site": 1, "to": "__inactive__"},
+    {"from": "handle_data_candidate", "site": 2, "to": "router_delivery_reserve"},
+    {"from": "tavrn_router_retry_retained_control", "site": 0, "to": "full_metadata_admitted"},
+    {"from": "router_handle_scheduler_event", "site": 0, "to": "full_metadata_completed"},
+    {"from": "router_handle_scheduler_event", "site": 1, "to": "full_control_received"},
+    {"from": "router_handle_scheduler_event", "site": 2, "to": "routed_verification_rrep_receive"},
+    {"from": "router_dispatch", "site": 0, "to": "full_metadata_prepare"},
+    {"from": "router_dispatch", "site": 1, "to": "full_metadata_admitted"},
+    {"from": "router_dispatch", "site": 2, "to": "router_delivery_commit"},
+    {"from": "tavrn_router_initial_scope", "site": 0, "to": "tavrn_full_initial_scope"},
+    {"from": "check_remote_id", "site": 0, "to": "sid8_identity_conflict"},
+    {"from": "check_pdu_identities", "site": 0, "to": "sid8_identity_conflict"},
+    {"from": "high_token_dispatch_external", "site": 0, "to": "__inactive__"},
+    {"from": "high_token_dispatch_external_fault", "site": 0, "to": "__inactive__"},
+    {"from": "tc_metadata_preempt_rfi_for_local_fact", "site": 0, "to": "full_local_tc_retained"}
   ],
   "declared_leaves": [
     {"symbol": "__aeabi_uldivmod", "frame_bytes": 16, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/thumb/v7e-m+fp/hard/libgcc.a", "sha256": "4cffa9f1d5680a22d30b30131a0d93e34cd3711fe13f8a682448e701b597677b", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},

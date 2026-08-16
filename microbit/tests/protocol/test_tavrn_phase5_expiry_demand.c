@@ -7,6 +7,7 @@
 #include "tavrn_mentorship.h"
 #include "tavrn_phase5_expiry_demand_contract.h"
 #include "tavrn_router.h"
+#include "routed_expiry_telemetry.h"
 #include "routed_full_telemetry.h"
 
 #include <ctype.h>
@@ -1303,6 +1304,145 @@ static int scheduler_gap_telemetry_contract(void)
         lexical_function_identifier_count(
             TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_trace_sink",
             "elapsed_since_scheduler_return_ms", &count) && count == 1u;
+#endif
+}
+
+static int phase5_first_invalid_provenance_contract(void)
+{
+#ifndef TAVRN_PHASE5_ROUTED_MAIN_PATH
+    return 0;
+#else
+    static const char *const branches[] = {
+        "MIND_PHASE5_INVALID_BRANCH_INITIAL_QUEUE_GUARD",
+        "MIND_PHASE5_INVALID_BRANCH_FULL_MAILBOX_TAKE",
+        "MIND_PHASE5_INVALID_BRANCH_BINDING_CALL",
+        "MIND_PHASE5_INVALID_BRANCH_RAW_ROUTER_STATUS",
+        "MIND_PHASE5_INVALID_BRANCH_REPAIR_BINDING",
+        "MIND_PHASE5_INVALID_BRANCH_EXPIRY_SWEEP_ENQUEUE",
+        "MIND_PHASE5_INVALID_BRANCH_APPLICATION_PUBLISH_GUARD",
+        "MIND_PHASE5_INVALID_BRANCH_APPLICATION_PUBLISH",
+        "MIND_PHASE5_INVALID_BRANCH_APPLICATION_RESULT_RANGE",
+        "MIND_PHASE5_INVALID_BRANCH_FINAL_BINDING_RESULT",
+    };
+    size_t count;
+    size_t index;
+
+    for (index = 0u; index < sizeof(branches) / sizeof(branches[0]); index++) {
+        if (!lexical_function_identifier_count(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_router_tick",
+                branches[index], &count) || count != 1u) {
+            return 0;
+        }
+    }
+    return lexical_function_call_count(
+               TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_router_tick",
+               "routed_phase5_first_invalid_latch", &count) && count == 10u &&
+        lexical_function_call_count(
+            TAVRN_PHASE5_ROUTED_MAIN_PATH, "log_phase5_first_invalid",
+            "mind_phase5_provenance_mark_logged", &count) && count == 1u &&
+        lexical_function_call_count(
+            TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_logger_task",
+            "log_phase5_first_invalid", &count) && count == 2u &&
+        source_file_token_count(TAVRN_PHASE5_ROUTED_MAIN_PATH,
+                                "routed phase5_provenance", NULL, &count) &&
+        count == 5u;
+#endif
+}
+
+static int expiry_telemetry_overflow_contract(void)
+{
+    routed_expiry_telemetry_queue_state_t queue;
+    routed_expiry_telemetry_queue_state_t before;
+    routed_expiry_sweep_enqueue_status_t status;
+
+    memset(&queue, 0, sizeof(queue));
+    if (ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED != 0u ||
+        ROUTED_EXPIRY_SWEEP_ENQUEUE_DROPPED_FULL != 1u ||
+        ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID != 2u ||
+        routed_expiry_telemetry_queue_offer(&queue) !=
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED ||
+        !routed_expiry_telemetry_queue_commit_enqueue(&queue) ||
+        queue.count != ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY ||
+        queue.dropped_records != 0u) {
+        return 0;
+    }
+
+    before = queue;
+    status = routed_expiry_telemetry_queue_offer(&queue);
+    if (status != ROUTED_EXPIRY_SWEEP_ENQUEUE_DROPPED_FULL ||
+        queue.head != before.head || queue.tail != before.tail ||
+        queue.count != before.count ||
+        queue.dropped_records != before.dropped_records + 1u) {
+        return 0;
+    }
+
+    queue.dropped_records = UINT32_MAX - 1u;
+    if (routed_expiry_telemetry_queue_offer(&queue) !=
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_DROPPED_FULL ||
+        routed_expiry_telemetry_queue_offer(&queue) !=
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_DROPPED_FULL ||
+        queue.dropped_records != UINT32_MAX || queue.head != before.head ||
+        queue.tail != before.tail || queue.count != before.count ||
+        !routed_expiry_sweep_enqueue_needs_scheduler_return(
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED) ||
+        !routed_expiry_sweep_enqueue_needs_scheduler_return(
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_DROPPED_FULL) ||
+        routed_expiry_sweep_enqueue_needs_scheduler_return(
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID)) {
+        return 0;
+    }
+
+    memset(&queue, 0, sizeof(queue));
+    queue.count = (uint8_t)(ROUTED_EXPIRY_SWEEP_TELEMETRY_CAPACITY + 1u);
+    before = queue;
+    if (routed_expiry_telemetry_queue_offer(NULL) !=
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID ||
+        routed_expiry_telemetry_queue_offer(&queue) !=
+            ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID ||
+        memcmp(&queue, &before, sizeof(queue)) != 0) {
+        return 0;
+    }
+
+#ifndef TAVRN_PHASE5_ROUTED_MAIN_PATH
+    return 0;
+#else
+    {
+        static const char *const enqueue_order[] = {
+            "routed_expiry_telemetry_queue_offer", "if", "status",
+            "ROUTED_EXPIRY_SWEEP_ENQUEUE_QUEUED", "queue_guard_end",
+            "return", "record", "records",
+        };
+        static const char *const tick_order[] = {
+            "routed_expiry_sweep_enqueue", "if", "expiry_enqueue_status",
+            "ROUTED_EXPIRY_SWEEP_ENQUEUE_INVALID", "status", "AODV_STATUS_INVALID",
+            "else", "if", "routed_expiry_sweep_enqueue_needs_scheduler_return",
+            "scheduler_return_requested",
+        };
+        size_t count;
+
+        return lexical_function_call_count(
+                   TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_expiry_sweep_enqueue",
+                   "routed_expiry_telemetry_queue_offer", &count) && count == 1u &&
+            lexical_sequence_in_function(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_expiry_sweep_enqueue",
+                enqueue_order, sizeof(enqueue_order) / sizeof(enqueue_order[0])) &&
+            lexical_function_call_count(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_router_tick",
+                "routed_expiry_sweep_enqueue", &count) && count == 1u &&
+            lexical_function_call_count(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_router_tick",
+                "routed_expiry_sweep_enqueue_needs_scheduler_return", &count) &&
+            count == 1u &&
+            lexical_function_identifier_count(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "log_summary",
+                "expiry_telemetry_dropped", &count) && count == 1u &&
+            lexical_function_identifier_count(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "log_expiry_sweep",
+                "telemetry_dropped_records", &count) && count == 1u &&
+            lexical_sequence_in_function(
+                TAVRN_PHASE5_ROUTED_MAIN_PATH, "routed_cycle_router_tick",
+                tick_order, sizeof(tick_order) / sizeof(tick_order[0]));
+    }
 #endif
 }
 
@@ -5327,6 +5467,8 @@ static int test_maint_04_real_owner_contract(void)
             copied.expiry_ms = now_ms + 10000u;
             copied.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
             copied.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
+            copied.owner_kind = BLE_MESH_TX_OWNER_NONE;
+            copied.owner_domain = BLE_MESH_TX_OWNER_DOMAIN_NONE;
             copied.adv_data[0] = (uint8_t)subject_sid8.value;
             ok &= ble_mesh_scheduler_enqueue_ex(&fixture.scheduler, &copied).status ==
                 BLE_MESH_SCHED_ENQUEUE_OK;
@@ -5959,6 +6101,8 @@ int main(void)
     CHECK("MAINT-02", test_maint_02_direct_gate_contract());
     CHECK("MAINT-04", test_maint_04_real_owner_contract());
     CHECK("MAINT-04", scheduler_gap_telemetry_contract());
+    CHECK("MAINT-04", phase5_first_invalid_provenance_contract());
+    CHECK("MAINT-04", expiry_telemetry_overflow_contract());
     CHECK("MAINT-04", full_table_hook_seed_contract());
     CHECK("MAINT-05", test_maint_05_checked_departure_contract());
     if (failures != 0u) {

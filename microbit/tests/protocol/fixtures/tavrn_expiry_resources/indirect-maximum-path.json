@@ -1,0 +1,44 @@
+{
+  "schema": "tron.mind.indirect-stack-maximum.v1",
+  "root": "routed_mesh_task",
+  "graph": {
+    "routed_mesh_task": [
+      "mind_root_coordinator_prepare",
+      "routed_cycle_router_submit"
+    ],
+    "mind_root_coordinator_prepare": ["mind_event_forwarder_consume_ingress"],
+    "routed_cycle_router_submit": ["mind_root_coordinator_submit"]
+  },
+  "sites": [
+    {"caller": "mind_event_forwarder_consume_ingress", "ordinal": 0},
+    {"caller": "mind_root_coordinator_submit", "ordinal": 0}
+  ],
+  "derived": [
+    {"caller": "mind_event_forwarder_consume_ingress", "target": "nested_indirect_heavy_callback"},
+    {"caller": "mind_root_coordinator_submit", "target": "generic_submit_callback"}
+  ],
+  "expected_paths": {
+    "generic_submit": [
+      "routed_mesh_task",
+      "routed_cycle_router_submit",
+      "mind_root_coordinator_submit",
+      "generic_submit_callback"
+    ],
+    "nested_callback": [
+      "routed_mesh_task",
+      "mind_root_coordinator_prepare",
+      "mind_event_forwarder_consume_ingress",
+      "nested_indirect_heavy_callback"
+    ]
+  },
+  "frames": {
+    "routed_mesh_task": 16,
+    "mind_root_coordinator_prepare": 16,
+    "routed_cycle_router_submit": 16,
+    "mind_root_coordinator_submit": 16,
+    "mind_event_forwarder_consume_ingress": 16,
+    "generic_submit_callback": 600,
+    "nested_indirect_heavy_callback": 700
+  },
+  "expected_terminal": "nested_indirect_heavy_callback"
+}

@@ -35,6 +35,7 @@ ISOLATION_TEST="${MICROBIT_ROOT}/tests/protocol/test_tavrn_phase4_cycle_isolatio
 CYCLE_HEADER="${MICROBIT_ROOT}/app/tavrn_routed_node/src/routed_cycle.h"
 FULL_HEADER="${MICROBIT_ROOT}/app/tavrn_routed_node/src/routed_full_telemetry.h"
 MAIN_SOURCE="${MICROBIT_ROOT}/app/tavrn_routed_node/src/main.c"
+ROUTED_CMAKE_SOURCE="${MICROBIT_ROOT}/app/tavrn_routed_node/CMakeLists.txt"
 RED_BINDING_SOURCE="${MICROBIT_ROOT}/tests/protocol/red_support/tavrn_phase4_binding_red_fixture.c"
 AODV_PRODUCTION_SOURCE="${MICROBIT_ROOT}/app/protocol/aodv_core.c"
 ROUTER_PRODUCTION_SOURCE="${MICROBIT_ROOT}/app/protocol/tavrn_router.c"
@@ -49,8 +50,9 @@ RREQ_COMMON_SOURCES=(
 
 scheduler_binding_check() {
     local binding_source="$1"
+    local routed_cmake_source="$2"
 
-    python3 - "${binding_source}" <<'PY'
+    python3 - "${binding_source}" "${routed_cmake_source}" <<'PY'
 import pathlib
 import re
 import sys
@@ -58,6 +60,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 try:
     source = path.read_text(encoding="utf-8")
+    routed_cmake_source = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 except OSError as error:
     print(error, file=sys.stderr)
     sys.exit(2)
@@ -111,6 +114,8 @@ def strip_comments_and_strings(text):
     return "".join(out)
 
 clean = strip_comments_and_strings(source)
+continued_source = source.replace("\\\n", " ")
+continued_clean = clean.replace("\\\n", " ")
 errors = []
 
 def function_body(name):
@@ -138,11 +143,60 @@ fault_body = function_body("routed_cycle_fault_idle")
 wait_body = function_body("routed_wait_for_release")
 diagnostic_pending_body = function_body("routed_diagnostic_pending")
 diagnostic_pop_body = function_body("routed_diagnostic_pop")
+tx_progress_body = function_body("__wrap_tm_snd_dat")
+dispatch_progress_body = function_body("routed_logger_publish_dispatch_progress")
 cyclic_body = function_body("routed_release_cyclic")
 main_body = function_body("usermain")
 scheduler_event_body = function_body("routed_cycle_router_scheduler_event")
 scheduler_input_body = function_body("routed_cycle_capture_scheduler_input")
 predecode_gate_body = function_body("routed_cycle_mark_predecode_gate")
+
+if not re.search(
+        r"#if\s+TRON_BUILD_ROUTED_FULL_TAVRN\s*&&\s*"
+        r"TRON_BUILD_ENABLE_WEARABLE_INGRESS\s*&&\s*"
+        r"!TRON_BUILD_BENCHMARK_MODE\s*&&\s*"
+        r"!TRON_BUILD_ENABLE_TEST_HOOKS\s*"
+        r"#define\s+ROUTED_VERBOSE_RUNTIME_TELEMETRY\s+0\s*"
+        r"#else\s*#define\s+ROUTED_VERBOSE_RUNTIME_TELEMETRY\s+1\s*#endif",
+        continued_source, re.S):
+    errors.append("quiet telemetry policy must be exact to unhooked FULL ingress")
+for call in (
+        "log_full_snapshot", "log_expiry_sweep", "log_cycle_diagnostic",
+        "log_retry_exhausted_event", "log_rreq_lifecycle", "log_summary",
+        "routed_full_snapshot_request"):
+    if not re.search(
+            r"if\s*\(\s*ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*!=\s*0\s*\)\s*"
+            r"\{[^{}]*\b" + call + r"\s*\(", logger_body, re.S):
+        errors.append(f"quiet telemetry must guard {call} formatting/work")
+for operation in (
+        "routed_full_snapshot_clear_ready", "routed_expiry_sweep_dequeue",
+        "routed_diagnostic_pop", "routed_retry_log_pop", "routed_rreq_pop",
+        "local_event_pop", "delivery_pop"):
+    if not re.search(r"\b" + operation + r"\s*\(", logger_body):
+        errors.append(f"quiet telemetry must retain {operation} queue cleanup")
+if (logger_body.find("routed_full_snapshot_clear_ready") <
+        logger_body.find("log_full_snapshot")):
+    errors.append("ready full snapshots must clear after optional formatting")
+quiet_provenance = re.search(
+    r"if\s*\(\s*ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*==\s*0\s*&&\s*"
+    r"routed_phase5_first_invalid_log_pending\s*\(\s*\)\s*\)\s*\{\s*"
+    r"\(\s*void\s*\)\s*mind_phase5_provenance_mark_logged\s*\(",
+    logger_body, re.S)
+if (quiet_provenance is None or
+        quiet_provenance.start() > logger_body.find("mind_log_queue_take")):
+    errors.append("quiet phase-5 provenance must be consumed before prioritized queues")
+if not re.search(
+        r"if\s*\(\s*mind_log_queue_take\s*\([^)]*\)\s*\)\s*\{\s*"
+        r"if\s*\(\s*ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*!=\s*0\s*\|\|\s*"
+        r"!mind_log_record_is_heartbeat\s*\([^)]*\)\s*\)\s*\{\s*"
+        r"log_mind_record\s*\(", logger_body, re.S):
+    errors.append(
+        "quiet telemetry must drain MIND records while preserving non-heartbeat emission")
+if ("routed cycle_fault now_ms=" not in source or
+        "routed router_fault reason=%u subreason=%u" not in source or
+        not re.search(r"ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*==\s*0\s*&&\s*"
+                      r"routed_cycle_state\.fault_latched", logger_body, re.S)):
+    errors.append("quiet telemetry must preserve one-shot terminal fault evidence")
 
 delay_calls = list(re.finditer(r"\btk_dly_tsk\s*\(", clean))
 if len(delay_calls) != 1 or "tk_dly_tsk" not in logger_body:
@@ -152,16 +206,23 @@ for name, body in (("healthy", healthy_body), ("fault", fault_body)):
         errors.append(f"{name} wait must use routed_wait_for_release")
 if not re.search(
         r"\btk_wai_flg\s*\(\s*routed_release_flag_id\s*,\s*"
-        r"ROUTED_RELEASE_BIT\s*,\s*TWF_ORW\s*\|\s*TWF_BITCLR\s*,\s*"
+        r"ROUTED_RELEASE_WAIT_BITS\s*,\s*TWF_ORW\s*\|\s*TWF_BITCLR\s*,\s*"
         r"&pattern\s*,\s*TMO_FEVR\s*\)", wait_body):
     errors.append("release helper must wait with ORW|BITCLR and TMO_FEVR")
 if not re.search(r"\bvolatile\s+uint32_t\s+routed_logger_progress_epoch\s*;", clean):
     errors.append("logger progress epoch must be volatile uint32_t")
+if not re.search(r"\bvolatile\s+uint32_t\s+routed_logger_dispatch_epoch\s*;", clean):
+    errors.append("logger dispatch/TX progress epoch must be volatile uint32_t")
+if not re.search(r"\bvolatile\s+uint8_t\s+routed_logger_progress_wake_armed\s*;",
+                 clean):
+    errors.append("one-shot logger progress wake arm must be volatile uint8_t")
 for pattern, message in (
     (r"\brouted_diagnostic_pending\s*\(",
      "release helper must check pending diagnostics"),
     (r"\brouted_logger_progress_epoch\b",
      "release helper must observe logger progress"),
+    (r"\brouted_logger_dispatch_epoch\b",
+     "release helper must observe logger dispatch/TX progress"),
     (r"\brouted_cycle_state\s*\.\s*last_scheduler_return_ms\b",
      "release helper must use the scheduler-return epoch"),
     (r"\btron_timer_config\s*\.\s*scheduler_poll_max_ms\b",
@@ -181,6 +242,99 @@ if not re.search(
     errors.append("diagnostic dequeue and progress publication must share the queue guard")
 if "routed_logger_progress_epoch++" in logger_body:
     errors.append("logger must not publish diagnostic progress after dispatch is re-enabled")
+if len(re.findall(r"\brouted_logger_publish_dispatch_progress\s*\(\s*\)\s*;",
+                  logger_body)) != 1:
+    errors.append("each logger loop must publish one dispatch acknowledgement")
+if (len(re.findall(r"\b__real_tm_snd_dat\s*\(\s*buffer\s*,\s*1\s*\)\s*;",
+                   tx_progress_body)) != 1 or
+        len(re.findall(r"\brouted_logger_publish_dispatch_progress\s*\(\s*\)\s*;",
+                       tx_progress_body)) != 1 or
+        tx_progress_body.find("__real_tm_snd_dat") >
+        tx_progress_body.find("routed_logger_publish_dispatch_progress") or
+        "tm_printf" in tx_progress_body):
+    errors.append("routed TX wrapper must acknowledge each byte after real non-logging TX")
+if (len(re.findall(r"\brouted_logger_dispatch_epoch\+\+\s*;",
+                   dispatch_progress_body)) != 1 or
+        not re.search(
+            r"routed_release_flag_id\s*>\s*0\s*\)\s*\{\s*"
+            r"dispatch_status\s*=\s*tk_dis_dsp\s*\(\s*\)",
+            dispatch_progress_body, re.S) or
+        dispatch_progress_body.find("tk_dis_dsp") >
+            dispatch_progress_body.find("routed_logger_dispatch_epoch++") or
+        not re.search(
+            r"routed_logger_progress_wake_armed\s*!=\s*0u\s*\)\s*\{\s*"
+            r"routed_logger_progress_wake_armed\s*=\s*0u\s*;\s*"
+            r"\(\s*void\s*\)\s*tk_set_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+            r"ROUTED_LOGGER_PROGRESS_BIT\s*\)", dispatch_progress_body, re.S) or
+        not re.search(
+            r"ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*==\s*0\s*\)\s*\{\s*"
+            r"\(\s*void\s*\)\s*tk_rot_rdq\s*\(\s*MIND_UI_TASK_PRIORITY\s*\)",
+            dispatch_progress_body, re.S) or
+        dispatch_progress_body.find("tk_ena_dsp") <
+            dispatch_progress_body.find("tk_set_flg") or
+        "tm_printf" in dispatch_progress_body or
+        "__real_tm_snd_dat" in dispatch_progress_body):
+    errors.append("dispatch helper must atomically publish, wake, and rotate priority 12")
+if (not re.search(r"#define\s+ROUTED_RELEASE_BIT\s+0x00000001u", clean) or
+        not re.search(r"#define\s+ROUTED_LOGGER_PROGRESS_BIT\s+0x00000002u", clean) or
+        not re.search(r"#define\s+ROUTED_LOGGER_REQUEST_BIT\s+0x00000004u", clean) or
+        not re.search(
+            r"#define\s+ROUTED_RELEASE_WAIT_BITS\s*"
+            r"\(\s*ROUTED_RELEASE_BIT\s*\|\s*ROUTED_LOGGER_PROGRESS_BIT\s*\)",
+            continued_clean, re.S)):
+    errors.append("logger progress wake must use a distinct ingress wait bit")
+if not re.search(
+        r"dispatch_epoch\s*=\s*routed_logger_dispatch_epoch\s*;\s*"
+        r"routed_logger_progress_wake_armed\s*=\s*1u\s*;\s*"
+        r"request_status\s*=\s*tk_set_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+        r"ROUTED_LOGGER_REQUEST_BIT\s*\)\s*;\s*"
+        r"if\s*\(\s*request_status\s*!=\s*E_OK\s*\)\s*\{\s*"
+        r"routed_logger_progress_wake_armed\s*=\s*0u\s*;\s*"
+        r"return\s+request_status", wait_body, re.S):
+    errors.append("ingress wait must arm and fail closed around logger request publication")
+if not re.search(
+        r"release_progressed\s*=\s*routed_logger_dispatch_epoch\s*!=\s*"
+        r"dispatch_epoch\s*;",
+        wait_body, re.S):
+    errors.append("ingress release completion must require fresh logger dispatch/TX progress")
+if not re.search(
+        r"release_progressed\s*=\s*diagnostic_pending\s*==\s*0\s*\|\|\s*"
+        r"routed_logger_progress_epoch\s*!=\s*progress_epoch\s*;",
+        wait_body, re.S):
+    errors.append("non-ingress release completion must retain diagnostic dequeue progress")
+if (not re.search(
+        r"elapsed_since_scheduler_return_ms\s*>\s*"
+        r"tron_timer_config\.scheduler_poll_max_ms", wait_body, re.S) or
+        not re.search(
+            r"elapsed_since_scheduler_return_ms\s*==\s*"
+            r"tron_timer_config\.scheduler_poll_max_ms\s*\)\s*\{\s*"
+            r"routed_logger_progress_wake_armed\s*=\s*1u", wait_body, re.S) or
+        not re.search(
+            r"now_ms\s*\(\s*\)\s*-\s*"
+            r"routed_cycle_state\.last_scheduler_return_ms\s*\)\s*>=\s*"
+            r"tron_timer_config\.scheduler_poll_max_ms", wait_body, re.S)):
+    errors.append("release timeout must retry ingress equality and retain non-ingress >=")
+if len(re.findall(
+        r"tk_set_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+        r"ROUTED_LOGGER_PROGRESS_BIT\s*\)", clean)) != 1:
+    errors.append("logger progress bit must have one one-shot signaling site")
+if (not re.search(
+        r"#if\s+ROUTED_VERBOSE_RUNTIME_TELEMETRY\s*"
+        r"#define\s+ROUTED_LOGGER_TASK_PRIORITY\s+11u\s*"
+        r"#else\s*#define\s+ROUTED_LOGGER_TASK_PRIORITY\s+"
+        r"MIND_UI_TASK_PRIORITY\s*#endif", continued_clean, re.S) or
+        not re.search(
+            r"tk_rot_rdq\s*\(\s*MIND_UI_TASK_PRIORITY\s*\)\s*;\s*"
+            r"if\s*\(\s*tk_wai_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+            r"ROUTED_LOGGER_REQUEST_BIT\s*,\s*TWF_ORW\s*\|\s*TWF_BITCLR\s*,\s*"
+            r"&logger_request_pattern\s*,\s*TMO_FEVR\s*\)\s*!=\s*E_OK",
+            logger_body, re.S) or
+        not re.search(r"\.flgatr\s*=\s*TA_TFIFO\s*\|\s*TA_WMUL", main_body)):
+    errors.append("quiet logger must share priority 12 and block on a multi-wait request bit")
+if not re.search(
+        r"target_link_options\s*\(\s*tavrn_routed_node\s+PRIVATE\s+"
+        r"-Wl,--wrap=tm_snd_dat\s*\)", routed_cmake_source, re.S):
+    errors.append("TX progress wrap must be enabled only on the routed executable")
 cyclic_calls = re.findall(r"\b([A-Za-z_]\w*)\s*\(", cyclic_body)
 if cyclic_calls != ["tk_set_flg"] or not re.search(
         r"\btk_set_flg\s*\(\s*routed_release_flag_id\s*,\s*"
@@ -298,6 +452,10 @@ mesh_calls = [name for name in re.findall(r"\b([A-Za-z_]\w*)\s*\(", mesh_body)
               if name not in {"if", "switch", "sizeof"}]
 if re.search(r"\b(?:for|while|do)\b", mesh_body) or mesh_calls != ["routed_cycle_run_task"]:
     errors.append("routed_mesh_task must remain the one-call routed_cycle_run_task adapter")
+if not re.search(
+        r"target_compile_definitions\s*\(\s*tavrn_routed_node\s+PRIVATE\b[^)]*"
+        r"ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL=0", routed_cmake_source, re.S):
+    errors.append("production routed runtime must keep timing overruns observe-only")
 
 if errors:
     print("; ".join(errors))
@@ -325,7 +483,9 @@ if [[ "$1" == "--scheduler-red" || "$1" == "--scheduler-green" ]]; then
             exit 2
         fi
     done
-    if ! "${CC_BIN}" "${COMMON_FLAGS[@]}" "${SCHEDULER_SOURCES[@]}" \
+    if ! "${CC_BIN}" "${COMMON_FLAGS[@]}" \
+            -DROUTED_CYCLE_TIMING_OVERRUN_TERMINAL=0 \
+            "${SCHEDULER_SOURCES[@]}" \
             -o "${SCHEDULER_BINARY}"; then
         printf 'Phase 4 scheduler %s compile failed\n' "${SCHEDULER_MODE}" >&2
         exit 2
@@ -348,7 +508,8 @@ if [[ "$1" == "--scheduler-red" || "$1" == "--scheduler-green" ]]; then
         exit 1
     fi
     set +e
-    scheduler_binding_message="$(scheduler_binding_check "${MAIN_SOURCE}" 2>&1)"
+    scheduler_binding_message="$(scheduler_binding_check "${MAIN_SOURCE}" \
+        "${ROUTED_CMAKE_SOURCE}" 2>&1)"
     scheduler_binding_status=$?
     set -e
     if [[ ${scheduler_binding_status} -ne 0 ]]; then
@@ -737,7 +898,7 @@ if (diagnostic_pop_index < 0 or diagnostic_print_index < diagnostic_pop_index or
 if not re.search(
         r"if\s*\(\s*routed_diagnostic_pop\s*\(\s*\)\s*\)\s*\{.*?"
         r"log_cycle_diagnostic\s*\(\s*&routed_logger_record\.diagnostic\s*\)\s*;"
-        r"\s*\}\s*else\s+if\s*\(\s*routed_retry_log_pop\s*\(\s*\)\s*\)\s*\{.*?"
+        r".*?\}\s*else\s+if\s*\(\s*routed_retry_log_pop\s*\(\s*\)\s*\)\s*\{.*?"
         r"log_retry_exhausted_event\s*\(\s*&routed_logger_record\.retry_event\s*\)\s*;",
         logger_task, re.S):
     errors.append("logger record priority or post-guard print ownership is wrong")

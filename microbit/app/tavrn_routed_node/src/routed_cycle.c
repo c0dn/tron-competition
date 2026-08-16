@@ -2,6 +2,15 @@
 
 #include <string.h>
 
+#ifndef ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL
+#define ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL 1
+#endif
+
+#if ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL != 0 && \
+    ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL != 1
+#error "ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL must be 0 or 1"
+#endif
+
 static int cycle_phase_is_traceable(routed_cycle_phase_t phase)
 {
     return phase >= ROUTED_CYCLE_PHASE_PRE_POLL_BOUND &&
@@ -101,6 +110,39 @@ static int scheduler_poll_result_is_valid(
         (result->status == ROUTED_CYCLE_SCHEDULER_POLL_OK ||
          result->status == ROUTED_CYCLE_SCHEDULER_POLL_INVALID) &&
         scheduler_event_is_valid(&result->event);
+}
+
+static tavrn_router_phase_trace_t scheduler_event_consumed_trace(
+    const ble_mesh_sched_event_t *event, uint32_t now_ms)
+{
+    tavrn_router_phase_trace_t trace;
+
+    memset(&trace, 0, sizeof(trace));
+    trace.phase = TAVRN_ROUTER_TRACE_SCHEDULER_EVENT;
+    trace.completed_at_ms = now_ms;
+    trace.detail.scheduler_event.status = TAVRN_ROUTER_EVENT_IGNORED;
+    if (event != NULL) {
+        trace.detail.scheduler_event.input_event_type = event->type;
+        trace.detail.scheduler_event.input_fault = event->fault;
+        trace.detail.scheduler_event.input_channel = event->channel;
+        trace.detail.scheduler_event.input_rssi_magnitude_db =
+            event->rssi_magnitude_db;
+        memcpy(trace.detail.scheduler_event.input_advertiser.bytes, event->adv_addr,
+               sizeof(trace.detail.scheduler_event.input_advertiser.bytes));
+        trace.detail.scheduler_event.input_adv_len = event->adv_len;
+        trace.detail.scheduler_event.input_present = TAVRN_ROUTER_TRACE_PRESENT;
+    }
+    trace.detail.scheduler_event.wire_decode_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    trace.detail.scheduler_event.decoded_frame_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    trace.detail.scheduler_event.link_step_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    trace.detail.scheduler_event.link_event_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    trace.detail.scheduler_event.rx_control_present =
+        TAVRN_ROUTER_TRACE_NOT_PRESENT;
+    return trace;
 }
 
 static int application_status_is_valid(routed_cycle_application_request_status_t status)
@@ -314,6 +356,18 @@ static int completion_timestamp_is_ordered(uint32_t phase_started_ms,
     return phase_completed_ms - phase_started_ms < ROUTED_CYCLE_HALF_RANGE;
 }
 
+static int scheduler_event_filter_result_is_valid(
+    const routed_cycle_scheduler_event_filter_result_t *result,
+    uint32_t phase_started_ms)
+{
+    return result != NULL &&
+        (result->status == ROUTED_CYCLE_SCHEDULER_EVENT_PASSTHROUGH ||
+         result->status == ROUTED_CYCLE_SCHEDULER_EVENT_CONSUMED ||
+         result->status == ROUTED_CYCLE_SCHEDULER_EVENT_FILTER_INVALID) &&
+        completion_timestamp_is_ordered(phase_started_ms,
+                                        result->completed_at_ms);
+}
+
 static int trace_begin(routed_cycle_trace_t *trace, const routed_cycle_t *cycle,
                        routed_cycle_phase_t phase, uint32_t cycle_started_ms,
                        uint32_t phase_started_ms, uint32_t phase_completed_ms,
@@ -345,16 +399,19 @@ static int trace_begin(routed_cycle_trace_t *trace, const routed_cycle_t *cycle,
 static int trace_mark_budget(routed_cycle_t *cycle, routed_cycle_trace_t *trace)
 {
     uint32_t elapsed;
+    int terminal;
 
     elapsed = trace->timing.elapsed_since_scheduler_return_ms;
     if (elapsed == ROUTED_CYCLE_HALF_RANGE) {
         trace->timing.over_budget = ROUTED_CYCLE_BOOLEAN_TRUE;
         trace->timing.over_budget_source =
             ROUTED_CYCLE_BUDGET_SOURCE_AMBIGUOUS_HALF_RANGE;
+        terminal = 1;
     } else if (elapsed > cycle->poll_bound_ms) {
         trace->timing.over_budget = ROUTED_CYCLE_BOOLEAN_TRUE;
         trace->timing.over_budget_source =
             ROUTED_CYCLE_BUDGET_SOURCE_SCHEDULER_RETURN_GAP;
+        terminal = ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL;
     } else {
         return 0;
     }
@@ -362,7 +419,7 @@ static int trace_mark_budget(routed_cycle_t *cycle, routed_cycle_trace_t *trace)
         cycle->first_over_budget_phase = trace->phase;
     }
     trace->timing.over_budget_phase = cycle->first_over_budget_phase;
-    return 1;
+    return terminal;
 }
 
 static int trace_append(const routed_cycle_operations_t *operations,
@@ -458,6 +515,7 @@ routed_cycle_run_status_t routed_cycle_run_once(
 {
     routed_cycle_trace_t trace;
     routed_cycle_scheduler_poll_result_t poll;
+    routed_cycle_scheduler_event_filter_result_t filter_result;
     tavrn_router_phase_trace_t router_trace;
     routed_cycle_application_request_t request;
     routed_cycle_yield_result_t yield_result;
@@ -504,8 +562,12 @@ routed_cycle_run_status_t routed_cycle_run_once(
         trace.timing.over_budget_source =
             ROUTED_CYCLE_BUDGET_SOURCE_SCHEDULER_RETURN_GAP;
         cycle->first_over_budget_phase = ROUTED_CYCLE_PHASE_PRE_POLL_BOUND;
-        cycle->fault_latched = 1u;
-        trace.fault_latched = ROUTED_CYCLE_BOOLEAN_TRUE;
+#if ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL
+        {
+            cycle->fault_latched = 1u;
+            trace.fault_latched = ROUTED_CYCLE_BOOLEAN_TRUE;
+        }
+#endif
     }
     cycle->last_gap_phase = ROUTED_CYCLE_PHASE_PRE_POLL_BOUND;
     if (!trace_append(operations, result_out, &trace)) {
@@ -542,8 +604,34 @@ routed_cycle_run_status_t routed_cycle_run_once(
 
     phase_started_at_ms = poll.returned_at_ms;
     if (poll.event.type != BLE_MESH_SCHED_EVENT_NONE) {
-        router_trace = operations->router_scheduler_event(
-            operations->context, &poll.event, phase_started_at_ms);
+        if (operations->scheduler_event_filter != NULL) {
+            filter_result = operations->scheduler_event_filter(
+                operations->context, &poll.event, phase_started_at_ms);
+
+            if (!scheduler_event_filter_result_is_valid(&filter_result,
+                                                        phase_started_at_ms)) {
+                return ROUTED_CYCLE_RUN_INVALID;
+            }
+            if (filter_result.status == ROUTED_CYCLE_SCHEDULER_EVENT_CONSUMED) {
+                router_trace = scheduler_event_consumed_trace(&poll.event,
+                                                                filter_result.completed_at_ms);
+            } else if (filter_result.status ==
+                       ROUTED_CYCLE_SCHEDULER_EVENT_PASSTHROUGH) {
+                router_trace = operations->router_scheduler_event(
+                    operations->context, &poll.event,
+                    filter_result.completed_at_ms);
+                if (!completion_timestamp_is_ordered(
+                        filter_result.completed_at_ms,
+                        router_trace.completed_at_ms)) {
+                    return ROUTED_CYCLE_RUN_INVALID;
+                }
+            } else {
+                return ROUTED_CYCLE_RUN_INVALID;
+            }
+        } else {
+            router_trace = operations->router_scheduler_event(
+                operations->context, &poll.event, phase_started_at_ms);
+        }
         if (!router_trace_is_valid(&router_trace,
                                    TAVRN_ROUTER_TRACE_SCHEDULER_EVENT)) {
             return ROUTED_CYCLE_RUN_INVALID;

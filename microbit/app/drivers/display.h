@@ -17,6 +17,9 @@
 
 /* Configure the matrix GPIO and start the refresh task. */
 void display_init(void);
+/* Application callers may keep visual refresh below a mesh owner.  Returns
+ * nonzero only after the refresh task has been created and started. */
+int display_init_with_priority(UINT priority);
 
 void display_clear(void);
 void display_fill(void);                       /* all 25 LEDs on */

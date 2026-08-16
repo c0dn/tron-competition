@@ -207,6 +207,26 @@ typedef routed_cycle_scheduler_poll_result_t (*routed_cycle_scheduler_poll_fn)(
     void *context, uint32_t poll_started_at_ms);
 typedef tavrn_router_phase_trace_t (*routed_cycle_router_scheduler_event_fn)(
     void *context, const ble_mesh_sched_event_t *event, uint32_t now_ms);
+/* An optional application-owned ingress filter runs before router or FULL
+ * mentorship handling.  CONSUMED produces an ignored scheduler trace without
+ * invoking the router callback; PASSTHROUGH preserves the existing path. */
+typedef enum routed_cycle_scheduler_event_filter_status {
+    ROUTED_CYCLE_SCHEDULER_EVENT_PASSTHROUGH = 0,
+    ROUTED_CYCLE_SCHEDULER_EVENT_CONSUMED,
+    ROUTED_CYCLE_SCHEDULER_EVENT_FILTER_INVALID,
+} routed_cycle_scheduler_event_filter_status_t;
+
+/* The filter owns its synchronous work interval.  Its completion is the
+ * consumed scheduler-event trace completion and the router callback start for
+ * a passthrough event. */
+typedef struct routed_cycle_scheduler_event_filter_result {
+    routed_cycle_scheduler_event_filter_status_t status;
+    uint32_t completed_at_ms;
+} routed_cycle_scheduler_event_filter_result_t;
+
+typedef routed_cycle_scheduler_event_filter_result_t
+    (*routed_cycle_scheduler_event_filter_fn)(
+        void *context, const ble_mesh_sched_event_t *event, uint32_t now_ms);
 typedef tavrn_router_phase_trace_t (*routed_cycle_router_tick_fn)(
     void *context, uint32_t now_ms);
 /* Optional one-shot take owned by the router-tick binding.  A nonzero result
@@ -236,6 +256,7 @@ typedef struct routed_cycle_operations {
     void *context;
     routed_cycle_start_rx_fn start_rx;
     routed_cycle_scheduler_poll_fn scheduler_poll;
+    routed_cycle_scheduler_event_filter_fn scheduler_event_filter;
     routed_cycle_router_scheduler_event_fn router_scheduler_event;
     routed_cycle_router_tick_fn router_tick;
     routed_cycle_take_scheduler_return_after_tick_fn
@@ -372,7 +393,10 @@ routed_cycle_result_t routed_cycle_seed_startup_rx_return(
  * that guard; otherwise it invokes neither healthy_yield nor emits a
  * HEALTHY_YIELD trace.  Callback
  * completion timestamps must equal their phase start or advance by less than
- * half range; a backward or half-range completion is structural invalid. */
+ * half range; a backward or half-range completion is structural invalid.
+ * ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL defaults to 1 for strict reusable
+ * tests.  A production target may define it as 0 to retain timing diagnostics
+ * without converting an ordinary bound crossing into a terminal fault. */
 routed_cycle_run_status_t routed_cycle_run_once(
     routed_cycle_t *cycle, const routed_cycle_operations_t *operations,
     uint32_t poll_started_at_ms, routed_cycle_run_result_t *result_out);

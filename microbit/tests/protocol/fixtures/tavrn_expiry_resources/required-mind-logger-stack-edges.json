@@ -1,0 +1,28 @@
+{
+  "schema": "tron.tavrn.expiry.required-stack-edges.v3",
+  "root": "routed_logger_task",
+  "edges": [
+    {"from": "routed_logger_task", "to": "mind_log_queue_take", "kind": "call", "when": "always"},
+    {"from": "routed_logger_task", "to": "log_mind_record", "kind": "call", "when": "always"},
+    {"from": "log_mind_record", "to": "mind_log_emit", "kind": "call", "when": "always"},
+    {"from": "mind_log_emit", "to": "mind_log_format_record", "kind": "call", "when": "always"},
+    {"from": "mind_log_emit", "to": "mind_log_line_sink", "kind": "indirect", "when": "always"},
+    {"from": "routed_mind_log_sink", "to": "tm_printf", "kind": "call", "when": "always"}
+  ],
+  "indirect_calls": [
+    {"from": "mind_log_emit", "site": 0, "to": "routed_mind_log_sink"},
+    {"from": "tm_vsprintf", "site": 0, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 1, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 2, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 3, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 4, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 5, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 6, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 7, "to": "out_cons"},
+    {"from": "tm_vsprintf", "site": 8, "to": "out_cons"}
+  ],
+  "declared_leaves": [
+    {"symbol": "memcpy", "frame_bytes": 0, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}},
+    {"symbol": "memset", "frame_bytes": 12, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "385ed1132a719dbc2afc62968e54eea01f0b8262c39bc16f429c352f6d57bacf"}}
+  ]
+}

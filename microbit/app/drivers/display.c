@@ -13,6 +13,25 @@
 #include "display.h"
 #include "gpio.h"
 
+#if defined(TRON_MIND_STATIC_TASK_BUFFERS)
+#include "tron_build_config.h"
+#if defined(__GNUC__)
+#define DISPLAY_TASK_STACK_ALIGNMENT \
+    __attribute__((aligned(TRON_BUILD_MIND_TASK_STACK_ALIGNMENT_BYTES)))
+#else
+#define DISPLAY_TASK_STACK_ALIGNMENT
+#endif
+typedef char display_task_stack_size_guard[
+    (TRON_BUILD_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES ==
+     TRON_BUILD_MIND_DISPLAY_TASK_STACK_BYTES +
+     TRON_BUILD_MIND_TASK_SYSTEM_STACK_BYTES) ? 1 : -1];
+typedef char display_task_stack_alignment_guard[
+    (TRON_BUILD_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES %
+     TRON_BUILD_MIND_TASK_STACK_ALIGNMENT_BYTES == 0u) ? 1 : -1];
+static UB display_task_stack[TRON_BUILD_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES]
+    DISPLAY_TASK_STACK_ALIGNMENT;
+#endif
+
 static const UINT row_pin[5] = {
     PIN(0, 21), PIN(0, 22), PIN(0, 15), PIN(0, 24), PIN(0, 19)
 };
@@ -102,23 +121,43 @@ static void display_task(INT stacd, void *exinf)
     }
 }
 
-void display_init(void)
+int display_init_with_priority(UINT priority)
 {
+#if defined(TRON_MIND_STATIC_TASK_BUFFERS)
+    T_CTSK ctsk = {
+        .exinf   = NULL,
+        .tskatr  = TA_HLNG | TA_RNG3 | TA_USERBUF,
+        .task    = (FP)display_task,
+        .itskpri = priority,
+        .stksz   = TRON_BUILD_MIND_DISPLAY_TASK_STACK_BYTES,
+        .bufptr  = display_task_stack,
+    };
+#else
     T_CTSK ctsk = {
         .exinf   = NULL,
         .tskatr  = TA_HLNG | TA_RNG3,
         .task    = (FP)display_task,
-        .itskpri = 8,                     /* higher than the app task */
+        .itskpri = priority,
         .stksz   = 512,
     };
+#endif
     ID tskid;
     configure_pins();
     display_clear();
 
     tskid = tk_cre_tsk(&ctsk);
     if (tskid > 0) {
-        tk_sta_tsk(tskid, 0);
+        if (tk_sta_tsk(tskid, 0) == E_OK) {
+            return 1;
+        }
+        (void)tk_ter_tsk(tskid);
     }
+    return 0;
+}
+
+void display_init(void)
+{
+    (void)display_init_with_priority(8u);
 }
 
 void display_clear(void)

@@ -30,7 +30,8 @@ UINT ble_emit_pack(const incident_state_t *st, UB *buf)
     p.confidence     = st->confidence;
     p.accel_svm      = (uint16_t)svm;
     p.mic_level      = st->mic_level;
-    p.seq            = st->seq;
+    /* The schema compatibility byte is always derived from the on-air ID. */
+    p.seq            = (UB)(st->event_id & 0xFFu);
 
     packet.net_id = MIND_MESH_NET_ID;
     packet.ttl = 0u;

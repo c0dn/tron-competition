@@ -1796,8 +1796,10 @@ their own `--before-map`, returned fresh `--after-map`, returned stack-usage
 `--su-glob`, `--stack-root routed_mesh_task`, and the required-edge manifest to
 every checker invocation. The manifest resolves both indirect routed-cycle
 operation edges, `routed_cycle_operations.router_scheduler_event` and
-`routed_cycle_operations.router_tick`, evaluates every reachable operation
-branch, and selects the true maximum-byte chain. The <=3072-byte result sums
+`routed_cycle_operations.router_tick`, resolves every reachable register-indirect
+`blx rN` callsite through a published v3 contract, evaluates every reachable
+operation branch, and selects the true maximum-byte chain. The <=4096-byte
+ceiling result sums
 all caller frames and by-value/hidden result storage, not merely the binding
 leaf. Kernel sources compiled in resource mode also emit `.su` evidence, so a
 scheduler-event branch cannot disappear behind an undeclared kernel frame.
@@ -1824,9 +1826,41 @@ and `aodv_only.source_inventory_sha256`. Each inventory is one selected relative
 source path per line (including untracked selected production source), hashed as
 the deterministic ordered `<sha256>  <relative-path>` digest list. The checker rejects missing
 or duplicate schema keys, stale artifact hashes, wrong target/feature/timer,
-binding symbol count mismatch, stack above 3072, headroom below 1024,
+binding symbol count mismatch, stack above 4096, headroom below 1024,
 post-reserve RAM below 8192, unexplained delta above 512, and every
 failing-fixture threshold.
+
+Wave D2 does not relabel a regenerated artifact as the lost historical expiry
+baseline. Its explicit
+`--d2-application-incremental-report <fresh-report>` profile mode builds a
+FULL+repair BALANCED node-6 ingress-OFF artifact, passes its current v3
+callsite-complete resource gate, and seals that artifact manifest outside the
+artifact directory before building ingress ON. The paired checker permits no
+common selected-source hash change, permits exactly `display.c` plus the thirteen
+MIND application sources on ingress ON, permits only
+`TRON_BUILD_ENABLE_WEARABLE_INGRESS` from 0 to 1 in the generated header, and
+limits semantic build-config changes to the root-plane capability, ingress and
+root-plane states, and source additions. The artifact manifest also publishes
+`source.worktree_content.scope=git-diff-head-binary-plus-relevant-untracked-v1`
+and `source.worktree_content.sha256`; the digest covers tracked `HEAD` deltas
+and relevant untracked source/config/test inputs while excluding build/output/
+temporary trees. D2 resolves and hashes the ELF/map, command/disassembly,
+generated config/build manifest, checked-in and complete generated-source
+inventories, generated-source snapshots, complete `.su` index/aggregate,
+resource/gate/preprocessed/contract evidence, and ON sizeof source/report.
+Generated source names must match across the pair; the exact header/build
+whitelist currently authorizes no generated translation-unit content change.
+Before acceptance, D2 reconstructs the mesh and application result from the
+preserved v3 contracts, disassembly, `.su` set, map, generated configuration,
+and preprocessed assignments. Every recomputed stack, RAM/reserve, heap/binding,
+auxiliary-stack, and ON fixed-state value must match both the finalized resource
+JSON and the exactly-once gate values; the resource JSON receives its mesh chain
+only after the successful gate produces it.
+Its
+`tron.tavrn.d2.application-incremental.v1` report hashes both artifacts, the
+external OFF seal, gate reports, preprocessed mains, contracts, and the ON size
+report; it states `acceptance.scope=D2_APPLICATION_INCREMENTAL` and
+`historical_expiry_fixed_state=USER_WAIVED_NOT_REPRODUCED`.
 
 ### Routed initial-task and RAM safety budget
 
@@ -1837,14 +1871,16 @@ routed application target and its target-specific μT-Kernel object target both
 compile with that exact `INITTASK_STKSZ` definition; `inittask.h` retains its
 overrideable 1024-byte default for legacy and link targets. Generated routed
 config/manifest evidence records `build.initial_task_stack_bytes=4096`,
-`capacity.routed_initial_task_stack_bytes=4096` with state `IMPLEMENTED`, and
-`resource.runtime_ram_reserve_bytes=12592`. Legacy and link evidence instead
+`capacity.routed_initial_task_stack_bytes=4096` with state `IMPLEMENTED`, the
+independent `build.routed_mesh_task_stack_bytes=4864` / routed-mesh capacity
+pair, and `resource.runtime_ram_reserve_bytes=13360`. Legacy and link evidence instead
 records initial-task default 1024, routed-capacity state `NOT_APPLICABLE`, and
 reserve zero.
 
-The 4096-byte initial-task capacity is not the existing 4096-byte
-`routed_mesh_task` stack: the latter retains the full routed-cycle static-chain
-check (at most 3072 bytes and at least 1024 bytes headroom). Separately, the
+The 4096-byte initial-task capacity is not the independent 4864-byte
+`routed_mesh_task` allocation: the latter has a 4096-byte measured-chain ceiling
+and a separate 1024-byte headroom requirement, making 3840 bytes the effective
+maximum. Separately, the
 resource gate locates exactly the production
 `app/tavrn_routed_node/src/main.c:usermain` GCC `.su` record rather than the
 weak kernel `usermain`, and requires at least 1024 bytes of logical capacity
@@ -1852,7 +1888,7 @@ above that function's static frame. This is deliberately only a direct-frame
 sanity check; it does **not** claim that the frame is a complete startup call
 chain.
 
-`TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES=12592` is the conservative routed runtime
+`TRON_ROUTED_RUNTIME_RAM_RESERVE_BYTES=13360` is the conservative routed runtime
 allocation allowance for the initial task, mesh task, logger task, exception
 stack, and allocator overhead. The checker keeps the existing map-free-RAM gate,
 then subtracts that reserve without underflow and requires
@@ -1888,8 +1924,8 @@ mismatch invalidates comparison and restarts from that untouched baseline; it
 must never regenerate a baseline after semantic edits.
 
 Both links must succeed with no heap, at least 8 KiB post-reserve RAM, static
-worst-case mesh-task operation chain at most 3072 bytes (leaving at least 1024
-bytes of the 4096-byte mesh stack), and unexplained fixed-state growth no more
+worst-case mesh-task operation chain at most 4096 bytes and at least 1024 bytes
+of the 4864-byte allocation (an effective 3840-byte maximum), and unexplained fixed-state growth no more
 than 512 bytes beyond declared fixed structs/alignment. A separate test-only FULL
 FAST_TEST full-table hook seeds exactly once after GTT and maintenance
 initialization and before the mesh task begins: self plus 15 deterministic

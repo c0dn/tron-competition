@@ -9,18 +9,27 @@ FIXTURES="${MICROBIT_ROOT}/tests/protocol/fixtures"
 SIX_BOARD_INVENTORY="${MICROBIT_ROOT}/hardware-results/2026-08-11-tavrn-six-board-inventory.tsv"
 EXPIRY_REPORT=""
 EXPIRY_FIXTURES=""
+D2_INCREMENTAL_REPORT=""
 
 if [[ $# -ne 0 ]]; then
-    if [[ $# -ne 4 || "$1" != "--expiry-resource-acceptance-report" ||
-          "$3" != "--expiry-resource-fixtures" ]]; then
-        printf 'usage: %s [--expiry-resource-acceptance-report PATH --expiry-resource-fixtures DIR]\n' \
+    if [[ $# -eq 4 && "$1" == "--expiry-resource-acceptance-report" &&
+          "$3" == "--expiry-resource-fixtures" ]]; then
+        EXPIRY_REPORT="$2"
+        EXPIRY_FIXTURES="$4"
+        if [[ -e "$EXPIRY_REPORT" || ! -d "$EXPIRY_FIXTURES" ]]; then
+            printf '%s\n' 'expiry resource report must be fresh and fixtures must be a directory' >&2
+            exit 2
+        fi
+    elif [[ $# -eq 2 && "$1" == "--d2-application-incremental-report" ]]; then
+        D2_INCREMENTAL_REPORT="$2"
+        EXPIRY_FIXTURES="${MICROBIT_ROOT}/tests/protocol/fixtures/tavrn_expiry_resources"
+        if [[ -e "$D2_INCREMENTAL_REPORT" ]]; then
+            printf '%s\n' 'D2 application incremental report must be fresh' >&2
+            exit 2
+        fi
+    else
+        printf 'usage: %s [--expiry-resource-acceptance-report PATH --expiry-resource-fixtures DIR | --d2-application-incremental-report PATH]\n' \
             "$0" >&2
-        exit 2
-    fi
-    EXPIRY_REPORT="$2"
-    EXPIRY_FIXTURES="$4"
-    if [[ -e "$EXPIRY_REPORT" || ! -d "$EXPIRY_FIXTURES" ]]; then
-        printf '%s\n' 'expiry resource report must be fresh and fixtures must be a directory' >&2
         exit 2
     fi
 fi
@@ -238,6 +247,43 @@ if definitions != [definition]:
 PY
 }
 
+require_compile_option_pair_once() {
+    local commands="$1"
+    local source="$2"
+    local option="$3"
+    local value="$4"
+
+    python3 - "$commands" "$source" "$option" "$value" <<'PY'
+import json
+import pathlib
+import shlex
+import sys
+
+commands_path = pathlib.Path(sys.argv[1])
+source = pathlib.Path(sys.argv[2]).resolve()
+option, value = sys.argv[3:]
+entries = json.loads(commands_path.read_text(encoding="utf-8"))
+matches = []
+for entry in entries:
+    candidate = pathlib.Path(entry["file"])
+    if not candidate.is_absolute():
+        candidate = pathlib.Path(entry.get("directory", commands_path.parent)) / candidate
+    if candidate.resolve() == source:
+        matches.append(entry)
+if len(matches) != 1:
+    raise SystemExit("expected one compile command for %s, found %d" % (source, len(matches)))
+entry = matches[0]
+arguments = entry.get("arguments")
+if not isinstance(arguments, list):
+    arguments = shlex.split(entry.get("command", ""))
+pairs = [(arguments[index], arguments[index + 1])
+         for index in range(len(arguments) - 1)]
+if pairs.count((option, value)) != 1:
+    raise SystemExit("compile command for %s lacks one %r %r pair" %
+                     (source, option, value))
+PY
+}
+
 require_no_initial_task_override() {
     local commands="$1"
 
@@ -381,7 +427,8 @@ run_expiry_fixture_checks() {
     local fixture status
     local passing=(baseline.json pass.json balanced-baseline.json balanced-pass.json)
     # Every threshold-failing fixture must reach its own named checker failure.
-    local failing=(fail-stack.json fail-headroom.json fail-ram.json fail-delta.json fail-capture.json
+    local failing=(fail-stack.json fail-headroom.json ceiling-4097-fail.json headroom-3841-fail.json
+                   fail-ram.json fail-delta.json fail-capture.json
                    fail-heap.json fail-binding.json
                    balanced-fail-stack.json balanced-fail-headroom.json balanced-fail-ram.json
                    balanced-fail-delta.json balanced-fail-capture.json
@@ -486,7 +533,7 @@ if not all(re.fullmatch(r"[0-9]+", value) for value in
            (map_unallocated, reserve, post_reserve)):
     raise SystemExit(1)
 map_unallocated, reserve, post_reserve = map(int, (map_unallocated, reserve, post_reserve))
-if reserve != 12592 or map_unallocated < reserve or \
+if reserve != 13360 or map_unallocated < reserve or \
         post_reserve != map_unallocated - reserve or post_reserve < 8192:
     raise SystemExit(1)
 PY
@@ -517,7 +564,8 @@ PY
             --resolve-operation-edge 'routed_cycle_operations.router_scheduler_event=routed_cycle_router_scheduler_event' \
             --resolve-operation-edge 'routed_cycle_operations.router_tick=routed_cycle_router_tick' \
             --disassembly "$disassembly" --compile-commands "$commands" \
-            --config-header "$config" >"$output" 2>&1
+            --config-header "$config" --main-source "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" \
+            --preprocessed-main-out "${evidence_dir}/${profile}.stack-baseline.main.i" >"$output" 2>&1
         [[ "$(acceptance_log_value BASELINE_OF_RECORD "$output")" ]] || return 1
         [[ "$(acceptance_log_value BEFORE_SOURCE_INVENTORY_SHA256 "$output")" =~ ^[0-9a-f]{64}$ ]] || return 1
         [[ "$(acceptance_log_value AFTER_SOURCE_INVENTORY_SHA256 "$output")" =~ ^[0-9a-f]{64}$ ]] || return 1
@@ -684,13 +732,13 @@ PY
     full_balanced_initial_task_static_frame="$(acceptance_log_value INITIAL_TASK_STATIC_FRAME_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
     full_balanced_initial_task_logical_headroom="$(acceptance_log_value INITIAL_TASK_LOGICAL_HEADROOM_BYTES "${evidence_dir}/full_balanced.resource-gate.log")"
     [[ "$full_fast_map_unallocated_ram" =~ ^[0-9]+$ &&
-       "$full_fast_runtime_ram_reserve" == 12592 &&
+       "$full_fast_runtime_ram_reserve" == 13360 &&
        "$full_fast_post_reserve_ram" =~ ^[0-9]+$ &&
        "$full_fast_initial_task_stack" == 4096 &&
        "$full_fast_initial_task_static_frame" == 440 &&
        "$full_fast_initial_task_logical_headroom" == 3656 &&
        "$full_balanced_map_unallocated_ram" =~ ^[0-9]+$ &&
-       "$full_balanced_runtime_ram_reserve" == 12592 &&
+       "$full_balanced_runtime_ram_reserve" == 13360 &&
        "$full_balanced_post_reserve_ram" =~ ^[0-9]+$ &&
        "$full_balanced_initial_task_stack" == 4096 &&
        "$full_balanced_initial_task_static_frame" == 440 &&
@@ -837,6 +885,126 @@ PY
     printf 'expiry resource acceptance artifacts: %s\n' "$evidence_dir"
 }
 
+run_d2_application_incremental_acceptance() {
+    local evidence_dir checker off_dir on_dir off_manifest on_manifest seal
+
+    checker="${MICROBIT_ROOT}/scripts/check_tavrn_expiry_resources.py"
+    evidence_dir="$(mktemp -d "${TMPDIR:-/tmp}/tron-d2-application-incremental.XXXXXX")"
+    off_dir="${evidence_dir}/ingress-off"
+    on_dir="${evidence_dir}/ingress-on"
+    seal="${evidence_dir}/ingress-off.manifest.sha256"
+    run_expiry_fixture_checks
+    bash "${MICROBIT_ROOT}/build-tavrn-ble.sh" --target tavrn_routed_node \
+        --feature FULL_TAVRN --repair ON --timer BALANCED --stack-usage \
+        --app-node-number 6 --d2-current-resource-gate --out "$off_dir" >/dev/null
+    off_manifest="$(expiry_manifest_path "$off_dir")"
+    python3 "$checker" --seal-passed-artifact-manifest "$off_manifest" \
+        --seal-output "$seal" >/dev/null
+    bash "${MICROBIT_ROOT}/build-tavrn-ble.sh" --target tavrn_routed_node \
+        --feature FULL_TAVRN --repair ON --timer BALANCED --stack-usage \
+        --wearable-ingress ON --app-node-number 6 --d2-current-resource-gate \
+        --application-resource-baseline "$off_dir" \
+        --application-resource-baseline-seal "$seal" --out "$on_dir" >/dev/null
+    on_manifest="$(expiry_manifest_path "$on_dir")"
+    python3 "$checker" --d2-paired-acceptance-report "$D2_INCREMENTAL_REPORT" \
+        --d2-off-artifact-manifest "$off_manifest" --d2-off-seal "$seal" \
+        --d2-on-artifact-manifest "$on_manifest" >/dev/null
+    [[ -s "$D2_INCREMENTAL_REPORT" ]] || return 1
+    d2_pair_attack_must_fail() {
+        local mode="$1"
+        local attack_dir="${evidence_dir}/attack-${mode}"
+        local attack_manifest attack_report status
+
+        cp -a "$on_dir" "$attack_dir"
+        python3 - "$attack_dir" "$mode" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+manifest = next(path for path in directory.glob("*.manifest")
+                if not path.name.endswith(".build-config.manifest"))
+values = dict(line.split("=", 1) for line in manifest.read_text(encoding="utf-8").splitlines()
+              if line)
+
+if mode == "schema-only-contract":
+    contract = directory / values["resource.contract.0.name"]
+    contract.write_text(json.dumps({
+        "schema": "tron.tavrn.expiry.required-stack-edges.v3"}), encoding="utf-8")
+    changed = ("resource.contract.0",)
+elif mode == "coordinated-metrics":
+    resource = directory / values["resource.manifest.name"]
+    document = json.loads(resource.read_text(encoding="utf-8"))
+    document["stack"]["total_bytes"] = 1
+    document["stack"]["headroom_bytes"] = 4863
+    resource.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate = directory / values["resource.gate_report.name"]
+    gate.write_text(
+        re.sub(r"(?m)^MESH_STACK_TOTAL_BYTES=[0-9]+$", "MESH_STACK_TOTAL_BYTES=1",
+               re.sub(r"(?m)^MESH_STACK_HEADROOM_BYTES=[0-9]+$",
+                      "MESH_STACK_HEADROOM_BYTES=4863", gate.read_text(encoding="utf-8"))),
+        encoding="utf-8")
+    changed = ("resource.manifest", "resource.gate_report")
+elif mode in {"mesh-chain-empty", "mesh-chain-missing", "mesh-chain-duplicate",
+              "auxiliary-chain-empty"}:
+    gate = directory / values["resource.gate_report.name"]
+    contents = gate.read_text(encoding="utf-8")
+    if mode == "mesh-chain-empty":
+        contents, count = re.subn(r"(?m)^STACK_CHAIN=.*$", "STACK_CHAIN=[]", contents)
+    elif mode == "mesh-chain-missing":
+        contents, count = re.subn(r"(?m)^STACK_CHAIN=.*\n?", "", contents)
+    elif mode == "mesh-chain-duplicate":
+        match = re.search(r"(?m)^STACK_CHAIN=.*$", contents)
+        if match is None:
+            raise SystemExit("missing mesh STACK_CHAIN")
+        contents = contents[:match.end()] + "\n" + match.group(0) + contents[match.end():]
+        count = 1
+    else:
+        contents, count = re.subn(r"(?m)^MIND_UI_TASK_STACK_CHAIN=.*$",
+                                  "MIND_UI_TASK_STACK_CHAIN=[]", contents)
+    if count != 1:
+        raise SystemExit("expected one chain line to mutate")
+    gate.write_text(contents, encoding="utf-8")
+    changed = ("resource.gate_report",)
+else:
+    raise SystemExit("unknown D2 attack")
+
+for key in changed:
+    path = directory / values[key + ".name"]
+    values[key + ".sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    values[key + ".size"] = str(path.stat().st_size)
+manifest.write_text("".join("%s=%s\n" % item for item in sorted(values.items())), encoding="utf-8")
+PY
+        attack_manifest="$(expiry_manifest_path "$attack_dir")"
+        attack_report="${evidence_dir}/attack-${mode}.report"
+        set +e
+        python3 "$checker" --d2-paired-acceptance-report "$attack_report" \
+            --d2-off-artifact-manifest "$off_manifest" --d2-off-seal "$seal" \
+            --d2-on-artifact-manifest "$attack_manifest" >/dev/null 2>&1
+        status=$?
+        set -e
+        if [[ $status -eq 0 ]]; then
+            printf 'D2 self-consistent %s attack unexpectedly passed\n' "$mode" >&2
+            return 1
+        fi
+    }
+    d2_pair_attack_must_fail schema-only-contract
+    d2_pair_attack_must_fail coordinated-metrics
+    d2_pair_attack_must_fail mesh-chain-empty
+    d2_pair_attack_must_fail mesh-chain-missing
+    d2_pair_attack_must_fail mesh-chain-duplicate
+    d2_pair_attack_must_fail auxiliary-chain-empty
+    printf 'D2 application incremental acceptance artifacts: %s\n' "$evidence_dir"
+}
+
+if [[ -n "$D2_INCREMENTAL_REPORT" ]]; then
+    run_d2_application_incremental_acceptance
+    exit 0
+fi
+
 if [[ -n "$EXPIRY_REPORT" ]]; then
     run_expiry_resource_acceptance
     exit 0
@@ -888,6 +1056,10 @@ if ! grep -Fqx '#define TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY 4u' \
     exit 1
 fi
 build_target routed-queue-capacity-default tavrn_routed_node
+require_compile_option_pair_once \
+    "$WORK_DIR/routed-queue-capacity-default/compile_commands.json" \
+    "$MICROBIT_ROOT/app/protocol/ble_mesh_tx_queue.c" -include \
+    "$routed_queue_default_config"
 
 for routed_queue_capacity in 4 8 16 40; do
     routed_queue_name="routed-queue-capacity-${routed_queue_capacity}"
@@ -904,6 +1076,10 @@ for routed_queue_capacity in 4 8 16 40; do
         exit 1
     fi
     build_target "$routed_queue_name" tavrn_routed_node
+    require_compile_option_pair_once \
+        "$WORK_DIR/$routed_queue_name/compile_commands.json" \
+        "$MICROBIT_ROOT/app/protocol/ble_mesh_tx_queue.c" -include \
+        "$routed_queue_config"
 done
 configure_fail_with routed-queue-capacity-invalid \
     'TRON_ROUTED_TX_QUEUE_CAPACITY must be exactly 4, 8, 16, or 40' \
@@ -922,8 +1098,11 @@ legacy_manifest="$(legacy_manifest_path default-legacy)"
 require_line 'build.phase1_target=LEGACY' "$legacy_manifest"
 require_line 'build.behavior=LEGACY_FLOOD' "$legacy_manifest"
 require_line 'build.initial_task_stack_bytes=1024' "$legacy_manifest"
+require_line 'capacity.scheduler_tx_queue=4' "$legacy_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$legacy_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes=4864' "$legacy_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
 require_line 'build.routed_logger_task_stack_bytes=1840' "$legacy_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes=1840' "$legacy_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes.state=NOT_APPLICABLE' "$legacy_manifest"
@@ -943,8 +1122,12 @@ if [[ "$(grep -c '^source\.selected\.[0-9].*=libs/mtkernel_3/include/sys/inittas
 fi
 build_target default-legacy ble_mesh_node
 require_no_initial_task_override "$WORK_DIR/default-legacy/compile_commands.json"
+require_compile_option_pair_once "$WORK_DIR/default-legacy/compile_commands.json" \
+    "$MICROBIT_ROOT/app/protocol/ble_mesh_tx_queue.c" -include \
+    "$WORK_DIR/default-legacy/app/ble_mesh_node/generated/ble_mesh_node/tron_build_config.h"
 legacy_config_header="$WORK_DIR/default-legacy/app/ble_mesh_node/generated/ble_mesh_node/tron_build_config.h"
 if ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 1024u' "$legacy_config_header" ||
+   ! grep -Fqx '#define TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY 4u' "$legacy_config_header" ||
    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u' "$legacy_config_header"; then
     printf '%s\n' 'legacy generated config does not retain default initial-task RAM values' >&2
     exit 1
@@ -965,6 +1148,7 @@ require_line 'timer.aodv_node_traversal_ms=10' "$runtime_manifest"
 require_line 'formula.verification_window_ms=timer.aodv_net_traversal_ms+2*timer.aodv_path_discovery_ms' "$runtime_manifest"
 require_line 'timer.link_no_response_wall_bound_ms=9894' "$runtime_manifest"
 require_line 'capacity.link_custody.state=IMPLEMENTED' "$runtime_manifest"
+require_line 'capacity.scheduler_tx_queue=4' "$runtime_manifest"
 require_line 'capacity.aodv_routes.state=NOT_IMPLEMENTED' "$runtime_manifest"
 require_line 'capacity.retry_log_mailbox=1' "$runtime_manifest"
 require_line 'capacity.retry_log_mailbox.policy=RETAIN_OLDEST_DROP_NEWEST' "$runtime_manifest"
@@ -973,6 +1157,8 @@ require_line 'capacity.retry_log_mailbox.state=NOT_APPLICABLE' "$runtime_manifes
 require_line 'build.initial_task_stack_bytes=1024' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$runtime_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes=4864' "$runtime_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
 require_line 'build.routed_logger_task_stack_bytes=1840' "$runtime_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes=1840' "$runtime_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes.state=NOT_APPLICABLE' "$runtime_manifest"
@@ -982,6 +1168,9 @@ require_line 'bench.role_number=0' "$runtime_manifest"
 require_selected_source_count "$runtime_manifest" 'app/drivers/display.c' 0
 build_target runtime-link ble_link_v2_testbed
 require_no_initial_task_override "$WORK_DIR/runtime-link/compile_commands.json"
+require_compile_option_pair_once "$WORK_DIR/runtime-link/compile_commands.json" \
+    "$MICROBIT_ROOT/app/protocol/ble_mesh_tx_queue.c" -include \
+    "$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_build_config.h"
 runtime_timer_source="$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_timer_config.c"
 runtime_config_header="$WORK_DIR/runtime-link/app/ble_link_v2_testbed/generated/ble_link_v2_testbed/tron_build_config.h"
 require_timer_profile_surface FAST_TEST "$runtime_manifest" "$runtime_timer_source" 1500
@@ -994,6 +1183,7 @@ fi
 if [[ ! -f "$runtime_config_header" ]] ||
    ! grep -Fq '#define TRON_BUILD_RUNTIME_CONFIG_EVIDENCE "poc=link_v2_harness' "$runtime_config_header" ||
    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 1024u' "$runtime_config_header" ||
+   ! grep -Fqx '#define TRON_BUILD_ROUTED_TX_QUEUE_CAPACITY 4u' "$runtime_config_header" ||
    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 0u' "$runtime_config_header" ||
    ! grep -Fq 'timer.scheduler_poll_max_ms=2' "$runtime_config_header" ||
    ! grep -Fq 'hook.hack_drop_count=0' "$runtime_config_header"; then
@@ -1024,10 +1214,13 @@ require_line 'feature.level.effective=AODV_ONLY' "$routed_manifest"
 require_line 'build.initial_task_stack_bytes=4096' "$routed_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
+require_line 'build.routed_mesh_task_stack_bytes=4864' "$routed_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes=4864' "$routed_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
 require_line 'build.routed_logger_task_stack_bytes=1840' "$routed_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes=1840' "$routed_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' "$routed_manifest"
-require_line 'resource.runtime_ram_reserve_bytes=12592' "$routed_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=13360' "$routed_manifest"
 require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,aodv-only,typed-runtime-observability,rreq-scope-telemetry' "$routed_manifest"
 require_line 'capacity.aodv_routes.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.aodv_action_queue.state=IMPLEMENTED' "$routed_manifest"
@@ -1060,7 +1253,7 @@ require_line 'bench.role_number=0' "$routed_manifest"
 require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 48 ]]; then
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 49 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1083,9 +1276,10 @@ if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_aodv_config" ||
    ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_aodv_config" ||
     ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES 4864u' "$routed_aodv_config" ||
     ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$routed_aodv_config" ||
-   ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_aodv_config" ||
-    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u' "$routed_aodv_config"; then
+    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 13360u' "$routed_aodv_config"; then
     printf '%s\n' 'AODV_ONLY generated config does not expose the selected feature macro' >&2
     exit 1
 fi
@@ -1111,10 +1305,13 @@ require_line 'capacity.repair_data.state=NOT_IMPLEMENTED' "$routed_full_manifest
 require_line 'build.initial_task_stack_bytes=4096' "$routed_full_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes=4096' "$routed_full_manifest"
 require_line 'capacity.routed_initial_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
+require_line 'build.routed_mesh_task_stack_bytes=4864' "$routed_full_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes=4864' "$routed_full_manifest"
+require_line 'capacity.routed_mesh_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
 require_line 'build.routed_logger_task_stack_bytes=1840' "$routed_full_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes=1840' "$routed_full_manifest"
 require_line 'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' "$routed_full_manifest"
-require_line 'resource.runtime_ram_reserve_bytes=12592' "$routed_full_manifest"
+require_line 'resource.runtime_ram_reserve_bytes=13360' "$routed_full_manifest"
     require_line 'build.implemented_capabilities=wire-v2,link-v2,custody,aodv,esc-k1,sid8-identity-context,mentorship-bootstrap,passive-gtt,smart-ttl,adaptive-sid8-hello,hello-ema-snap,hello-topology-reset,hello-broadcast-suppression,hello-liveness-hysteresis,hello-equality-dedupe,hello-gtt-liveness,local-expiry-demand,targeted-freshness-stage0,targeted-hello-request-response,targeted-runtime-binding,retained-hop-full-diameter-rreq-verification,tc-join-leave,general-route-metadata,maintenance-telemetry,tc-metadata-telemetry,typed-runtime-observability,rreq-scope-telemetry,gtt-snapshot' "$routed_full_manifest"
 require_line 'fixed_k.state=1' "$routed_full_manifest"
 require_line 'capacity.gtt_membership.state=IMPLEMENTED' "$routed_full_manifest"
@@ -1161,7 +1358,13 @@ require_selected_source_count "$routed_full_manifest" 'app/drivers/display.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 48 ]]; then
+require_selected_source_count "$routed_full_manifest" \
+    'app/mind_application/mind_application_wire.c' 0
+require_selected_source_count "$routed_full_manifest" \
+    'app/mind_application/mind_application_ingress.c' 0
+require_selected_source_count "$routed_full_manifest" \
+    'app/mind_application/mind_event_forwarder.c' 0
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 49 ]]; then
     printf '%s\n' 'routed FULL_TAVRN capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1213,6 +1416,14 @@ require_exact_selected_sources "$routed_full_manifest" \
     'app/protocol/tavrn_smart_ttl.c' \
     'libs/mtkernel_3/include/sys/inittask.h'
 build_target routed-full tavrn_routed_node
+routed_full_elf="$WORK_DIR/routed-full/firmware/tavrn_routed_node/tavrn_routed_node.elf"
+for marker in 'routed cycle_diagnostic' 'routed stats now=' \
+              'routed expiry_sweep' 'routed rreq_lifecycle'; do
+    if ! grep -aFq -- "$marker" "$routed_full_elf"; then
+        printf 'verbose FULL_TAVRN ELF lacks telemetry marker: %s\n' "$marker" >&2
+        exit 1
+    fi
+done
 routed_full_config="$WORK_DIR/routed-full/app/tavrn_routed_node/generated/tavrn_routed_node/tron_build_config.h"
 if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 1' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_ENABLE_WEARABLE_INGRESS 0' "$routed_full_config" ||
@@ -1221,9 +1432,10 @@ if ! grep -Fqx '#define TRON_BUILD_ROUTED_FULL_TAVRN 1' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_TEST_EXPIRY_FULL_TABLE 0' "$routed_full_config" ||
    ! grep -Fqx '#define TRON_BUILD_BENCH_ROLE_NUMBER 0u' "$routed_full_config" ||
     ! grep -Fqx '#define TRON_BUILD_BENCH_IDENTIFY_DISPLAY 0' "$routed_full_config" ||
+    ! grep -Fqx '#define TRON_BUILD_ROUTED_MESH_TASK_STACK_BYTES 4864u' "$routed_full_config" ||
     ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$routed_full_config" ||
-   ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_full_config" ||
-    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 12592u' "$routed_full_config"; then
+    ! grep -Fqx '#define TRON_BUILD_INITIAL_TASK_STACK_BYTES 4096u' "$routed_full_config" ||
+    ! grep -Fqx '#define TRON_BUILD_RUNTIME_RAM_RESERVE_BYTES 13360u' "$routed_full_config"; then
     printf '%s\n' 'FULL_TAVRN generated config does not expose the selected feature macro' >&2
     exit 1
 fi
@@ -1235,8 +1447,8 @@ require_compile_definition_once "$WORK_DIR/routed-full/compile_commands.json" \
     "$MICROBIT_ROOT/libs/mtkernel_3/kernel/inittask/inittask.c" 'INITTASK_STKSZ=4096' \
     'mtkernel3_microbit_kernel_tavrn_routed_node'
 
-# APP-PROFILE-01: the future Layer-7 ingress has a production-only profile
-# seam. It affects no source closure until the application module is added.
+# APP-PROFILE-01: production FULL_TAVRN ingress has a closed Layer-7 source
+# set and cannot coexist with benchmark observability sources.
 configure_ok routed-full-production -DTRON_PHASE1_TARGET=ROUTED \
     -DTRON_NODE_MODE=TAVRN_ROUTED -DTAVRN_FEATURE_LEVEL=FULL_TAVRN \
     -DTAVRN_ENABLE_LOCAL_REPAIR=ON -DTRON_ENABLE_WEARABLE_INGRESS=ON \
@@ -1248,6 +1460,25 @@ for expected in \
     'application.node_number=6' \
     'application.wearable_ingress.requested=ON' \
     'application.wearable_ingress.effective=ON' \
+    'application.root_plane.effective=ON' \
+    'application.root_registry_capacity=16' \
+    'application.root_campaign_capacity=16' \
+    'application.root_ack_capacity=16' \
+    'application.event_capacity=16' \
+    'application.ingress_seen_capacity=16' \
+    'application.ingress_queue_capacity=8' \
+    'application.final_inbox_capacity=8' \
+    'application.logger_capacity=8' \
+    'application.uart_rx_ring_capacity=32' \
+    'application.command_mailbox_capacity=8' \
+    'application.uart_task_stack_bytes=512' \
+    'application.ui_task_stack_bytes=512' \
+    'application.display_task_stack_bytes=512' \
+    'application.task_system_stack_bytes=128' \
+    'application.task_stack_alignment_bytes=8' \
+    'application.uart_task_static_buffer_bytes=640' \
+    'application.ui_task_static_buffer_bytes=640' \
+    'application.display_task_static_buffer_bytes=640' \
     'hook.enabled=OFF' \
     'hook.rx_block_adva=NOT_CONFIGURED' \
     'hook.hack_drop_peer_adva=NOT_CONFIGURED' \
@@ -1258,16 +1489,100 @@ for expected in \
     'link_test.initiator=OFF'; do
     require_line "$expected" "$routed_full_production_manifest"
 done
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/mind_application/mind_application_wire.c' 1
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/mind_application/mind_application_ingress.c' 1
+for source in mind_event_forwarder.c mind_topology_adapter.c mind_root_plane.c mind_root_coordinator.c mind_root_inbox.c \
+              mind_command.c mind_log.c mind_log_formatter.c mind_uart.c mind_audio.c mind_ui.c; do
+    require_selected_source_count "$routed_full_production_manifest" \
+        "app/mind_application/${source}" 1
+done
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/drivers/display.c' 1
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark.c' 0
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
+require_exact_selected_sources "$routed_full_production_manifest" \
+    'app/tavrn_routed_node/src/main.c' \
+    'generated/tron_build_info.c' \
+    'generated/tron_timer_config.c' \
+    'app/drivers/ble_radio.c' \
+    'app/protocol/ble_mesh_scheduler.c' \
+    'app/protocol/ble_mesh_tx_queue.c' \
+    'app/tavrn_routed_node/src/routed_cycle.c' \
+    'app/protocol/aodv_core.c' \
+    'app/protocol/tavrn_link_v2.c' \
+    'app/protocol/tavrn_router.c' \
+    'app/protocol/tavrn_wire_v2.c' \
+    'app/tavrn_routed_node/src/routed_full_telemetry.c' \
+    'app/protocol/tavrn_esc.c' \
+    'app/protocol/tavrn_full.c' \
+    'app/protocol/tavrn_full_maintenance_binding.c' \
+    'app/protocol/tavrn_full_repair_binding.c' \
+    'app/protocol/tavrn_repair.c' \
+    'app/protocol/tavrn_gtt.c' \
+    'app/protocol/tavrn_maintenance.c' \
+    'app/protocol/tavrn_mentorship.c' \
+    'app/protocol/tavrn_smart_ttl.c' \
+    'app/mind_application/mind_application_wire.c' \
+    'app/mind_application/mind_application_ingress.c' \
+    'app/mind_application/mind_event_forwarder.c' \
+    'app/mind_application/mind_topology_adapter.c' \
+    'app/mind_application/mind_root_plane.c' \
+    'app/mind_application/mind_root_coordinator.c' \
+    'app/mind_application/mind_root_inbox.c' \
+    'app/mind_application/mind_command.c' \
+    'app/mind_application/mind_log.c' \
+    'app/mind_application/mind_log_formatter.c' \
+    'app/mind_application/mind_uart.c' \
+    'app/mind_application/mind_audio.c' \
+    'app/mind_application/mind_ui.c' \
+    'app/drivers/display.c' \
+    'libs/mtkernel_3/include/sys/inittask.h'
 if ! grep -Fqx '#define TRON_BUILD_ENABLE_WEARABLE_INGRESS 1' "$routed_full_production_config" ||
-   ! grep -Fqx '#define TRON_BUILD_APP_NODE_NUMBER 6u' "$routed_full_production_config"; then
+    ! grep -Fqx '#define TRON_BUILD_APP_NODE_NUMBER 6u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_ROOT_CAPACITY 16u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_CAMPAIGN_CAPACITY 16u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_ROOT_ACK_CAPACITY 16u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_EVENT_CAPACITY 16u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_INGRESS_QUEUE_CAPACITY 8u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_FINAL_INBOX_CAPACITY 8u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_LOG_CAPACITY 8u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_UART_TASK_STACK_BYTES 512u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_UI_TASK_STACK_BYTES 512u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_DISPLAY_TASK_STACK_BYTES 512u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_TASK_SYSTEM_STACK_BYTES 128u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_TASK_STACK_ALIGNMENT_BYTES 8u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_UART_TASK_STATIC_BUFFER_BYTES 640u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_UI_TASK_STATIC_BUFFER_BYTES 640u' "$routed_full_production_config" ||
+    ! grep -Fqx '#define TRON_BUILD_MIND_DISPLAY_TASK_STATIC_BUFFER_BYTES 640u' "$routed_full_production_config"; then
     printf '%s\n' 'production generated config lacks wearable ingress/node-number seams' >&2
     exit 1
 fi
 build_target routed-full-production tavrn_routed_node
+routed_full_production_elf="$WORK_DIR/routed-full-production/firmware/tavrn_routed_node/tavrn_routed_node.elf"
+for marker in 'mind_command_v1' 'mind_root_v1' 'mind_event_v1' \
+              'routed router_fault reason=' 'routed cycle_fault now_ms='; do
+    if ! grep -aFq -- "$marker" "$routed_full_production_elf"; then
+        printf 'quiet production ELF lacks required record marker: %s\n' "$marker" >&2
+        exit 1
+    fi
+done
 configure_fail_with wearable-ingress-aodv \
     'TRON_ENABLE_WEARABLE_INGRESS=ON requires ROUTED FULL_TAVRN' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
     -DTAVRN_FEATURE_LEVEL=AODV_ONLY -DTRON_ENABLE_WEARABLE_INGRESS=ON
+configure_fail_with wearable-ingress-benchmark \
+    'TRON_ENABLE_WEARABLE_INGRESS=ON is incompatible with TRON_BENCHMARK_MODE=ON' \
+    -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
+    -DTAVRN_FEATURE_LEVEL=FULL_TAVRN -DTRON_TIMER_PROFILE=BALANCED \
+    -DTRON_ENABLE_TEST_HOOKS=ON -DTRON_BENCHMARK_MODE=ON \
+    -DTRON_BENCH_ROLE_NUMBER=2 -DTRON_LINK_TEST_PEER_ADVA=dc:4b:0a:06:03:f8 \
+    -DTRON_ENABLE_WEARABLE_INGRESS=ON
 configure_fail_with app-node-number-zero \
     'TRON_APP_NODE_NUMBER must be in 1..6' \
     -DTRON_PHASE1_TARGET=ROUTED -DTRON_NODE_MODE=TAVRN_ROUTED \
@@ -1470,6 +1785,37 @@ require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_observer.c' 1
 require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 1
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/mind_application/mind_application_wire.c' 0
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/mind_application/mind_application_ingress.c' 0
+require_selected_source_count "$benchmark_full_manifest" \
+    'app/mind_application/mind_event_forwarder.c' 0
+require_exact_selected_sources "$benchmark_full_manifest" \
+    'app/tavrn_routed_node/src/main.c' \
+    'generated/tron_build_info.c' \
+    'generated/tron_timer_config.c' \
+    'app/drivers/ble_radio.c' \
+    'app/protocol/ble_mesh_scheduler.c' \
+    'app/protocol/ble_mesh_tx_queue.c' \
+    'app/tavrn_routed_node/src/routed_cycle.c' \
+    'app/protocol/aodv_core.c' \
+    'app/protocol/tavrn_link_v2.c' \
+    'app/protocol/tavrn_router.c' \
+    'app/protocol/tavrn_wire_v2.c' \
+    'app/tavrn_routed_node/src/routed_benchmark.c' \
+    'app/tavrn_routed_node/src/routed_benchmark_observer.c' \
+    'app/tavrn_routed_node/src/routed_full_telemetry.c' \
+    'app/protocol/tavrn_esc.c' \
+    'app/protocol/tavrn_full.c' \
+    'app/protocol/tavrn_full_maintenance_binding.c' \
+    'app/protocol/tavrn_gtt.c' \
+    'app/protocol/tavrn_maintenance.c' \
+    'app/protocol/tavrn_mentorship.c' \
+    'app/protocol/tavrn_smart_ttl.c' \
+    'app/tavrn_routed_node/src/routed_benchmark_full.c' \
+    'app/drivers/display.c' \
+    'libs/mtkernel_3/include/sys/inittask.h'
 build_target routed-benchmark-full tavrn_routed_node
 
 configure_fail_with benchmark-invalid-state \
@@ -1838,8 +2184,8 @@ require_line 'timer.radio_tx_event_bound_ms=8' "$runtime_manifest"
 require_line 'timer.radio_tx_repeated_event_bound_ms=14' "$runtime_manifest"
 require_line 'timer.radio_tx_fault_cleanup_bound_ms=18' "$runtime_manifest"
 require_line 'timer.link_tx_scheduler_attempt_bound_ms=3048' "$runtime_manifest"
-require_line 'timer.link_no_response_wall_bound_ms=9894' "$runtime_manifest"
 require_line 'timer.link_response_window_sum_ms=750' "$runtime_manifest"
+require_line 'timer.link_no_response_wall_bound_ms=9894' "$runtime_manifest"
 require_line 'formula.link_no_response_wall_bound_ms=timer.link_response_window_sum_ms+timer.link_max_attempts*timer.link_tx_scheduler_attempt_bound_ms' "$runtime_manifest"
 link_testbed_main="$MICROBIT_ROOT/app/ble_link_v2_testbed/src/main.c"
 if ! grep -Fqx '    config.hack_turnaround_ms = tron_timer_config.radio_tx_event_bound_ms;' \
@@ -1974,15 +2320,23 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     exit 1
 fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 75 ]] ||
-    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 48 ]]; then
+    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 49 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
 fi
 require_unique_keys "$runtime_manifest"
 
 # BUILD-P1-07: the development publisher emits sorted, unique, post-link
-# provenance.  --candidate alone cannot make an artifact eligible, and this
-# dirty worktree must fail the exact candidate exit status.
+# provenance.  Its clean-source field follows the invoking checkout.  When
+# that checkout is dirty, --candidate alone must still fail with exact evidence.
+publisher_source_dirty=no
+if [[ -n "$(git -C "$MICROBIT_ROOT" status --porcelain --untracked-files=all -- .)" ]]; then
+    publisher_source_dirty=yes
+fi
+publisher_clean_source=yes
+if [[ "$publisher_source_dirty" == "yes" ]]; then
+    publisher_clean_source=no
+fi
 publisher_out="$WORK_DIR/published"
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target ble_link_v2_testbed \
     --timer FAST_TEST --out "$publisher_out" >/dev/null
@@ -2001,7 +2355,7 @@ published_artifact_name="$(manifest_value artifact.name "${published_manifest[0]
 for expected in \
     'candidate.eligible=no' \
     'candidate.hardware_purpose=no' \
-    'candidate.clean_source=no' \
+    "candidate.clean_source=${publisher_clean_source}" \
     'candidate.unhooked_acceptance=no' \
     'candidate.hook_bench_eligible=no' \
     'identity.adva=RUNTIME_FICR' \
@@ -2064,21 +2418,23 @@ if ! grep -Eq '^artifact\.elf\.sha256=[0-9a-f]{64}$' "${published_manifest[0]}" 
     printf '%s\n' 'publisher manifest lacks required post-link/source/command hash fields' >&2
     exit 1
 fi
-set +e
-bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target ble_link_v2_testbed \
-    --candidate --adva 18:42:de:52:4a:dd --probe-uid board-a \
-    --inventory "$FIXTURES/tavrn_inventory_valid.tsv" --out "$publisher_out" \
-    >"$WORK_DIR/published.log" 2>&1
-candidate_status=$?
-set -e
-if [[ $candidate_status -ne 1 ]]; then
-    printf 'dirty candidate publisher exit status=%s, expected 1\n' "$candidate_status" >&2
-    exit 1
-fi
-if ! grep -Fq 'Candidate publication refused: source_dirty=yes submodule_dirty=no' \
-    "$WORK_DIR/published.log"; then
-    printf '%s\n' 'dirty candidate publisher did not report the dirty source state' >&2
-    exit 1
+if [[ "$publisher_source_dirty" == "yes" ]]; then
+    set +e
+    bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target ble_link_v2_testbed \
+        --candidate --adva 18:42:de:52:4a:dd --probe-uid board-a \
+        --inventory "$FIXTURES/tavrn_inventory_valid.tsv" --out "$publisher_out" \
+        >"$WORK_DIR/published.log" 2>&1
+    candidate_status=$?
+    set -e
+    if [[ $candidate_status -ne 1 ]]; then
+        printf 'dirty candidate publisher exit status=%s, expected 1\n' "$candidate_status" >&2
+        exit 1
+    fi
+    if ! grep -Fq 'Candidate publication refused: source_dirty=yes submodule_dirty=no' \
+        "$WORK_DIR/published.log"; then
+        printf '%s\n' 'dirty candidate publisher did not report the dirty source state' >&2
+        exit 1
+    fi
 fi
 
 # BUILD-P3-02: development publication supports both routed feature levels,
@@ -2630,6 +2986,12 @@ for expected in 'bench.mode=ON' 'bench.control_observability=COMPILE_TIME_OPTION
                 'bench.identify_display=OFF'; do
     require_line "$expected" "${benchmark_published_manifest[0]}"
 done
+require_selected_source_count "${benchmark_published_manifest[0]}" \
+    'app/mind_application/mind_application_wire.c' 0
+require_selected_source_count "${benchmark_published_manifest[0]}" \
+    'app/mind_application/mind_application_ingress.c' 0
+require_selected_source_count "${benchmark_published_manifest[0]}" \
+    'app/mind_application/mind_event_forwarder.c' 0
 benchmark_resource_publisher_out="$WORK_DIR/benchmark-resource-published"
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
     --feature FULL_TAVRN --timer BALANCED --enable-hooks ON --benchmark ON \
@@ -2663,8 +3025,8 @@ if manifest.get("artifact.name") != artifact_name.name or \
     raise SystemExit("benchmark manifest capacity/fixed-state binding differs")
 resource = json.loads(resource_path.read_text(encoding="utf-8"))
 if resource["fixed_state"] != {
-        "after_bytes": 70760,
-        "before_bytes": 70760,
+        "after_bytes": 71088,
+        "before_bytes": 71088,
         "declared_delta_bytes": 43940,
         "unexplained_delta_bytes": 0,
 }:
@@ -2701,6 +3063,11 @@ publisher_fail_with benchmark-wrapper-direct-block \
     '--benchmark ON roles 1 and 3 require --rx-block-adva' \
     --target tavrn_routed_node --timer BALANCED --enable-hooks ON --benchmark ON \
     --role-number 1 --peer-adva dc:4b:0a:06:03:f8
+publisher_fail_with benchmark-wrapper-wearable-ingress \
+    '--benchmark ON is incompatible with --wearable-ingress ON' \
+    --target tavrn_routed_node --feature FULL_TAVRN --timer BALANCED \
+    --enable-hooks ON --benchmark ON --role-number 2 \
+    --peer-adva dc:4b:0a:06:03:f8 --wearable-ingress ON
 
 # BEARER-CAP-02: the publisher forwards the routed-only queue variant through
 # the generated build manifest and rejects invalid or lower-target requests.

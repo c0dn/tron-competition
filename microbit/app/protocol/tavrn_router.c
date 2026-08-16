@@ -1063,10 +1063,20 @@ static tavrn_router_event_status_t retry_pending_incarnation_reset(
 }
 
 static void latch_router_fault(tavrn_router_t *router,
-                                tavrn_router_fault_reason_t reason)
+                                 tavrn_router_fault_reason_t reason)
 {
     if (router->fault_reason == TAVRN_ROUTER_FAULT_NONE) {
         router->fault_reason = reason;
+        router->fault_subreason = TAVRN_ROUTER_FAULT_SUBREASON_NONE;
+    }
+}
+
+static void latch_data_terminal_fault(
+    tavrn_router_t *router, tavrn_router_fault_subreason_t subreason)
+{
+    if (router->fault_reason == TAVRN_ROUTER_FAULT_NONE) {
+        router->fault_reason = TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID;
+        router->fault_subreason = subreason;
     }
 }
 
@@ -1533,7 +1543,8 @@ static tavrn_router_event_status_t process_failure_slot(
             !direct_peer_is_valid(&failure->retry_exhausted.next_hop) ||
             !direct_peer_equal(&failure->peer, &failure->retry_exhausted.next_hop)) {
             router->counters.failure_invariant++;
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router, TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_EVENT_INVALID);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         memset(&event, 0, sizeof(event));
@@ -1549,8 +1560,9 @@ static tavrn_router_event_status_t process_failure_slot(
                     router->link, &failure->retry_exhausted.data, now_ms) !=
                     TAVRN_LINK_RESOLVE_OK) {
                 router->counters.failure_invariant++;
-                latch_router_fault(router,
-                                   TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+                latch_data_terminal_fault(
+                    router,
+                    TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_OWNED_TRANSFER_INVALID);
                 return TAVRN_ROUTER_EVENT_INVALID;
             }
             /* External policy is now the terminal owner; do not release this
@@ -1558,10 +1570,15 @@ static tavrn_router_event_status_t process_failure_slot(
             memset(failure, 0, sizeof(*failure));
             return TAVRN_ROUTER_EVENT_OK;
         }
-        if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
+        if (disposition == TAVRN_ROUTER_DATA_TERMINAL_INVALID) {
+            router->counters.failure_invariant++;
+            disposition = TAVRN_ROUTER_DATA_TERMINAL_DECLINED;
+        } else if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
             disposition != TAVRN_ROUTER_DATA_TERMINAL_OBSERVED) {
             router->counters.failure_invariant++;
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router,
+                TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_DISPOSITION_UNEXPECTED);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         failure->failed_hop_policy_pending = 0u;
@@ -1603,7 +1620,8 @@ static tavrn_router_retry_record_disposition_t record_retry_exhausted(
         if (router->failures[slot].failed_hop_policy_pending != 0u &&
             router->failures[slot].retry_exhausted_valid == 0u) {
             router->counters.failure_invariant++;
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router, TAVRN_ROUTER_FAULT_SUBREASON_RETAINED_SLOT_INVALID);
             return TAVRN_ROUTER_RETRY_RECORD_INVALID;
         }
         if (owned->data.ownership == TAVRN_DATA_TRANSIT &&
@@ -1707,16 +1725,22 @@ static tavrn_router_event_status_t consume_owned_terminal(
     disposition = event->type == TAVRN_LINK_EVENT_RETRY_EXHAUSTED ?
         tavrn_router_retry_exhausted_hook(router, event, now_ms) :
         tavrn_router_data_terminal_hook(router, event, now_ms);
-    if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
+    if (disposition == TAVRN_ROUTER_DATA_TERMINAL_INVALID) {
+        router->counters.failure_invariant++;
+        disposition = TAVRN_ROUTER_DATA_TERMINAL_DECLINED;
+    } else if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
         disposition != TAVRN_ROUTER_DATA_TERMINAL_OBSERVED &&
         disposition != TAVRN_ROUTER_DATA_TERMINAL_OWNED &&
         disposition != TAVRN_ROUTER_DATA_TERMINAL_BUSY) {
-        latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+        latch_data_terminal_fault(
+            router,
+            TAVRN_ROUTER_FAULT_SUBREASON_IMMEDIATE_DISPOSITION_UNEXPECTED);
         return TAVRN_ROUTER_EVENT_INVALID;
     }
     if (disposition == TAVRN_ROUTER_DATA_TERMINAL_BUSY) {
         if (event->type != TAVRN_LINK_EVENT_RETRY_EXHAUSTED) {
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router, TAVRN_ROUTER_FAULT_SUBREASON_BUSY_NON_RETRY);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         record_disposition = record_retry_exhausted(router, owned, now_ms, 1u);
@@ -1726,14 +1750,16 @@ static tavrn_router_event_status_t consume_owned_terminal(
     if (disposition == TAVRN_ROUTER_DATA_TERMINAL_OWNED) {
         if (event->type != TAVRN_LINK_EVENT_RETRY_EXHAUSTED ||
             owned->data.ownership != TAVRN_DATA_TRANSIT) {
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router, TAVRN_ROUTER_FAULT_SUBREASON_OWNED_CONTRACT_INVALID);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         if (tavrn_link_v2_transfer_rx_custody_to_external(router->link,
                                                            &owned->data,
                                                            now_ms) !=
             TAVRN_LINK_RESOLVE_OK) {
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router, TAVRN_ROUTER_FAULT_SUBREASON_OWNED_TRANSFER_INVALID);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         return TAVRN_ROUTER_EVENT_OK;
@@ -2221,9 +2247,14 @@ static tavrn_router_event_status_t consume_link_output(
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         disposition = tavrn_router_data_terminal_hook(router, event, now_ms);
-        if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
+        if (disposition == TAVRN_ROUTER_DATA_TERMINAL_INVALID) {
+            router->counters.failure_invariant++;
+            disposition = TAVRN_ROUTER_DATA_TERMINAL_DECLINED;
+        } else if (disposition != TAVRN_ROUTER_DATA_TERMINAL_DECLINED &&
             disposition != TAVRN_ROUTER_DATA_TERMINAL_OBSERVED) {
-            latch_router_fault(router, TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+            latch_data_terminal_fault(
+                router,
+                TAVRN_ROUTER_FAULT_SUBREASON_TRANSFERRED_DISPOSITION_UNEXPECTED);
             return TAVRN_ROUTER_EVENT_INVALID;
         }
         if (event->detail.transferred_data.status != TAVRN_HACK_ACCEPTED &&
@@ -3532,6 +3563,15 @@ tavrn_router_fault_reason_t tavrn_router_fault_reason(
     const tavrn_router_t *router)
 {
     return router == NULL ? TAVRN_ROUTER_FAULT_NONE : router->fault_reason;
+}
+
+tavrn_router_fault_subreason_t tavrn_router_fault_subreason(
+    const tavrn_router_t *router)
+{
+    return router == NULL ||
+            router->fault_reason != TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID ?
+        TAVRN_ROUTER_FAULT_SUBREASON_NONE :
+        (tavrn_router_fault_subreason_t)router->fault_subreason;
 }
 
 tavrn_router_observe_status_t tavrn_router_observe_frame(

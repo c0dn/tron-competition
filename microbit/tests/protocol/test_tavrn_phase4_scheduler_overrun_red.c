@@ -57,6 +57,14 @@ typedef struct scheduler_fixture {
     uint8_t blocking_waits;
     uint8_t coalesced_wait_timed_out;
     uint8_t logger_dispatches;
+    uint8_t logger_mid_format_during_wait;
+    uint8_t logger_runs_on_boundary_arm;
+    uint8_t logger_tx_bytes;
+    uint8_t logger_progress_wake_armed;
+    uint8_t logger_progress_wake_signals;
+    uint8_t logger_request_pending;
+    uint8_t logger_request_posts;
+    uint8_t logger_request_post_fails;
     uint8_t first_wait_was_immediate;
     uint8_t stale_wait_dispatched_logger;
     uint8_t wake_immediately_after_dequeue;
@@ -77,11 +85,14 @@ typedef struct scheduler_fixture {
     uint32_t task_now_ms;
     uint32_t maximum_scheduler_gap_ms;
     uint32_t sentinel_marker;
+    uint32_t logger_dispatch_epoch;
     uint32_t logger_progress_epoch;
     routed_cycle_diagnostic_queue_t *diagnostic_queue;
 } scheduler_fixture_t;
 
 static void liveness_logger_run(scheduler_fixture_t *fixture);
+static void liveness_logger_tx_byte(scheduler_fixture_t *fixture);
+static void liveness_publish_dispatch_progress(scheduler_fixture_t *fixture);
 
 static int setup_error(const char *scenario, const char *detail)
 {
@@ -234,12 +245,25 @@ static routed_cycle_yield_result_t scheduler_coalesced_wait(
     scheduler_fixture_t *fixture, uint32_t requested_slack_ms, uint32_t now_ms)
 {
     routed_cycle_yield_result_t result;
-    uint32_t progress_epoch = fixture->logger_progress_epoch;
+    uint32_t dispatch_epoch = fixture->logger_dispatch_epoch;
     uint32_t elapsed_ms = 0u;
-    int diagnostic_pending = fixture->diagnostic_queue != NULL &&
-        fixture->diagnostic_queue->count != 0u;
 
+    fixture->logger_progress_wake_armed = 1u;
+    fixture->logger_request_posts++;
+    if (fixture->logger_request_post_fails != 0u) {
+        fixture->logger_progress_wake_armed = 0u;
+        result.status = ROUTED_CYCLE_YIELD_INVALID;
+        result.completed_at_ms = now_ms;
+        return result;
+    }
+    fixture->logger_request_pending = 1u;
     for (;;) {
+        if (fixture->logger_progress_wake_armed != 0u &&
+            fixture->logger_request_pending != 0u &&
+            fixture->logger_runs_on_boundary_arm != 0u &&
+            elapsed_ms == CAPTURED_POLL_BOUND_MS) {
+            liveness_logger_run(fixture);
+        }
         if (fixture->preset_release_before_every_wait != 0u) {
             if (fixture->immediate_stale_waits != 0u) {
                 elapsed_ms++;
@@ -255,20 +279,28 @@ static routed_cycle_yield_result_t scheduler_coalesced_wait(
             fixture->immediate_stale_waits++;
         } else {
             fixture->blocking_waits++;
-            if (fixture->logger_runs_during_wait != 0u) {
+            if (fixture->logger_runs_during_wait != 0u &&
+                fixture->logger_request_pending != 0u) {
                 liveness_logger_run(fixture);
+            }
+            if (fixture->logger_mid_format_during_wait != 0u) {
+                liveness_logger_tx_byte(fixture);
             }
             elapsed_ms += requested_slack_ms;
         }
-        if (diagnostic_pending == 0 ||
-            fixture->logger_progress_epoch != progress_epoch) {
+        if (fixture->logger_dispatch_epoch != dispatch_epoch) {
+            fixture->logger_progress_wake_armed = 0u;
             result.status = ROUTED_CYCLE_YIELD_OK;
             break;
         }
-        if (elapsed_ms >= CAPTURED_POLL_BOUND_MS) {
+        if (elapsed_ms > CAPTURED_POLL_BOUND_MS) {
+            fixture->logger_progress_wake_armed = 0u;
             fixture->coalesced_wait_timed_out = 1u;
             result.status = ROUTED_CYCLE_YIELD_INVALID;
             break;
+        }
+        if (elapsed_ms == CAPTURED_POLL_BOUND_MS) {
+            fixture->logger_progress_wake_armed = 1u;
         }
     }
     result.completed_at_ms = now_ms + elapsed_ms +
@@ -553,11 +585,11 @@ static int validate_captured_admission(
     fault_idle = trace_for_phase(result, ROUTED_CYCLE_PHASE_FAULT_IDLE,
                                  &fault_idle_count);
     if (healthy_yield == NULL || healthy_yield_count != 1u ||
-        fault_idle == NULL || fault_idle_count != 1u ||
-        run_status != ROUTED_CYCLE_RUN_FAULT_IDLE ||
+        fault_idle != NULL || fault_idle_count != 0u ||
+        run_status != ROUTED_CYCLE_RUN_OK ||
         cycle->first_over_budget_phase != ROUTED_CYCLE_PHASE_HEALTHY_YIELD ||
-        cycle->fault_latched == 0u) {
-        return setup_error("capture", "admitted delay lost its fault attribution");
+        cycle->fault_latched != 0u) {
+        return setup_error("capture", "admitted delay lost observe-only attribution");
     }
 
     scheduler_return_ms = healthy_yield->timing.scheduler_return_ms;
@@ -580,11 +612,7 @@ static int validate_captured_admission(
         fixture->requested_yield_ms != requested_ms ||
         fixture->modeled_completion_ms != modeled_completion_ms ||
         fixture->relative_delay_started_at_ms != scheduler_return_ms ||
-        fixture->fault_idle_started_at_ms != modeled_completion_ms ||
-        fault_idle->timing.phase_completed_ms !=
-            CAPTURED_FAULT_IDLE_COMPLETION_MS ||
-        fault_idle->detail.fault_idle.completed_at_ms !=
-            CAPTURED_FAULT_IDLE_COMPLETION_MS) {
+        healthy_yield->fault_latched != ROUTED_CYCLE_BOOLEAN_FALSE) {
         return setup_error("capture", "captured admission values changed");
     }
     *healthy_yield_out = healthy_yield;
@@ -657,14 +685,32 @@ static routed_cycle_trace_t make_liveness_sentinel(uint32_t marker)
     return trace;
 }
 
+static void liveness_publish_dispatch_progress(scheduler_fixture_t *fixture)
+{
+    if (fixture == NULL) {
+        return;
+    }
+    fixture->logger_dispatch_epoch++;
+    if (fixture->logger_progress_wake_armed != 0u) {
+        fixture->logger_progress_wake_armed = 0u;
+        fixture->release_bit_set = 1u;
+        fixture->logger_progress_wake_signals++;
+    }
+}
+
 static void liveness_logger_run(scheduler_fixture_t *fixture)
 {
     routed_cycle_trace_t trace;
 
-    if (fixture == NULL || fixture->diagnostic_queue == NULL) {
+    if (fixture == NULL) {
         return;
     }
     fixture->logger_dispatches++;
+    fixture->logger_request_pending = 0u;
+    liveness_publish_dispatch_progress(fixture);
+    if (fixture->diagnostic_queue == NULL) {
+        return;
+    }
     if (routed_cycle_diagnostic_dequeue(fixture->diagnostic_queue, &trace) ==
         ROUTED_CYCLE_RESULT_OK) {
         fixture->logger_progress_epoch++;
@@ -678,6 +724,15 @@ static void liveness_logger_run(scheduler_fixture_t *fixture)
     }
 }
 
+static void liveness_logger_tx_byte(scheduler_fixture_t *fixture)
+{
+    if (fixture == NULL) {
+        return;
+    }
+    fixture->logger_tx_bytes++;
+    liveness_publish_dispatch_progress(fixture);
+}
+
 static int liveness_predicate(const scheduler_fixture_t *fixture,
                               const routed_cycle_t *cycle,
                               routed_cycle_task_status_t task_status,
@@ -688,9 +743,12 @@ static int liveness_predicate(const scheduler_fixture_t *fixture,
         fixture->relative_delay_calls != 0u &&
         fixture->logger_sentinel_dequeues != 0u &&
         fixture->logger_dispatches != 0u && fixture->immediate_stale_waits != 0u &&
+        fixture->logger_dispatch_epoch != 0u &&
         fixture->first_wait_was_immediate != 0u &&
         fixture->stale_wait_dispatched_logger == 0u && fixture->blocking_waits != 0u &&
         fixture->dequeue_wake_injections == 1u &&
+        fixture->logger_request_posts == iterations &&
+        fixture->logger_request_pending == 0u &&
         fixture->coalesced_wait_timed_out == 0u &&
         fixture->fault_idle_calls == 0u && fixture->scheduler_gap_exceeded == 0u &&
         fixture->maximum_scheduler_gap_ms <= CAPTURED_POLL_BOUND_MS &&
@@ -748,7 +806,7 @@ static int run_logger_liveness(void)
     }
 
     setup_fixture(&no_wait_fixture, CAPTURED_SCHEDULER_RETURN_MS, 0u,
-                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS);
+                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS + 1u);
     no_wait_fixture.poll_returns_started_at_ms = 1u;
     no_wait_fixture.advance_task_now_after_wait = 1u;
     no_wait_fixture.logger_runs_during_wait = 1u;
@@ -781,13 +839,170 @@ static int run_logger_liveness(void)
         no_wait_fixture.blocking_waits != 0u || no_wait_fixture.logger_dispatches != 0u ||
         no_wait_fixture.logger_sentinel_dequeues != 0u ||
         no_wait_fixture.coalesced_wait_timed_out == 0u ||
+        no_wait_fixture.logger_progress_wake_armed != 0u ||
+        no_wait_fixture.logger_progress_wake_signals != 0u ||
+        no_wait_fixture.logger_request_posts != 1u ||
         no_wait_fixture.modeled_completion_ms -
-            no_wait_fixture.relative_delay_started_at_ms != CAPTURED_POLL_BOUND_MS ||
+            no_wait_fixture.relative_delay_started_at_ms !=
+                CAPTURED_POLL_BOUND_MS + 1u ||
         no_wait_queue.count != 1u ||
         liveness_predicate(&no_wait_fixture, &no_wait_cycle, no_wait_task_status,
                            LOGGER_LIVENESS_ITERATIONS)) {
         return setup_error("LOGGER-LIVENESS-01",
                            "no-wait control unexpectedly satisfied liveness");
+    }
+    return 1;
+}
+
+static int run_logger_dispatch_modes(void)
+{
+    enum { LOGGER_DISPATCH_ITERATIONS = 2u };
+    scheduler_fixture_t idle_fixture;
+    scheduler_fixture_t tx_fixture;
+    scheduler_fixture_t diagnostic_stall_fixture;
+    scheduler_fixture_t boundary_fixture;
+    routed_cycle_t idle_cycle;
+    routed_cycle_t tx_cycle;
+    routed_cycle_t diagnostic_stall_cycle;
+    routed_cycle_t boundary_cycle;
+    routed_cycle_run_result_t idle_result;
+    routed_cycle_run_result_t tx_result;
+    routed_cycle_run_result_t diagnostic_stall_result;
+    routed_cycle_run_result_t boundary_result;
+    routed_cycle_operations_t operations;
+    routed_cycle_diagnostic_queue_t diagnostic_queue;
+    routed_cycle_trace_t sentinel;
+    routed_cycle_task_status_t status;
+
+    setup_fixture(&idle_fixture, CAPTURED_SCHEDULER_RETURN_MS, 0u,
+                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS);
+    idle_fixture.poll_returns_started_at_ms = 1u;
+    idle_fixture.advance_task_now_after_wait = 1u;
+    idle_fixture.logger_runs_during_wait = 1u;
+    idle_fixture.coalesced_wait_model = 1u;
+    idle_fixture.release_bit_set = 1u;
+    idle_fixture.task_now_ms = CAPTURED_SCHEDULER_RETURN_MS;
+    operations = fixture_operations(&idle_fixture);
+    operations.now_ms = liveness_now_ms;
+    operations.trace_sink = liveness_trace_sink;
+    memset(&idle_cycle, 0, sizeof(idle_cycle));
+    memset(&idle_result, 0, sizeof(idle_result));
+    if (routed_cycle_init(&idle_cycle, CAPTURED_POLL_BOUND_MS) !=
+            ROUTED_CYCLE_RESULT_OK) {
+        return setup_error("LOGGER-DISPATCH-01", "idle cycle initialization failed");
+    }
+    status = routed_cycle_run_task(&idle_cycle, &operations,
+                                   LOGGER_DISPATCH_ITERATIONS, &idle_result);
+    if (status != ROUTED_CYCLE_TASK_OK || idle_fixture.immediate_stale_waits == 0u ||
+        idle_fixture.blocking_waits == 0u || idle_fixture.logger_dispatches == 0u ||
+        idle_fixture.logger_dispatch_epoch == 0u ||
+        idle_fixture.coalesced_wait_timed_out != 0u ||
+        idle_fixture.scheduler_gap_exceeded != 0u || idle_cycle.fault_latched != 0u) {
+        return setup_error("LOGGER-DISPATCH-01",
+                           "idle logger did not acknowledge a stale release safely");
+    }
+
+    setup_fixture(&tx_fixture, CAPTURED_SCHEDULER_RETURN_MS, 0u,
+                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS);
+    tx_fixture.poll_returns_started_at_ms = 1u;
+    tx_fixture.advance_task_now_after_wait = 1u;
+    tx_fixture.logger_mid_format_during_wait = 1u;
+    tx_fixture.coalesced_wait_model = 1u;
+    tx_fixture.release_bit_set = 1u;
+    tx_fixture.task_now_ms = CAPTURED_SCHEDULER_RETURN_MS;
+    operations = fixture_operations(&tx_fixture);
+    operations.now_ms = liveness_now_ms;
+    operations.trace_sink = liveness_trace_sink;
+    memset(&tx_cycle, 0, sizeof(tx_cycle));
+    memset(&tx_result, 0, sizeof(tx_result));
+    if (routed_cycle_init(&tx_cycle, CAPTURED_POLL_BOUND_MS) !=
+            ROUTED_CYCLE_RESULT_OK) {
+        return setup_error("LOGGER-DISPATCH-02", "TX cycle initialization failed");
+    }
+    status = routed_cycle_run_task(&tx_cycle, &operations,
+                                   LOGGER_DISPATCH_ITERATIONS, &tx_result);
+    if (status != ROUTED_CYCLE_TASK_OK || tx_fixture.logger_tx_bytes == 0u ||
+        tx_fixture.logger_dispatches != 0u || tx_fixture.logger_dispatch_epoch == 0u ||
+        tx_fixture.coalesced_wait_timed_out != 0u ||
+        tx_fixture.scheduler_gap_exceeded != 0u || tx_cycle.fault_latched != 0u) {
+        return setup_error("LOGGER-DISPATCH-02",
+                           "mid-format TX progress did not acknowledge safely");
+    }
+
+    setup_fixture(&diagnostic_stall_fixture, CAPTURED_SCHEDULER_RETURN_MS, 0u,
+                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS);
+    diagnostic_stall_fixture.poll_returns_started_at_ms = 1u;
+    diagnostic_stall_fixture.advance_task_now_after_wait = 1u;
+    diagnostic_stall_fixture.logger_mid_format_during_wait = 1u;
+    diagnostic_stall_fixture.coalesced_wait_model = 1u;
+    diagnostic_stall_fixture.release_bit_set = 1u;
+    diagnostic_stall_fixture.task_now_ms = CAPTURED_SCHEDULER_RETURN_MS;
+    diagnostic_stall_fixture.sentinel_marker = 0x44494147u;
+    routed_cycle_diagnostic_queue_init(&diagnostic_queue);
+    sentinel = make_liveness_sentinel(diagnostic_stall_fixture.sentinel_marker);
+    if (routed_cycle_diagnostic_enqueue(&diagnostic_queue, &sentinel) !=
+            ROUTED_CYCLE_RESULT_OK) {
+        return setup_error("LOGGER-DISPATCH-03", "diagnostic sentinel enqueue failed");
+    }
+    diagnostic_stall_fixture.diagnostic_queue = &diagnostic_queue;
+    operations = fixture_operations(&diagnostic_stall_fixture);
+    operations.now_ms = liveness_now_ms;
+    operations.trace_sink = liveness_trace_sink;
+    memset(&diagnostic_stall_cycle, 0, sizeof(diagnostic_stall_cycle));
+    memset(&diagnostic_stall_result, 0, sizeof(diagnostic_stall_result));
+    if (routed_cycle_init(&diagnostic_stall_cycle, CAPTURED_POLL_BOUND_MS) !=
+            ROUTED_CYCLE_RESULT_OK) {
+        return setup_error("LOGGER-DISPATCH-03",
+                           "diagnostic stall cycle initialization failed");
+    }
+    status = routed_cycle_run_task(&diagnostic_stall_cycle, &operations,
+                                   LOGGER_DISPATCH_ITERATIONS,
+                                   &diagnostic_stall_result);
+    if (status != ROUTED_CYCLE_TASK_OK ||
+        diagnostic_stall_fixture.logger_tx_bytes == 0u ||
+        diagnostic_stall_fixture.logger_dispatch_epoch == 0u ||
+        diagnostic_stall_fixture.logger_progress_epoch != 0u ||
+        diagnostic_stall_fixture.coalesced_wait_timed_out != 0u ||
+        diagnostic_stall_fixture.scheduler_gap_exceeded != 0u ||
+        diagnostic_stall_cycle.fault_latched != 0u || diagnostic_queue.count != 1u) {
+        return setup_error("LOGGER-DISPATCH-03",
+                           "pending diagnostic rejected active TX progress");
+    }
+
+    setup_fixture(&boundary_fixture, CAPTURED_SCHEDULER_RETURN_MS, 0u,
+                  CAPTURED_SCHEDULER_RETURN_MS + CAPTURED_POLL_BOUND_MS);
+    boundary_fixture.poll_returns_started_at_ms = 1u;
+    boundary_fixture.advance_task_now_after_wait = 1u;
+    boundary_fixture.logger_runs_on_boundary_arm = 1u;
+    boundary_fixture.coalesced_wait_model = 1u;
+    boundary_fixture.release_bit_set = 1u;
+    boundary_fixture.task_now_ms = CAPTURED_SCHEDULER_RETURN_MS;
+    operations = fixture_operations(&boundary_fixture);
+    operations.now_ms = liveness_now_ms;
+    operations.trace_sink = liveness_trace_sink;
+    memset(&boundary_cycle, 0, sizeof(boundary_cycle));
+    memset(&boundary_result, 0, sizeof(boundary_result));
+    if (routed_cycle_init(&boundary_cycle, CAPTURED_POLL_BOUND_MS) !=
+            ROUTED_CYCLE_RESULT_OK) {
+        return setup_error("LOGGER-DISPATCH-04",
+                           "boundary cycle initialization failed");
+    }
+    status = routed_cycle_run_task(&boundary_cycle, &operations, 1u,
+                                   &boundary_result);
+    if (status != ROUTED_CYCLE_TASK_OK ||
+        boundary_fixture.logger_dispatches != 1u ||
+        boundary_fixture.logger_progress_wake_signals != 1u ||
+        boundary_fixture.logger_progress_wake_armed != 0u ||
+        boundary_fixture.logger_request_pending != 0u ||
+        boundary_fixture.logger_request_posts != 1u ||
+        boundary_fixture.coalesced_wait_timed_out != 0u ||
+        boundary_fixture.modeled_completion_ms -
+            boundary_fixture.relative_delay_started_at_ms !=
+                CAPTURED_POLL_BOUND_MS ||
+        boundary_fixture.scheduler_gap_exceeded != 0u ||
+        boundary_cycle.fault_latched != 0u) {
+        return setup_error("LOGGER-DISPATCH-04",
+                           "exact-boundary logger wake was not one-shot");
     }
     return 1;
 }
@@ -870,7 +1085,8 @@ int main(void)
         return 2;
     }
 
-    if (!run_wide_guard() || !run_logger_liveness()) {
+    if (!run_wide_guard() || !run_logger_liveness() ||
+        !run_logger_dispatch_modes()) {
         return 2;
     }
     return 0;

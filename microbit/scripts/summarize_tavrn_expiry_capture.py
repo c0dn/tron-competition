@@ -19,7 +19,7 @@ REQUIRED_FIELDS = {
     "unavailable_count",
     "targeted_controls", "rreq_controls", "expiry_tc_controls",
     "received_evidence", "complete_passes", "max_scheduler_gap_ms",
-    "scheduler_fault", "mesh_fault", "router_fault",
+    "scheduler_fault", "mesh_fault", "router_fault", "telemetry_dropped",
 }
 LINE_PREFIX = "routed expiry_sweep "
 
@@ -119,6 +119,7 @@ def derive_capture(logs: list[Path], cadence_ms: int) -> dict[str, int]:
     targeted_controls = 0
     rreq_controls = 0
     tc_expiry_controls = 0
+    telemetry_dropped = 0
     previous: dict[str, int] | None = None
     pass_offset: int | None = None
     complete_pass_offset: int | None = None
@@ -151,6 +152,9 @@ def derive_capture(logs: list[Path], cadence_ms: int) -> dict[str, int]:
         targeted_controls += record["targeted_controls"]
         rreq_controls += record["rreq_controls"]
         tc_expiry_controls += record["expiry_tc_controls"]
+        if record["telemetry_dropped"] < telemetry_dropped:
+            raise CaptureError("expiry telemetry drop counter is not monotonic")
+        telemetry_dropped = record["telemetry_dropped"]
         if previous is not None:
             interval = record["now_ms"] - previous["now_ms"]
             if interval < cadence_ms or interval > cadence_ms + 2:
@@ -172,6 +176,7 @@ def derive_capture(logs: list[Path], cadence_ms: int) -> dict[str, int]:
         "targeted_controls": targeted_controls,
         "rreq_controls": rreq_controls,
         "tc_expiry_controls": tc_expiry_controls,
+        "telemetry_dropped": telemetry_dropped,
     }
 
 

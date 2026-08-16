@@ -951,6 +951,7 @@ static void test_router_data_terminal_ownership_port(void)
     aodv_core_t core;
     tavrn_link_data_t data = make_transit_data(0x8601u, adva_c);
     tavrn_link_event_t event;
+    tavrn_direct_peer_t next_hop = make_peer(adva_c);
     terminal_hook_recorder_t recorder;
     tavrn_router_data_terminal_hook_t hook;
 
@@ -992,14 +993,40 @@ static void test_router_data_terminal_ownership_port(void)
     event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
     event.detail.owned_data.next_hop = make_peer(adva_c);
     event.detail.owned_data.data = data;
-    CHECK("GTT-05", tavrn_link_v2_transfer_rx_custody_to_external(
-                         &link, &data, 7u) == TAVRN_LINK_RESOLVE_OK &&
-                         tavrn_router_handle_link_event(&router, &event, 7u) ==
-                             TAVRN_ROUTER_EVENT_OK &&
-                         recorder.calls == 1u && transit_data_is_pinned(&link, &data) &&
-                         transit_data_has_external_custody_owner(&link, &data) &&
+     CHECK("GTT-05", tavrn_link_v2_transfer_rx_custody_to_external(
+                          &link, &data, 7u) == TAVRN_LINK_RESOLVE_OK &&
+                          tavrn_router_handle_link_event(&router, &event, 7u) ==
+                              TAVRN_ROUTER_EVENT_OK &&
+                          recorder.calls == 1u && transit_data_is_pinned(&link, &data) &&
+                           transit_data_has_external_custody_owner(&link, &data) &&
+                           tavrn_router_fault_reason(&router) == TAVRN_ROUTER_FAULT_NONE &&
+                           tavrn_router_fault_subreason(&router) ==
+                               TAVRN_ROUTER_FAULT_SUBREASON_NONE);
+
+    memset(&recorder, 0, sizeof(recorder));
+    recorder.disposition = TAVRN_ROUTER_DATA_TERMINAL_OWNED;
+    hook.context = &recorder;
+    if (!setup_live_router(&router, &link, &scheduler, &core) ||
+        tavrn_router_set_data_terminal_hook(&router, &hook) != TAVRN_ROUTER_EVENT_OK) {
+        CHECK("GTT-05", 0);
+        return;
+    }
+    pin_transit_data(&link, &data);
+    memset(&event, 0, sizeof(event));
+    CHECK("GTT-05", tavrn_link_v2_send_unicast(&link, &next_hop, &data, 8u,
+                                                  &event) == TAVRN_LINK_SEND_OK);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    event.detail.owned_data.next_hop = next_hop;
+    event.detail.owned_data.data = data;
+    CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 9u) ==
+                         TAVRN_ROUTER_EVENT_INVALID && recorder.calls == 1u &&
+                         transit_data_is_pinned(&link, &data) &&
+                         !transit_data_has_external_custody_owner(&link, &data) &&
                          tavrn_router_fault_reason(&router) ==
-                             TAVRN_ROUTER_FAULT_NONE);
+                             TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID &&
+                         tavrn_router_fault_subreason(&router) ==
+                             TAVRN_ROUTER_FAULT_SUBREASON_OWNED_TRANSFER_INVALID);
 
     memset(&recorder, 0, sizeof(recorder));
     recorder.disposition = TAVRN_ROUTER_DATA_TERMINAL_OBSERVED;
@@ -1046,9 +1073,115 @@ static void test_router_data_terminal_ownership_port(void)
     event.detail.owned_data.data = data;
     CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 9u) ==
                         TAVRN_ROUTER_EVENT_INVALID && recorder.calls == 1u &&
-                        transit_data_is_pinned(&link, &data) &&
-                        tavrn_router_fault_reason(&router) ==
-                            TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID);
+                         transit_data_is_pinned(&link, &data) &&
+                         tavrn_router_fault_reason(&router) ==
+                             TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID &&
+                         tavrn_router_fault_subreason(&router) ==
+                             TAVRN_ROUTER_FAULT_SUBREASON_OWNED_CONTRACT_INVALID);
+}
+
+static void test_router_data_terminal_invalid_falls_back(void)
+{
+    tavrn_router_t router;
+    tavrn_link_v2_t link;
+    ble_mesh_scheduler_t scheduler;
+    aodv_core_t core;
+    tavrn_link_data_t data = make_transit_data(0x8602u, adva_c);
+    tavrn_link_event_t event;
+    terminal_hook_recorder_t recorder;
+    tavrn_router_data_terminal_hook_t hook;
+    terminal_hook_sequence_t sequence;
+
+    memset(&recorder, 0, sizeof(recorder));
+    recorder.disposition = TAVRN_ROUTER_DATA_TERMINAL_INVALID;
+    memset(&hook, 0, sizeof(hook));
+    hook.context = &recorder;
+    hook.handle = record_data_terminal;
+    if (!setup_live_router(&router, &link, &scheduler, &core) ||
+        tavrn_router_set_data_terminal_hook(&router, &hook) != TAVRN_ROUTER_EVENT_OK) {
+        CHECK("GTT-05", 0);
+        return;
+    }
+    pin_transit_data(&link, &data);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    event.detail.owned_data.next_hop = make_peer(adva_c);
+    event.detail.owned_data.data = data;
+    CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 10u) ==
+                         TAVRN_ROUTER_EVENT_OK && recorder.calls == 1u &&
+                         !transit_data_is_pinned(&link, &data) &&
+                         router.failures[0].valid == 0u &&
+                         router.counters.failure_invariant == 1u &&
+                         tavrn_router_fault_reason(&router) == TAVRN_ROUTER_FAULT_NONE &&
+                         tavrn_router_fault_subreason(&router) ==
+                             TAVRN_ROUTER_FAULT_SUBREASON_NONE);
+
+    memset(&recorder, 0, sizeof(recorder));
+    recorder.disposition = TAVRN_ROUTER_DATA_TERMINAL_INVALID;
+    hook.context = &recorder;
+    if (!setup_live_router(&router, &link, &scheduler, &core) ||
+        tavrn_router_set_data_terminal_hook(&router, &hook) != TAVRN_ROUTER_EVENT_OK) {
+        CHECK("GTT-05", 0);
+        return;
+    }
+    pin_transit_data(&link, &data);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_CUSTODY_TRANSFERRED;
+    event.detail.transferred_data.next_hop = make_peer(adva_c);
+    event.detail.transferred_data.data = data;
+    event.detail.transferred_data.status = TAVRN_HACK_ACCEPTED;
+    CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 11u) ==
+                         TAVRN_ROUTER_EVENT_OK && recorder.calls == 1u &&
+                         !transit_data_is_pinned(&link, &data) &&
+                         router.counters.failure_invariant == 1u &&
+                         tavrn_router_fault_reason(&router) == TAVRN_ROUTER_FAULT_NONE);
+
+    memset(&sequence, 0, sizeof(sequence));
+    sequence.dispositions[0] = TAVRN_ROUTER_DATA_TERMINAL_BUSY;
+    sequence.dispositions[1] = TAVRN_ROUTER_DATA_TERMINAL_INVALID;
+    memset(&hook, 0, sizeof(hook));
+    hook.context = &sequence;
+    hook.handle = record_data_terminal_sequence;
+    if (!setup_live_router(&router, &link, &scheduler, &core) ||
+        tavrn_router_set_data_terminal_hook(&router, &hook) != TAVRN_ROUTER_EVENT_OK) {
+        CHECK("GTT-05", 0);
+        return;
+    }
+    pin_transit_data(&link, &data);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    event.detail.owned_data.next_hop = make_peer(adva_c);
+    event.detail.owned_data.data = data;
+    CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 12u) ==
+                         TAVRN_ROUTER_EVENT_BUSY &&
+                         tavrn_router_tick(&router, 13u) == AODV_STATUS_OK &&
+                         sequence.calls == 2u && !transit_data_is_pinned(&link, &data) &&
+                         router.failures[0].valid == 0u &&
+                         router.counters.failure_invariant == 1u &&
+                         tavrn_router_fault_reason(&router) == TAVRN_ROUTER_FAULT_NONE);
+
+    memset(&recorder, 0, sizeof(recorder));
+    recorder.disposition = (tavrn_router_data_terminal_disposition_t)99;
+    memset(&hook, 0, sizeof(hook));
+    hook.context = &recorder;
+    hook.handle = record_data_terminal;
+    if (!setup_live_router(&router, &link, &scheduler, &core) ||
+        tavrn_router_set_data_terminal_hook(&router, &hook) != TAVRN_ROUTER_EVENT_OK) {
+        CHECK("GTT-05", 0);
+        return;
+    }
+    pin_transit_data(&link, &data);
+    memset(&event, 0, sizeof(event));
+    event.type = TAVRN_LINK_EVENT_RETRY_EXHAUSTED;
+    event.detail.owned_data.next_hop = make_peer(adva_c);
+    event.detail.owned_data.data = data;
+    CHECK("GTT-05", tavrn_router_handle_link_event(&router, &event, 14u) ==
+                         TAVRN_ROUTER_EVENT_INVALID &&
+                         transit_data_is_pinned(&link, &data) &&
+                         tavrn_router_fault_reason(&router) ==
+                             TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID &&
+                         tavrn_router_fault_subreason(&router) ==
+                             TAVRN_ROUTER_FAULT_SUBREASON_IMMEDIATE_DISPOSITION_UNEXPECTED);
 }
 
 static void test_router_retry_terminal_busy_retains_exact_event(void)
@@ -1388,6 +1521,7 @@ int main(void)
     test_gtt_05_observation_never_mutates_routes();
     test_router_candidate_reservation_port();
     test_router_data_terminal_ownership_port();
+    test_router_data_terminal_invalid_falls_back();
     test_router_retry_terminal_busy_retains_exact_event();
     test_router_same_peer_busy_retry_releases_newcomer();
     test_router_policy_retry_obeys_oldest_aodv_failure();

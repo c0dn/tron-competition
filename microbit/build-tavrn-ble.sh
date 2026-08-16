@@ -38,12 +38,23 @@ feature="AODV_ONLY"
 feature_requested=no
 stack_usage="OFF"
 resource_baseline=""
+application_resource_baseline=""
+application_resource_baseline_seal=""
+d2_current_resource_gate="OFF"
 resource_checker="${repo_root}/scripts/check_tavrn_expiry_resources.py"
 resource_gate="NOT_REQUESTED"
 resource_mesh_stack_total_bytes="NOT_APPLICABLE"
 resource_mesh_stack_headroom_bytes="NOT_APPLICABLE"
 resource_logger_stack_total_bytes="NOT_APPLICABLE"
 resource_logger_stack_headroom_bytes="NOT_APPLICABLE"
+resource_application_logger_stack_total_bytes="NOT_APPLICABLE"
+resource_application_logger_stack_headroom_bytes="NOT_APPLICABLE"
+resource_application_uart_stack_total_bytes="NOT_APPLICABLE"
+resource_application_uart_stack_headroom_bytes="NOT_APPLICABLE"
+resource_application_ui_stack_total_bytes="NOT_APPLICABLE"
+resource_application_ui_stack_headroom_bytes="NOT_APPLICABLE"
+resource_application_display_stack_total_bytes="NOT_APPLICABLE"
+resource_application_display_stack_headroom_bytes="NOT_APPLICABLE"
 repair="OFF"
 wearable_ingress="OFF"
 app_node_number="1"
@@ -63,10 +74,10 @@ Common options:
   --role-number N           Routed identification role (0..6)
   --identify-display ON|OFF Routed hooks-only 5x5 identification display
    --benchmark ON|OFF       Continuous routed control-plane observability
-  --network-id VALUE        Wire-v2 network ID (routed targets)
-  --routed-tx-queue-capacity N
+   --network-id VALUE        Wire-v2 network ID (routed targets)
+   --routed-tx-queue-capacity N
                             Routed TX queue capacity: 4, 8, 16, or 40
-  --candidate               Require a clean, inventory-bound link or routed candidate
+   --candidate               Require a clean, inventory-bound link or routed candidate
   --adva xx:xx:xx:xx:xx:xx  Canonical configured AdvA (routed targets)
   --probe-uid UID           Candidate probe UID
   --inventory FILE          Strict UID<TAB>AdvA inventory
@@ -84,7 +95,14 @@ Routed PoC options:
   --tx-interval-ms MS       Diagnostic DATA interval
   --transaction-target N    Number of diagnostic transactions
   --stack-usage              Publish GCC .su stack evidence (FULL_TAVRN only)
-  --resource-baseline FILE   Validate FULL_TAVRN resources against frozen baseline
+   --resource-baseline FILE   Validate FULL_TAVRN resources against frozen baseline
+    --application-resource-baseline DIR
+                               Validate wearable state against frozen FULL+repair
+                               ingress-off evidence in DIR
+    --application-resource-baseline-seal FILE
+                                External SHA-256 seal for that artifact manifest
+    --d2-current-resource-gate
+                                Run the explicit non-historical D2 current resource gate
    --enable-hooks ON|OFF
    --expiry-full-table ON|OFF  FULL FAST_TEST hooks-only expiry table bench hook
   --rx-block-adva ADDR
@@ -128,6 +146,9 @@ while [[ $# -gt 0 ]]; do
         --routed-tx-queue-capacity) routed_tx_queue_capacity="${2:?Missing value for --routed-tx-queue-capacity}"; shift 2 ;;
         --stack-usage) stack_usage="ON"; shift ;;
         --resource-baseline) resource_baseline="${2:?Missing value for --resource-baseline}"; shift 2 ;;
+        --application-resource-baseline) application_resource_baseline="${2:?Missing value for --application-resource-baseline}"; shift 2 ;;
+        --application-resource-baseline-seal) application_resource_baseline_seal="${2:?Missing value for --application-resource-baseline-seal}"; shift 2 ;;
+        --d2-current-resource-gate) d2_current_resource_gate="ON"; shift ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -235,6 +256,10 @@ if [[ "$wearable_ingress" == "ON" &&
     printf '%s\n' '--wearable-ingress ON requires --target tavrn_routed_node --feature FULL_TAVRN' >&2
     exit 2
 fi
+if [[ "$benchmark" == "ON" && "$wearable_ingress" == "ON" ]]; then
+    printf '%s\n' '--benchmark ON is incompatible with --wearable-ingress ON' >&2
+    exit 2
+fi
 if [[ ! "$app_node_number" =~ ^[1-6]$ ]]; then
     printf '%s\n' '--app-node-number must be a decimal integer in 1..6' >&2
     exit 2
@@ -261,6 +286,57 @@ if [[ -n "$resource_baseline" && "$stack_usage" != "ON" ]]; then
     printf '%s\n' '--resource-baseline requires --stack-usage' >&2
     exit 2
 fi
+if [[ "$d2_current_resource_gate" == "ON" && "$stack_usage" != "ON" ]]; then
+    printf '%s\n' '--d2-current-resource-gate requires --stack-usage' >&2
+    exit 2
+fi
+if [[ "$d2_current_resource_gate" == "ON" && -n "$resource_baseline" ]]; then
+    printf '%s\n' '--d2-current-resource-gate is distinct from --resource-baseline' >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline" && "$stack_usage" != "ON" ]]; then
+    printf '%s\n' '--application-resource-baseline requires --stack-usage' >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline" && -z "$application_resource_baseline_seal" ]]; then
+    printf '%s\n' '--application-resource-baseline requires --application-resource-baseline-seal' >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline_seal" && -z "$application_resource_baseline" ]]; then
+    printf '%s\n' '--application-resource-baseline-seal requires --application-resource-baseline' >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline" && "$wearable_ingress" != "ON" ]]; then
+    printf '%s\n' '--application-resource-baseline requires --wearable-ingress ON' >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline" && -z "$resource_baseline" &&
+      "$d2_current_resource_gate" != "ON" ]]; then
+    printf '%s\n' '--application-resource-baseline requires --resource-baseline' >&2
+    exit 2
+fi
+if [[ "$d2_current_resource_gate" == "ON" ]]; then
+    if [[ "$target" != "tavrn_routed_node" || "$feature" != "FULL_TAVRN" ||
+          "$repair" != "ON" || "$timer_profile" != "BALANCED" ||
+          "$app_node_number" != "6" || "$hooks" != "OFF" ||
+          "$benchmark" != "OFF" ]]; then
+        printf '%s\n' '--d2-current-resource-gate requires FULL+repair BALANCED node 6 with hooks/benchmark OFF' >&2
+        exit 2
+    fi
+    if [[ "$wearable_ingress" == "ON" && -z "$application_resource_baseline" ]]; then
+        printf '%s\n' 'D2 ingress ON requires --application-resource-baseline and its external seal' >&2
+        exit 2
+    fi
+    if [[ "$wearable_ingress" == "OFF" && -n "$application_resource_baseline" ]]; then
+        printf '%s\n' 'D2 ingress OFF must not consume an application baseline' >&2
+        exit 2
+    fi
+fi
+if [[ "$wearable_ingress" == "ON" && -n "$resource_baseline" &&
+      -z "$application_resource_baseline" ]]; then
+    printf '%s\n' '--resource-baseline with --wearable-ingress ON requires --application-resource-baseline' >&2
+    exit 2
+fi
 if [[ "$stack_usage" == "ON" &&
       ( "$target" != "tavrn_routed_node" || "$feature" != "FULL_TAVRN" ) ]]; then
     printf '%s\n' '--stack-usage is supported only for --target tavrn_routed_node --feature FULL_TAVRN' >&2
@@ -268,6 +344,16 @@ if [[ "$stack_usage" == "ON" &&
 fi
 if [[ -n "$resource_baseline" && ! -f "$resource_baseline" ]]; then
     printf 'Resource baseline does not exist: %s\n' "$resource_baseline" >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline" && ! -d "$application_resource_baseline" ]]; then
+    printf 'Application resource baseline directory does not exist: %s\n' \
+        "$application_resource_baseline" >&2
+    exit 2
+fi
+if [[ -n "$application_resource_baseline_seal" && ! -f "$application_resource_baseline_seal" ]]; then
+    printf 'Application resource baseline seal does not exist: %s\n' \
+        "$application_resource_baseline_seal" >&2
     exit 2
 fi
 if [[ "$candidate" == "ON" && "$target" != "ble_link_v2_testbed" &&
@@ -418,6 +504,7 @@ observe_source_state() {
     done <<< "$submodule_status"
     commit="$(git -C "$repo_root" rev-parse HEAD)"
     tree="$(git -C "$repo_root" rev-parse HEAD^{tree})"
+    worktree_content_sha256="$(python3 "$resource_checker" --print-worktree-content-digest)"
 }
 
 observe_source_state
@@ -425,6 +512,7 @@ pre_source_dirty="$source_dirty"
 pre_submodule_dirty="$submodule_dirty"
 pre_commit="$commit"
 pre_tree="$tree"
+pre_worktree_content_sha256="$worktree_content_sha256"
 if [[ "$candidate" == "ON" && ( "$source_dirty" != no || "$submodule_dirty" != no ) ]]; then
     printf 'Candidate publication refused: source_dirty=%s submodule_dirty=%s\n' \
         "$source_dirty" "$submodule_dirty" >&2
@@ -447,6 +535,8 @@ test -s "$build_dir/compile_commands.json"
 test -s "$build_dir/build.ninja"
 test -s "$build_dir/CMakeCache.txt"
 
+resource_inherited_fixed_state_delta=0
+resource_application_fixed_state_delta=0
 resource_declared_fixed_state_delta=0
 if [[ "$stack_usage" == "ON" ]]; then
     build_behavior=""
@@ -469,11 +559,11 @@ if [[ "$stack_usage" == "ON" ]]; then
         # is dynamically allocated and is accounted by the separate runtime RAM
         # reserve, not by the fixed-state allowance. Future .data or .bss growth
         # remains subject to the checker's unexplained limit.
-        resource_declared_fixed_state_delta=4624
+        resource_inherited_fixed_state_delta=4624
         if [[ "$repair" == "ON" ]]; then
             # Local repair adds one bounded 436-byte repair context, one
             # 56-byte production binding, and one 188-byte copied tick result.
-            resource_declared_fixed_state_delta=5304
+            resource_inherited_fixed_state_delta=5304
         fi
         if [[ "$benchmark" == "ON" ]]; then
             # The 1024-entry queue adds 18432 bytes over the 512-entry queue
@@ -485,11 +575,25 @@ if [[ "$stack_usage" == "ON" ]]; then
             # local LEAVE facts; retain these measured totals rather than an
             # arithmetic-only allowance.
             if [[ "$repair" == "ON" ]]; then
-                resource_declared_fixed_state_delta=44624
+                resource_inherited_fixed_state_delta=44624
             else
-                resource_declared_fixed_state_delta=43940
+                resource_inherited_fixed_state_delta=43940
             fi
         fi
+        if [[ "$wearable_ingress" == "ON" ]]; then
+            # ARM FULL+repair node-6 map evidence against the immutable
+            # ingress-off FULL+repair baseline measures +8012 bytes. The
+            # separate sizeof report proves 8002 owned static bytes, including
+            # three 640-byte TA_USERBUF stacks, the 96-byte first-invalid
+            # provenance snapshot, the 4-byte logger-dispatch epoch, and the
+            # separate one-byte progress-wake and quiet fault-log states. The
+            # transition also removes the 4-byte diagnostic pending value and
+            # leaves 14 bytes of measured linker placement. Keep this allowance
+            # separate from inherited TAVRN state and re-check it from fresh
+            # ELF/MAP/sizeof evidence.
+            resource_application_fixed_state_delta=8012
+        fi
+        resource_declared_fixed_state_delta=$((resource_inherited_fixed_state_delta + resource_application_fixed_state_delta))
     fi
 fi
 
@@ -580,7 +684,13 @@ config_manifest_evidence_name="${artifact_base}.build-config.manifest"
 config_header_evidence_name="${artifact_base}.build-config.h"
 generated_headers_evidence_dir="${publication_dir}/${artifact_base}.generated-headers"
 disassembly_evidence_name="${artifact_base}.disassembly.txt"
+resource_checker_evidence_name="${artifact_base}.check_tavrn_expiry_resources.py"
 source_inventory_evidence_name="${artifact_base}.selected-sources.txt"
+source_hashes_evidence_name="${artifact_base}.selected-source-hashes.txt"
+complete_source_inventory_evidence_name="${artifact_base}.complete-selected-sources.txt"
+complete_source_hashes_evidence_name="${artifact_base}.complete-selected-source-hashes.txt"
+generated_sources_evidence_name="${artifact_base}.generated-sources"
+generated_sources_evidence_dir="${publication_dir}/${generated_sources_evidence_name}"
 ninja -C "$build_dir" -t commands "$target" > "$publication_dir/${commands_evidence_name}"
 install -m 0644 "$build_dir/compile_commands.json" \
     "$publication_dir/${compile_commands_evidence_name}"
@@ -588,6 +698,7 @@ install -m 0644 "$build_dir/build.ninja" "$publication_dir/${ninja_evidence_name
 install -m 0644 "$build_dir/CMakeCache.txt" "$publication_dir/${cmake_cache_evidence_name}"
 install -m 0644 "$config_manifest" "$publication_dir/${config_manifest_evidence_name}"
 install -m 0644 "$generated_config_header" "$publication_dir/${config_header_evidence_name}"
+install -m 0644 "$resource_checker" "$publication_dir/${resource_checker_evidence_name}"
 install -d "$generated_headers_evidence_dir"
 install -m 0644 "$build_dir/app/${target}/generated/${target}/"*.h \
     "$generated_headers_evidence_dir/"
@@ -598,32 +709,58 @@ test -s "$publication_dir/${ninja_evidence_name}"
 test -s "$publication_dir/${cmake_cache_evidence_name}"
 test -s "$publication_dir/${config_manifest_evidence_name}"
 test -s "$publication_dir/${config_header_evidence_name}"
+test -s "$publication_dir/${resource_checker_evidence_name}"
 test -s "$generated_headers_evidence_dir/tron_build_config.h"
 test -s "$generated_headers_evidence_dir/tron_build_info.h"
 test -s "$publication_dir/${disassembly_evidence_name}"
 
-# Generated translation units are part of the build closure, but the immutable
-# selected-source inventory intentionally contains only repository sources.
+# Preserve the historical checked-in inventory for the resource checker, then
+# publish a complete closure that also binds generated translation units.  D2
+# compares the latter so generated sources cannot disappear from provenance.
 : > "${build_dir}/selected-sources.unsorted"
+: > "${build_dir}/complete-selected-sources.unsorted"
+install -d "$generated_sources_evidence_dir"
 while IFS='=' read -r source_key source_path; do
     case "$source_key" in
         source.selected.[0-9]*)
-            [[ "$source_path" == generated/* ]] && continue
-            if [[ "$source_path" == /* || ! -f "${repo_root}/${source_path}" ]]; then
+            if [[ -z "$source_path" || "$source_path" == /* || "$source_path" == .. ||
+                  "$source_path" == ../* || "$source_path" == */../* || "$source_path" == */.. ]]; then
                 printf 'Selected source inventory is invalid: %s\n' "$source_path" >&2
                 exit 2
             fi
-            printf '%s\n' "$source_path" >> "${build_dir}/selected-sources.unsorted"
+            if [[ "$source_path" == generated/* ]]; then
+                generated_source="${build_dir}/app/${target}/generated/${target}/${source_path#generated/}"
+                if [[ ! -f "$generated_source" ]]; then
+                    printf 'Generated selected source inventory is invalid: %s\n' "$source_path" >&2
+                    exit 2
+                fi
+                mkdir -p "${generated_sources_evidence_dir}/$(dirname "${source_path#generated/}")"
+                install -m 0644 "$generated_source" \
+                    "${generated_sources_evidence_dir}/${source_path#generated/}"
+            elif [[ ! -f "${repo_root}/${source_path}" ]]; then
+                printf 'Selected source inventory is invalid: %s\n' "$source_path" >&2
+                exit 2
+            else
+                printf '%s\n' "$source_path" >> "${build_dir}/selected-sources.unsorted"
+            fi
+            printf '%s\n' "$source_path" >> "${build_dir}/complete-selected-sources.unsorted"
             ;;
     esac
 done < "$config_manifest"
-if [[ ! -s "${build_dir}/selected-sources.unsorted" ]]; then
+if [[ ! -s "${build_dir}/selected-sources.unsorted" ||
+      ! -s "${build_dir}/complete-selected-sources.unsorted" ]]; then
     printf '%s\n' 'Selected source inventory is empty' >&2
     exit 2
 fi
 LC_ALL=C sort "${build_dir}/selected-sources.unsorted" > "$publication_dir/${source_inventory_evidence_name}"
+LC_ALL=C sort "${build_dir}/complete-selected-sources.unsorted" \
+    > "$publication_dir/${complete_source_inventory_evidence_name}"
 if [[ -n "$(uniq -d "$publication_dir/${source_inventory_evidence_name}")" ]]; then
     printf '%s\n' 'Selected source inventory contains duplicates' >&2
+    exit 2
+fi
+if [[ -n "$(uniq -d "$publication_dir/${complete_source_inventory_evidence_name}")" ]]; then
+    printf '%s\n' 'Complete selected source inventory contains duplicates' >&2
     exit 2
 fi
 source_inventory_hash="$(python3 - "$repo_root" "$publication_dir/${source_inventory_evidence_name}" <<'PY'
@@ -638,10 +775,54 @@ for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
 print(hashlib.sha256("".join(records).encode("utf-8")).hexdigest())
 PY
 )"
+python3 - "$repo_root" "$publication_dir/${source_inventory_evidence_name}" \
+    "$publication_dir/${source_hashes_evidence_name}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+paths = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+records = []
+for relative in paths:
+    source = root / relative
+    records.append(f"{hashlib.sha256(source.read_bytes()).hexdigest()}  {relative}\n")
+pathlib.Path(sys.argv[3]).write_text("".join(records), encoding="utf-8")
+PY
+test -s "$publication_dir/${source_hashes_evidence_name}"
+python3 - "$repo_root" "$generated_sources_evidence_dir" \
+    "$publication_dir/${complete_source_inventory_evidence_name}" \
+    "$publication_dir/${complete_source_hashes_evidence_name}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+generated = pathlib.Path(sys.argv[2])
+paths = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8").splitlines()
+records = []
+for relative in paths:
+    if relative.startswith("generated/"):
+        source = generated / relative.removeprefix("generated/")
+    else:
+        source = root / relative
+    if not source.is_file():
+        raise SystemExit("complete selected source is missing: " + relative)
+    records.append(f"{hashlib.sha256(source.read_bytes()).hexdigest()}  {relative}\n")
+pathlib.Path(sys.argv[4]).write_text("".join(records), encoding="utf-8")
+PY
+test -s "$publication_dir/${complete_source_hashes_evidence_name}"
 
 stack_evidence_name=""
 stack_evidence_glob=""
+stack_evidence_index_name=""
 resource_manifest_name=""
+application_size_report_name=""
+application_size_report_args=()
+application_size_probe_evidence_name=""
+preprocessed_main_evidence_name=""
+resource_gate_report_name=""
+resource_contract_evidence_names=()
 if [[ "$stack_usage" == "ON" ]]; then
     stack_evidence_name="${artifact_base}.stack-usage"
     stack_evidence_dir="$publication_dir/${stack_evidence_name}"
@@ -676,6 +857,47 @@ records = "".join(
 print(hashlib.sha256(records.encode("utf-8")).hexdigest())
 PY
 )"
+    stack_evidence_index_name="${artifact_base}.stack-usage.index"
+    python3 - "$stack_evidence_dir" "$publication_dir/${stack_evidence_index_name}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+paths = sorted(path for path in root.rglob("*.su") if path.is_file())
+if not paths:
+    raise SystemExit(1)
+records = "".join(
+    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}\n"
+    for path in paths)
+pathlib.Path(sys.argv[2]).write_text(records, encoding="utf-8")
+PY
+    test -s "$publication_dir/${stack_evidence_index_name}"
+    if [[ "$(sha256sum "$publication_dir/${stack_evidence_index_name}" | cut -d' ' -f1)" != \
+          "$stack_evidence_hash" ]]; then
+        printf '%s\n' 'Stack usage index aggregate differs from stack evidence' >&2
+        exit 1
+    fi
+    if [[ "$wearable_ingress" == "ON" ]]; then
+        application_size_report_name="${artifact_base}.mind.application.sizes.v1.json"
+        application_size_probe_evidence_name="${artifact_base}.mind.application.size-probe.c"
+        install -m 0644 "${repo_root}/tests/application/test_mind_application_resource_sizes.c" \
+            "$publication_dir/${application_size_probe_evidence_name}"
+        python3 "$resource_checker" \
+            --emit-application-size-report "$publication_dir/${application_size_report_name}" \
+            --application-size-source \
+            "${repo_root}/tests/application/test_mind_application_resource_sizes.c" \
+            --compile-commands "$build_dir/compile_commands.json" \
+            --full-elf "$source_elf" --full-map "$source_map" \
+            --config-header "$generated_config_header"
+        test -s "$publication_dir/${application_size_report_name}"
+        test -s "$publication_dir/${application_size_probe_evidence_name}"
+        application_size_report_args=(
+            --application-size-report "$publication_dir/${application_size_report_name}"
+            --application-size-source \
+            "${repo_root}/tests/application/test_mind_application_resource_sizes.c"
+        )
+    fi
     resource_manifest_name="${artifact_base}.tron.tavrn.expiry.resources.v1.json"
     python3 "$resource_checker" --emit-resource-manifest "$publication_dir/${resource_manifest_name}" \
         --name "$artifact_base" --target "$target" --feature "$feature" --timer "$timer_profile" \
@@ -684,7 +906,8 @@ PY
         --selected-sources "$publication_dir/${source_inventory_evidence_name}" \
         --disassembly "$publication_dir/${disassembly_evidence_name}" \
         --config-header "$publication_dir/${config_header_evidence_name}" \
-        --declared-fixed-state-delta "$resource_declared_fixed_state_delta"
+        --declared-fixed-state-delta "$resource_declared_fixed_state_delta" \
+        "${application_size_report_args[@]}"
     test -s "$publication_dir/${resource_manifest_name}"
 fi
 
@@ -747,9 +970,16 @@ done < "$config_manifest"
     fi
     printf 'source.commit=%s\n' "$commit"
     printf 'source.dirty=%s\n' "$source_dirty"
+    printf 'source.worktree_content.scope=git-diff-head-binary-plus-relevant-untracked-v1\n'
+    printf 'source.worktree_content.sha256=%s\n' "$worktree_content_sha256"
     printf 'source.inventory.name=%s\n' "$source_inventory_evidence_name"
     printf 'source.inventory.sha256=%s\n' "$source_inventory_hash"
     printf 'source.inventory.size=%s\n' "$(wc -c < "$publication_dir/${source_inventory_evidence_name}")"
+    printf 'source.inventory.file_hashes.name=%s\n' "$source_hashes_evidence_name"
+    printf 'source.inventory.file_hashes.sha256=%s\n' \
+        "$(sha256sum "$publication_dir/${source_hashes_evidence_name}" | cut -d' ' -f1)"
+    printf 'source.inventory.file_hashes.size=%s\n' \
+        "$(wc -c < "$publication_dir/${source_hashes_evidence_name}")"
     printf 'source.submodule.count=%s\n' "$submodule_count"
     printf '%s' "$submodule_manifest_lines"
     printf 'source.submodule.sha256=%s\n' "$(printf '%s' "$submodule_status" | sha256sum | cut -d' ' -f1)"
@@ -779,20 +1009,95 @@ done < "$config_manifest"
     printf 'evidence.selected_sources.name=%s\n' "$source_inventory_evidence_name"
     printf 'evidence.selected_sources.sha256=%s\n' "$(sha256sum "$publication_dir/${source_inventory_evidence_name}" | cut -d' ' -f1)"
     printf 'evidence.selected_sources.size=%s\n' "$(wc -c < "$publication_dir/${source_inventory_evidence_name}")"
+    printf 'evidence.selected_source_hashes.name=%s\n' "$source_hashes_evidence_name"
+    printf 'evidence.selected_source_hashes.sha256=%s\n' \
+        "$(sha256sum "$publication_dir/${source_hashes_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.selected_source_hashes.size=%s\n' \
+        "$(wc -c < "$publication_dir/${source_hashes_evidence_name}")"
+    printf 'evidence.complete_selected_sources.name=%s\n' "$complete_source_inventory_evidence_name"
+    printf 'evidence.complete_selected_sources.sha256=%s\n' \
+        "$(sha256sum "$publication_dir/${complete_source_inventory_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.complete_selected_sources.size=%s\n' \
+        "$(wc -c < "$publication_dir/${complete_source_inventory_evidence_name}")"
+    printf 'evidence.complete_selected_source_hashes.name=%s\n' \
+        "$complete_source_hashes_evidence_name"
+    printf 'evidence.complete_selected_source_hashes.sha256=%s\n' \
+        "$(sha256sum "$publication_dir/${complete_source_hashes_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.complete_selected_source_hashes.size=%s\n' \
+        "$(wc -c < "$publication_dir/${complete_source_hashes_evidence_name}")"
+    printf 'evidence.generated_sources.directory.name=%s\n' "$generated_sources_evidence_name"
+    printf 'evidence.resource_checker.path=scripts/check_tavrn_expiry_resources.py\n'
+    printf 'evidence.resource_checker.name=%s\n' "$resource_checker_evidence_name"
+    printf 'evidence.resource_checker.sha256=%s\n' \
+        "$(sha256sum "$publication_dir/${resource_checker_evidence_name}" | cut -d' ' -f1)"
+    printf 'evidence.resource_checker.size=%s\n' \
+        "$(wc -c < "$publication_dir/${resource_checker_evidence_name}")"
     if [[ "$stack_usage" == "ON" ]]; then
         printf 'resource.schema=tron.tavrn.expiry.resources.v1\n'
         printf 'resource.stack_usage=ON\n'
         printf 'resource.su_glob=%s\n' "$stack_evidence_name/**/*.su"
         printf 'resource.su.sha256=%s\n' "$stack_evidence_hash"
+        printf 'resource.su.directory.name=%s\n' "$stack_evidence_name"
+        printf 'resource.su.index.name=%s\n' "$stack_evidence_index_name"
+        printf 'resource.su.index.sha256=%s\n' \
+            "$(sha256sum "$publication_dir/${stack_evidence_index_name}" | cut -d' ' -f1)"
+        printf 'resource.su.index.size=%s\n' \
+            "$(wc -c < "$publication_dir/${stack_evidence_index_name}")"
         printf 'resource.manifest.name=%s\n' "$resource_manifest_name"
         printf 'resource.manifest.sha256=%s\n' "$(sha256sum "$publication_dir/${resource_manifest_name}" | cut -d' ' -f1)"
         printf 'resource.manifest.size=%s\n' "$(wc -c < "$publication_dir/${resource_manifest_name}")"
         printf 'resource.fixed_state.declared_delta_bytes=%s\n' \
             "$resource_declared_fixed_state_delta"
+        printf 'resource.fixed_state.inherited_delta_bytes=%s\n' \
+            "$resource_inherited_fixed_state_delta"
+        printf 'resource.fixed_state.application_delta_bytes=%s\n' \
+            "$resource_application_fixed_state_delta"
         printf 'resource.mesh_stack.total_bytes=%s\n' "$resource_mesh_stack_total_bytes"
         printf 'resource.mesh_stack.headroom_bytes=%s\n' "$resource_mesh_stack_headroom_bytes"
         printf 'resource.logger_stack.total_bytes=%s\n' "$resource_logger_stack_total_bytes"
         printf 'resource.logger_stack.headroom_bytes=%s\n' "$resource_logger_stack_headroom_bytes"
+        printf 'resource.application_logger_stack.total_bytes=%s\n' "$resource_application_logger_stack_total_bytes"
+        printf 'resource.application_logger_stack.headroom_bytes=%s\n' "$resource_application_logger_stack_headroom_bytes"
+        printf 'resource.application_uart_stack.total_bytes=%s\n' "$resource_application_uart_stack_total_bytes"
+        printf 'resource.application_uart_stack.headroom_bytes=%s\n' "$resource_application_uart_stack_headroom_bytes"
+        printf 'resource.application_ui_stack.total_bytes=%s\n' "$resource_application_ui_stack_total_bytes"
+        printf 'resource.application_ui_stack.headroom_bytes=%s\n' "$resource_application_ui_stack_headroom_bytes"
+        printf 'resource.application_display_stack.total_bytes=%s\n' "$resource_application_display_stack_total_bytes"
+        printf 'resource.application_display_stack.headroom_bytes=%s\n' "$resource_application_display_stack_headroom_bytes"
+        if [[ -n "$application_size_report_name" ]]; then
+            printf 'resource.application_size.name=%s\n' "$application_size_report_name"
+            printf 'resource.application_size.sha256=%s\n' \
+                "$(sha256sum "$publication_dir/${application_size_report_name}" | cut -d' ' -f1)"
+            printf 'resource.application_size.size=%s\n' \
+                "$(wc -c < "$publication_dir/${application_size_report_name}")"
+            printf 'resource.application_size_probe.name=%s\n' "$application_size_probe_evidence_name"
+            printf 'resource.application_size_probe.sha256=%s\n' \
+                "$(sha256sum "$publication_dir/${application_size_probe_evidence_name}" | cut -d' ' -f1)"
+            printf 'resource.application_size_probe.size=%s\n' \
+                "$(wc -c < "$publication_dir/${application_size_probe_evidence_name}")"
+        fi
+        if [[ -n "$resource_gate_report_name" ]]; then
+            printf 'resource.gate_report.name=%s\n' "$resource_gate_report_name"
+            printf 'resource.gate_report.sha256=%s\n' \
+                "$(sha256sum "$publication_dir/${resource_gate_report_name}" | cut -d' ' -f1)"
+            printf 'resource.gate_report.size=%s\n' \
+                "$(wc -c < "$publication_dir/${resource_gate_report_name}")"
+            printf 'evidence.preprocessed_main.name=%s\n' "$preprocessed_main_evidence_name"
+            printf 'evidence.preprocessed_main.sha256=%s\n' \
+                "$(sha256sum "$publication_dir/${preprocessed_main_evidence_name}" | cut -d' ' -f1)"
+            printf 'evidence.preprocessed_main.size=%s\n' \
+                "$(wc -c < "$publication_dir/${preprocessed_main_evidence_name}")"
+            printf 'resource.contract.count=%s\n' "${#resource_contract_evidence_names[@]}"
+            for resource_contract_index in "${!resource_contract_evidence_names[@]}"; do
+                resource_contract_name="${resource_contract_evidence_names[resource_contract_index]}"
+                printf 'resource.contract.%s.name=%s\n' "$resource_contract_index" \
+                    "$resource_contract_name"
+                printf 'resource.contract.%s.sha256=%s\n' "$resource_contract_index" \
+                    "$(sha256sum "$publication_dir/${resource_contract_name}" | cut -d' ' -f1)"
+                printf 'resource.contract.%s.size=%s\n' "$resource_contract_index" \
+                    "$(wc -c < "$publication_dir/${resource_contract_name}")"
+            done
+        fi
     else
         printf 'resource.stack_usage=OFF\n'
     fi
@@ -807,41 +1112,160 @@ fi
 LC_ALL=C sort "$manifest_work" > "$publication_dir/${artifact_base}.manifest"
 }
 
-if [[ -n "$resource_baseline" ]]; then
+if [[ -n "$resource_baseline" || "$d2_current_resource_gate" == "ON" ]]; then
+    resource_baseline_args=()
     baseline_dir="$(dirname "$resource_baseline")"
-    baseline_map="${baseline_dir}/${timer_tag}.before.map"
-    baseline_hash="${baseline_dir}/${timer_tag}.baseline.sha256"
-    if [[ ! -f "$baseline_map" || ! -f "$baseline_hash" ]]; then
-        printf 'Resource baseline is incomplete for %s: expected %s and %s\n' \
-            "$timer_profile" "$baseline_map" "$baseline_hash" >&2
-        exit 2
+    if [[ -n "$resource_baseline" ]]; then
+        baseline_map="${baseline_dir}/${timer_tag}.before.map"
+        baseline_hash="${baseline_dir}/${timer_tag}.baseline.sha256"
+        if [[ ! -f "$baseline_map" || ! -f "$baseline_hash" ]]; then
+            printf 'Resource baseline is incomplete for %s: expected %s and %s\n' \
+                "$timer_profile" "$baseline_map" "$baseline_hash" >&2
+            exit 2
+        fi
+        resource_baseline_args=(
+            --before-map "$baseline_map" --baseline-manifest "$resource_baseline"
+            --baseline-sha256 "$baseline_hash"
+        )
+    else
+        resource_baseline_args=(--current-resource-gate)
     fi
     resource_gate="PENDING"
     write_publication_manifest no
     resource_gate_log="${build_dir}/resource-gate.log"
+    preprocessed_main_evidence_name="${artifact_base}.main.i"
+    resource_mesh_edge_manifest="${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-stack-edges.json"
+    if [[ "$repair" == "ON" ]]; then
+        resource_mesh_edge_manifest="${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-repair-stack-edges.json"
+    fi
     resource_logger_args=()
+    resource_application_args=()
     if [[ "$benchmark" == "ON" ]]; then
         resource_logger_args=(
             --logger-stack-root routed_logger_task
             --logger-required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-logger-stack-edges.json"
         )
     fi
+    if [[ "$wearable_ingress" == "ON" ]]; then
+        shopt -s nullglob
+        application_artifact_manifests=("${application_resource_baseline}"/*.manifest)
+        shopt -u nullglob
+        application_baseline_artifact_manifest=""
+        for application_manifest_candidate in "${application_artifact_manifests[@]}"; do
+            if [[ "$application_manifest_candidate" != *.build-config.manifest ]]; then
+                if [[ -n "$application_baseline_artifact_manifest" ]]; then
+                    printf 'Application resource baseline must contain exactly one artifact manifest: %s\n' \
+                        "$application_resource_baseline" >&2
+                    exit 2
+                fi
+                application_baseline_artifact_manifest="$application_manifest_candidate"
+            fi
+        done
+        if [[ -z "$application_baseline_artifact_manifest" ]]; then
+            printf 'Application resource baseline lacks an artifact manifest: %s\n' \
+                "$application_resource_baseline" >&2
+            exit 2
+        fi
+        application_baseline_name=""
+        application_baseline_elf_name=""
+        application_baseline_map_name=""
+        application_baseline_resource_name=""
+        application_baseline_build_manifest_name=""
+        application_baseline_sources_name=""
+        application_manifest_key=""
+        application_manifest_value=""
+        while IFS='=' read -r application_manifest_key application_manifest_value || \
+              [[ -n "$application_manifest_key" ]]; do
+            case "$application_manifest_key" in
+                artifact.name) application_baseline_name="$application_manifest_value" ;;
+                artifact.elf.name) application_baseline_elf_name="$application_manifest_value" ;;
+                artifact.map.name) application_baseline_map_name="$application_manifest_value" ;;
+                resource.manifest.name) application_baseline_resource_name="$application_manifest_value" ;;
+                evidence.target_config_manifest.name)
+                    application_baseline_build_manifest_name="$application_manifest_value" ;;
+                evidence.selected_sources.name)
+                    application_baseline_sources_name="$application_manifest_value" ;;
+            esac
+        done < "$application_baseline_artifact_manifest"
+        if [[ -z "$application_baseline_name" ||
+              "$application_baseline_elf_name" != "${application_baseline_name}.elf" ||
+              "$application_baseline_map_name" != "${application_baseline_name}.map" ||
+              -z "$application_baseline_resource_name" ||
+              -z "$application_baseline_build_manifest_name" ||
+              -z "$application_baseline_sources_name" ]]; then
+            printf 'Application resource baseline artifact manifest is incomplete: %s\n' \
+                "$application_baseline_artifact_manifest" >&2
+            exit 2
+        fi
+        application_baseline_map="${application_resource_baseline}/${application_baseline_map_name}"
+        application_baseline_manifest="${application_resource_baseline}/${application_baseline_resource_name}"
+        application_baseline_build_manifest="${application_resource_baseline}/${application_baseline_build_manifest_name}"
+        application_baseline_sources="${application_resource_baseline}/${application_baseline_sources_name}"
+        application_baseline_elf="${application_resource_baseline}/${application_baseline_elf_name}"
+        for application_baseline_file in "$application_baseline_artifact_manifest" \
+            "$application_baseline_map" "$application_baseline_manifest" \
+            "$application_baseline_build_manifest" "$application_baseline_sources" \
+            "$application_baseline_elf"; do
+            if [[ ! -f "$application_baseline_file" ]]; then
+                printf 'Application resource baseline is incomplete for %s: missing %s\n' \
+                    "$timer_profile" "$application_baseline_file" >&2
+                exit 2
+            fi
+        done
+        resource_mesh_edge_manifest="${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-mesh-stack-edges.json"
+        resource_application_args=(
+            --application-size-report "$publication_dir/${application_size_report_name}"
+            --application-size-source "${repo_root}/tests/application/test_mind_application_resource_sizes.c"
+            --inherited-fixed-state-delta "$resource_inherited_fixed_state_delta"
+            --application-fixed-state-delta "$resource_application_fixed_state_delta"
+            --application-before-map "$application_baseline_map"
+            --application-baseline-manifest "$application_baseline_manifest"
+            --application-baseline-artifact-manifest "$application_baseline_artifact_manifest"
+            --application-baseline-seal "$application_resource_baseline_seal"
+            --application-baseline-build-manifest "$application_baseline_build_manifest"
+            --application-baseline-selected-sources "$application_baseline_sources"
+            --application-baseline-elf "$application_baseline_elf"
+            --mind-logger-required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-logger-stack-edges.json"
+            --mind-uart-required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-uart-stack-edges.json"
+            --mind-ui-required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-ui-stack-edges.json"
+            --mind-display-required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-display-stack-edges.json"
+        )
+    fi
+    resource_contract_paths=("$resource_mesh_edge_manifest")
+    if [[ "$benchmark" == "ON" ]]; then
+        resource_contract_paths+=("${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-logger-stack-edges.json")
+    fi
+    if [[ "$wearable_ingress" == "ON" ]]; then
+        resource_contract_paths+=(
+            "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-logger-stack-edges.json"
+            "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-uart-stack-edges.json"
+            "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-ui-stack-edges.json"
+            "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-display-stack-edges.json"
+        )
+    fi
+    resource_contract_evidence_names=()
+    for resource_contract_path in "${resource_contract_paths[@]}"; do
+        resource_contract_name="${artifact_base}.resource-contract.$(basename "$resource_contract_path")"
+        install -m 0644 "$resource_contract_path" "$publication_dir/${resource_contract_name}"
+        resource_contract_evidence_names+=("$resource_contract_name")
+    done
     set +e
     python3 "$resource_checker" --resource-manifest "$publication_dir/${resource_manifest_name}" \
         --full-elf "$publication_dir/${artifact_base}.elf" --full-map "$publication_dir/${artifact_base}.map" \
         --full-manifest "$publication_dir/${artifact_base}.manifest" \
-        --before-map "$baseline_map" --baseline-manifest "$resource_baseline" \
-        --baseline-sha256 "$baseline_hash" --selected-sources "$publication_dir/${source_inventory_evidence_name}" \
+        "${resource_baseline_args[@]}" --selected-sources "$publication_dir/${source_inventory_evidence_name}" \
         --su-glob "$stack_evidence_glob" --stack-root routed_mesh_task \
-        --required-edge-manifest "${repo_root}/tests/protocol/fixtures/tavrn_expiry_resources/required-stack-edges.json" \
+        --required-edge-manifest "$resource_mesh_edge_manifest" \
         --resolve-operation-edge 'routed_cycle_operations.router_scheduler_event=routed_cycle_router_scheduler_event' \
         --resolve-operation-edge 'routed_cycle_operations.router_tick=routed_cycle_router_tick' \
+        --resolve-operation-edge 'routed_cycle_operations.application_prepare=routed_cycle_application_prepare' \
         --disassembly "$publication_dir/${disassembly_evidence_name}" \
         --compile-commands "$publication_dir/${compile_commands_evidence_name}" \
         --config-header "$publication_dir/${config_header_evidence_name}" \
         --main-source "${repo_root}/app/tavrn_routed_node/src/main.c" \
-        --preprocessed-main-out "${publication_dir}/${artifact_base}.main.i" \
-        --require-binding-call "${resource_logger_args[@]}" >"$resource_gate_log" 2>&1
+        --preprocessed-main-out "${publication_dir}/${preprocessed_main_evidence_name}" \
+        --require-binding-call "${resource_logger_args[@]}" \
+        "${resource_application_args[@]}" >"$resource_gate_log" 2>&1
     resource_gate_status=$?
     set -e
     if [[ $resource_gate_status -eq 0 ]]; then
@@ -850,10 +1274,20 @@ if [[ -n "$resource_baseline" ]]; then
         resource_gate="FAILED"
     fi
     if [[ $resource_gate_status -ne 0 ]]; then
+        while IFS= read -r resource_gate_line; do
+            printf '%s\n' "$resource_gate_line" >&2
+        done < "$resource_gate_log"
         printf 'Resource gate failed while staging artifacts: %s\n' \
             "$publication_dir/${artifact_base}.manifest" >&2
         exit "$resource_gate_status"
     fi
+    python3 "$resource_checker" --finalize-resource-manifest \
+        --resource-manifest "$publication_dir/${resource_manifest_name}" \
+        --resource-gate-report "$resource_gate_log" >/dev/null
+    resource_gate_report_name="${artifact_base}.resource-gate.txt"
+    install -m 0644 "$resource_gate_log" "$publication_dir/${resource_gate_report_name}"
+    test -s "$publication_dir/${resource_gate_report_name}"
+    test -s "$publication_dir/${preprocessed_main_evidence_name}"
     resource_gate_value() {
         local key="$1"
         local line=""
@@ -884,16 +1318,28 @@ if [[ -n "$resource_baseline" ]]; then
             exit 1
         fi
     fi
+    if [[ "$wearable_ingress" == "ON" ]]; then
+        resource_application_logger_stack_total_bytes="$(resource_gate_value ROUTED_LOGGER_TASK_STACK_TOTAL_BYTES)"
+        resource_application_logger_stack_headroom_bytes="$(resource_gate_value ROUTED_LOGGER_TASK_STACK_HEADROOM_BYTES)"
+        resource_application_uart_stack_total_bytes="$(resource_gate_value MIND_UART_TASK_STACK_TOTAL_BYTES)"
+        resource_application_uart_stack_headroom_bytes="$(resource_gate_value MIND_UART_TASK_STACK_HEADROOM_BYTES)"
+        resource_application_ui_stack_total_bytes="$(resource_gate_value MIND_UI_TASK_STACK_TOTAL_BYTES)"
+        resource_application_ui_stack_headroom_bytes="$(resource_gate_value MIND_UI_TASK_STACK_HEADROOM_BYTES)"
+        resource_application_display_stack_total_bytes="$(resource_gate_value DISPLAY_TASK_STACK_TOTAL_BYTES)"
+        resource_application_display_stack_headroom_bytes="$(resource_gate_value DISPLAY_TASK_STACK_HEADROOM_BYTES)"
+    fi
 fi
 
 observe_source_state
 if [[ "$candidate" == "ON" &&
       ( "$source_dirty" != "$pre_source_dirty" ||
         "$submodule_dirty" != "$pre_submodule_dirty" ||
-        "$commit" != "$pre_commit" || "$tree" != "$pre_tree" ) ]]; then
-    printf 'Candidate publication refused: source state changed during build/evidence: pre_source_dirty=%s post_source_dirty=%s pre_submodule_dirty=%s post_submodule_dirty=%s pre_commit=%s post_commit=%s pre_tree=%s post_tree=%s\n' \
+         "$commit" != "$pre_commit" || "$tree" != "$pre_tree" ||
+         "$worktree_content_sha256" != "$pre_worktree_content_sha256" ) ]]; then
+    printf 'Candidate publication refused: source state changed during build/evidence: pre_source_dirty=%s post_source_dirty=%s pre_submodule_dirty=%s post_submodule_dirty=%s pre_commit=%s post_commit=%s pre_tree=%s post_tree=%s pre_worktree_content_sha256=%s post_worktree_content_sha256=%s\n' \
         "$pre_source_dirty" "$source_dirty" "$pre_submodule_dirty" "$submodule_dirty" \
-        "$pre_commit" "$commit" "$pre_tree" "$tree" >&2
+        "$pre_commit" "$commit" "$pre_tree" "$tree" "$pre_worktree_content_sha256" \
+        "$worktree_content_sha256" >&2
     exit 1
 fi
 
@@ -919,6 +1365,11 @@ if [[ "$candidate_unhooked_acceptance" == yes ]]; then
     candidate_eligible=yes
 fi
 write_publication_manifest yes
+if [[ -n "$resource_baseline" || "$d2_current_resource_gate" == "ON" ]]; then
+    python3 "$resource_checker" --verify-published-provenance \
+        "$publication_dir/${artifact_base}.manifest" \
+        >"${build_dir}/published-resource-provenance.log" 2>&1
+fi
 
 atomic_publish_candidate_bundle() {
     local staging_dir="$1"
