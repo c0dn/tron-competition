@@ -2,13 +2,80 @@
 
 #include <string.h>
 
-static int queue_is_valid(const routed_benchmark_attempt_queue_t *queue)
+static int workload_is_valid(routed_benchmark_workload_t workload)
 {
-    return queue != NULL &&
-        queue->head < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
-        queue->tail < ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
-        queue->count <= ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY &&
-        queue->high_water <= ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY;
+    return workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT ||
+        workload == ROUTED_BENCHMARK_WORKLOAD_THROUGHPUT;
+}
+
+static int state_is_initialized(const routed_benchmark_state_t *state)
+{
+    return state != NULL && state->initialized == 1u && state->session_id != 0u;
+}
+
+static int counter_has_pending_offer(uint32_t offered, uint32_t accepted,
+                                     uint32_t rejected)
+{
+    return accepted <= offered && rejected <= offered - accepted &&
+        accepted + rejected < offered;
+}
+
+static int accepted_fifo_is_valid(const routed_benchmark_accepted_fifo_t *fifo)
+{
+    uint16_t expected_tail;
+
+    if (fifo == NULL || fifo->head >= ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY ||
+        fifo->tail >= ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY ||
+        fifo->count > ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY ||
+        fifo->high_water < fifo->count ||
+        fifo->high_water > ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY) {
+        return 0;
+    }
+    expected_tail = (uint16_t)(fifo->head + fifo->count);
+    if (expected_tail >= ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY) {
+        expected_tail = (uint16_t)(expected_tail -
+                                   ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY);
+    }
+    return fifo->tail == expected_tail;
+}
+
+static int final_fifo_is_valid(const routed_benchmark_final_fifo_t *fifo)
+{
+    uint16_t expected_tail;
+
+    if (fifo == NULL || fifo->head >= ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY ||
+        fifo->tail >= ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY ||
+        fifo->count > ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY ||
+        fifo->high_water < fifo->count ||
+        fifo->high_water > ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY) {
+        return 0;
+    }
+    expected_tail = (uint16_t)(fifo->head + fifo->count);
+    if (expected_tail >= ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY) {
+        expected_tail = (uint16_t)(expected_tail -
+                                   ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY);
+    }
+    return fifo->tail == expected_tail;
+}
+
+static int accepted_event_is_valid(const routed_benchmark_accepted_event_t *event)
+{
+    return event != NULL && event->identity <= ROUTED_BENCHMARK_IDENTITY_MAX &&
+        (event->submit_status == 0u || event->submit_status == 1u);
+}
+
+static int final_event_is_valid(const routed_benchmark_final_event_t *event)
+{
+    uint8_t expected_identity_valid;
+
+    if (event == NULL || event->identity_valid > 1u) {
+        return 0;
+    }
+    expected_identity_valid = event->origin_session != 0u &&
+        event->identity <= ROUTED_BENCHMARK_IDENTITY_MAX &&
+        event->app_kind == ROUTED_BENCHMARK_APP_KIND &&
+        event->app_len == ROUTED_BENCHMARK_APP_PAYLOAD_BYTES;
+    return event->identity_valid == expected_identity_valid;
 }
 
 static void increment_saturating(uint32_t *value)
@@ -57,8 +124,8 @@ static int next_record_id(routed_benchmark_state_t *state, uint64_t *out)
 /* Move through completely elapsed bursts without synthesizing their missed
  * traffic.  The arithmetic selects the current burst when `now_ms` lands in
  * its active window and otherwise advances to the following one. */
-static void discard_expired_bursts(routed_benchmark_state_t *state,
-                                   uint32_t now_ms)
+static int discard_expired_bursts(routed_benchmark_state_t *state,
+                                  uint32_t now_ms)
 {
     uint32_t elapsed;
     uint32_t periods;
@@ -68,7 +135,7 @@ static void discard_expired_bursts(routed_benchmark_state_t *state,
 
     if (!time_due(now_ms, state->burst_started_at_ms +
                   ROUTED_BENCHMARK_BURST_DURATION_MS)) {
-        return;
+        return 1;
     }
     elapsed = now_ms - state->burst_started_at_ms;
     periods = elapsed / ROUTED_BENCHMARK_BURST_PERIOD_MS;
@@ -79,6 +146,10 @@ static void discard_expired_bursts(routed_benchmark_state_t *state,
     }
     if (advance == 0u) {
         advance = 1u;
+    }
+    if ((uint64_t)state->throughput_burst + advance >
+        ROUTED_BENCHMARK_IDENTITY_BURST_MASK) {
+        return 0;
     }
     skipped = ROUTED_BENCHMARK_BURST_SLOT_COUNT - state->throughput_sequence;
     if (advance > 1u) {
@@ -96,6 +167,7 @@ static void discard_expired_bursts(routed_benchmark_state_t *state,
     state->burst_started_at_ms += advance * ROUTED_BENCHMARK_BURST_PERIOD_MS;
     state->throughput_burst += advance;
     state->throughput_sequence = 0u;
+    return 1;
 }
 
 int routed_benchmark_init(routed_benchmark_state_t *state,
@@ -133,17 +205,29 @@ routed_benchmark_schedule_status_t routed_benchmark_schedule_due(
     if (slot_out != NULL) {
         memset(slot_out, 0, sizeof(*slot_out));
     }
-    if (state == NULL || slot_out == NULL || state->initialized == 0u ||
-        state->session_id == 0u) {
+    if (!state_is_initialized(state) || slot_out == NULL) {
         return ROUTED_BENCHMARK_SCHEDULE_INVALID;
     }
-    discard_expired_bursts(state, now_ms);
+    if (state->throughput_burst > ROUTED_BENCHMARK_IDENTITY_BURST_MASK) {
+        return ROUTED_BENCHMARK_SCHEDULE_INVALID;
+    }
     if (time_due(now_ms, state->heartbeat_next_deadline_ms)) {
         heartbeat_skipped = (now_ms - state->heartbeat_next_deadline_ms) /
             ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
         heartbeat_deadline = state->heartbeat_next_deadline_ms +
             heartbeat_skipped * ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
         heartbeat_due = 1u;
+    }
+    if (heartbeat_due != 0u &&
+        (uint64_t)state->heartbeat_sequence + heartbeat_skipped >
+            ROUTED_BENCHMARK_HEARTBEAT_IDENTITY_MAX) {
+        return ROUTED_BENCHMARK_SCHEDULE_INVALID;
+    }
+    if (!discard_expired_bursts(state, now_ms)) {
+        return ROUTED_BENCHMARK_SCHEDULE_INVALID;
+    }
+    if (state->throughput_burst > ROUTED_BENCHMARK_IDENTITY_BURST_MASK) {
+        return ROUTED_BENCHMARK_SCHEDULE_INVALID;
     }
     if (time_due(now_ms, state->burst_started_at_ms) &&
         !time_due(now_ms, state->burst_started_at_ms +
@@ -218,19 +302,49 @@ routed_benchmark_schedule_status_t routed_benchmark_schedule_due(
                                                             slot_out->sequence);
     slot_out->session_id = state->session_id;
     increment_saturating(&state->offered);
+    if (slot_out->workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+        increment_saturating(&state->heartbeat_offered);
+    } else {
+        increment_saturating(&state->throughput_offered);
+    }
     return ROUTED_BENCHMARK_SCHEDULE_DUE;
 }
 
 void routed_benchmark_record_submission(routed_benchmark_state_t *state,
-                                        uint8_t accepted)
+                                         routed_benchmark_workload_t workload,
+                                         uint8_t accepted)
 {
-    if (state == NULL || state->initialized == 0u) {
+    if (!state_is_initialized(state) || !workload_is_valid(workload) ||
+        accepted > 1u ||
+        !counter_has_pending_offer(state->offered, state->accepted,
+                                   state->rejected)) {
         return;
     }
-    if (accepted != 0u) {
+    if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+        if (!counter_has_pending_offer(state->heartbeat_offered,
+                                       state->heartbeat_accepted,
+                                       state->heartbeat_rejected)) {
+            return;
+        }
+    } else if (!counter_has_pending_offer(state->throughput_offered,
+                                           state->throughput_accepted,
+                                           state->throughput_rejected)) {
+        return;
+    }
+    if (accepted == 1u) {
         increment_saturating(&state->accepted);
+        if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+            increment_saturating(&state->heartbeat_accepted);
+        } else {
+            increment_saturating(&state->throughput_accepted);
+        }
     } else {
         increment_saturating(&state->rejected);
+        if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+            increment_saturating(&state->heartbeat_rejected);
+        } else {
+            increment_saturating(&state->throughput_rejected);
+        }
     }
 }
 
@@ -276,70 +390,189 @@ int routed_benchmark_identity_decode(uint32_t identity,
     return 1;
 }
 
-void routed_benchmark_record_not_ready(routed_benchmark_state_t *state)
+void routed_benchmark_record_not_ready(routed_benchmark_state_t *state,
+                                       routed_benchmark_workload_t workload)
 {
-    if (state == NULL || state->initialized == 0u) {
+    if (!state_is_initialized(state) || !workload_is_valid(workload) ||
+        !counter_has_pending_offer(state->offered, state->accepted,
+                                   state->rejected)) {
+        return;
+    }
+    if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+        if (!counter_has_pending_offer(state->heartbeat_offered,
+                                       state->heartbeat_accepted,
+                                       state->heartbeat_rejected)) {
+            return;
+        }
+    } else if (!counter_has_pending_offer(state->throughput_offered,
+                                           state->throughput_accepted,
+                                           state->throughput_rejected)) {
         return;
     }
     increment_saturating(&state->rejected);
     increment_saturating(&state->not_ready);
-}
-
-void routed_benchmark_attempt_queue_init(routed_benchmark_attempt_queue_t *queue)
-{
-    if (queue != NULL) {
-        memset(queue, 0, sizeof(*queue));
+    if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+        increment_saturating(&state->heartbeat_rejected);
+        increment_saturating(&state->heartbeat_not_ready);
+    } else {
+        increment_saturating(&state->throughput_rejected);
+        increment_saturating(&state->throughput_not_ready);
     }
 }
 
-routed_benchmark_attempt_queue_status_t routed_benchmark_attempt_queue_offer(
-    routed_benchmark_attempt_queue_t *queue,
-    const routed_benchmark_attempt_t *attempt)
+void routed_benchmark_final_accounting_init(
+    routed_benchmark_final_accounting_t *accounting)
 {
-    if (!queue_is_valid(queue) || attempt == NULL) {
-        return ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID;
+    if (accounting != NULL) {
+        memset(accounting, 0, sizeof(*accounting));
     }
-    if (queue->count == ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY) {
-        increment_saturating(&queue->dropped_count);
-        return ROUTED_BENCHMARK_ATTEMPT_QUEUE_DROPPED;
-    }
-    queue->records[queue->tail] = *attempt;
-    queue->tail = (uint16_t)((queue->tail + 1u) %
-                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
-    queue->count++;
-    if (queue->count > queue->high_water) {
-        queue->high_water = queue->count;
-    }
-    return ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
 }
 
-routed_benchmark_attempt_queue_status_t routed_benchmark_attempt_queue_take(
-    routed_benchmark_attempt_queue_t *queue, routed_benchmark_attempt_t *attempt_out)
+void routed_benchmark_record_final_commit(
+    routed_benchmark_final_accounting_t *accounting, uint32_t identity,
+    uint8_t identity_valid)
 {
-    if (!queue_is_valid(queue) || attempt_out == NULL) {
-        return ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID;
+    routed_benchmark_workload_t workload;
+    uint32_t burst;
+    uint16_t sequence;
+
+    if (accounting == NULL) {
+        return;
     }
-    if (queue->count == 0u) {
-        return ROUTED_BENCHMARK_ATTEMPT_QUEUE_EMPTY;
+    increment_saturating(&accounting->final_commits);
+    if (identity_valid != 1u || !routed_benchmark_identity_decode(
+            identity, &workload, &burst, &sequence)) {
+        increment_saturating(&accounting->invalid_identity_finals);
+        return;
     }
-    *attempt_out = queue->records[queue->head];
-    queue->head = (uint16_t)((queue->head + 1u) %
-                             ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY);
-    queue->count--;
-    return ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
+    if (workload == ROUTED_BENCHMARK_WORKLOAD_HEARTBEAT) {
+        increment_saturating(&accounting->valid_heartbeat_finals);
+    } else {
+        increment_saturating(&accounting->valid_throughput_finals);
+    }
 }
 
-routed_benchmark_attempt_queue_status_t routed_benchmark_attempt_queue_snapshot(
-    const routed_benchmark_attempt_queue_t *queue,
-    routed_benchmark_attempt_queue_snapshot_t *snapshot_out)
+void routed_benchmark_accepted_fifo_init(routed_benchmark_accepted_fifo_t *fifo)
 {
-    if (!queue_is_valid(queue) || snapshot_out == NULL) {
-        return ROUTED_BENCHMARK_ATTEMPT_QUEUE_INVALID;
+    if (fifo != NULL) {
+        memset(fifo, 0, sizeof(*fifo));
     }
-    snapshot_out->count = queue->count;
-    snapshot_out->high_water = queue->high_water;
-    snapshot_out->dropped_count = queue->dropped_count;
-    return ROUTED_BENCHMARK_ATTEMPT_QUEUE_OK;
+}
+
+routed_benchmark_accepted_fifo_status_t routed_benchmark_accepted_fifo_offer(
+    routed_benchmark_accepted_fifo_t *fifo,
+    const routed_benchmark_accepted_event_t *event)
+{
+    if (!accepted_fifo_is_valid(fifo) || !accepted_event_is_valid(event)) {
+        return ROUTED_BENCHMARK_ACCEPTED_FIFO_INVALID;
+    }
+    if (fifo->count == ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY) {
+        increment_saturating(&fifo->dropped_count);
+        return ROUTED_BENCHMARK_ACCEPTED_FIFO_DROPPED;
+    }
+    fifo->records[fifo->tail] = *event;
+    fifo->tail++;
+    if (fifo->tail == ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY) {
+        fifo->tail = 0u;
+    }
+    fifo->count++;
+    if (fifo->count > fifo->high_water) {
+        fifo->high_water = fifo->count;
+    }
+    return ROUTED_BENCHMARK_ACCEPTED_FIFO_OK;
+}
+
+routed_benchmark_accepted_fifo_status_t routed_benchmark_accepted_fifo_take(
+    routed_benchmark_accepted_fifo_t *fifo,
+    routed_benchmark_accepted_event_t *event_out)
+{
+    if (!accepted_fifo_is_valid(fifo) || event_out == NULL) {
+        return ROUTED_BENCHMARK_ACCEPTED_FIFO_INVALID;
+    }
+    if (fifo->count == 0u) {
+        return ROUTED_BENCHMARK_ACCEPTED_FIFO_EMPTY;
+    }
+    *event_out = fifo->records[fifo->head];
+    fifo->head++;
+    if (fifo->head == ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY) {
+        fifo->head = 0u;
+    }
+    fifo->count--;
+    return ROUTED_BENCHMARK_ACCEPTED_FIFO_OK;
+}
+
+routed_benchmark_accepted_fifo_status_t routed_benchmark_accepted_fifo_snapshot(
+    const routed_benchmark_accepted_fifo_t *fifo,
+    routed_benchmark_accepted_fifo_snapshot_t *snapshot_out)
+{
+    if (!accepted_fifo_is_valid(fifo) || snapshot_out == NULL) {
+        return ROUTED_BENCHMARK_ACCEPTED_FIFO_INVALID;
+    }
+    snapshot_out->count = fifo->count;
+    snapshot_out->high_water = fifo->high_water;
+    snapshot_out->dropped_count = fifo->dropped_count;
+    return ROUTED_BENCHMARK_ACCEPTED_FIFO_OK;
+}
+
+void routed_benchmark_final_fifo_init(routed_benchmark_final_fifo_t *fifo)
+{
+    if (fifo != NULL) {
+        memset(fifo, 0, sizeof(*fifo));
+    }
+}
+
+routed_benchmark_final_fifo_status_t routed_benchmark_final_fifo_offer(
+    routed_benchmark_final_fifo_t *fifo,
+    const routed_benchmark_final_event_t *event)
+{
+    if (!final_fifo_is_valid(fifo) || !final_event_is_valid(event)) {
+        return ROUTED_BENCHMARK_FINAL_FIFO_INVALID;
+    }
+    if (fifo->count == ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY) {
+        increment_saturating(&fifo->dropped_count);
+        return ROUTED_BENCHMARK_FINAL_FIFO_DROPPED;
+    }
+    fifo->records[fifo->tail] = *event;
+    fifo->tail++;
+    if (fifo->tail == ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY) {
+        fifo->tail = 0u;
+    }
+    fifo->count++;
+    if (fifo->count > fifo->high_water) {
+        fifo->high_water = fifo->count;
+    }
+    return ROUTED_BENCHMARK_FINAL_FIFO_OK;
+}
+
+routed_benchmark_final_fifo_status_t routed_benchmark_final_fifo_take(
+    routed_benchmark_final_fifo_t *fifo, routed_benchmark_final_event_t *event_out)
+{
+    if (!final_fifo_is_valid(fifo) || event_out == NULL) {
+        return ROUTED_BENCHMARK_FINAL_FIFO_INVALID;
+    }
+    if (fifo->count == 0u) {
+        return ROUTED_BENCHMARK_FINAL_FIFO_EMPTY;
+    }
+    *event_out = fifo->records[fifo->head];
+    fifo->head++;
+    if (fifo->head == ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY) {
+        fifo->head = 0u;
+    }
+    fifo->count--;
+    return ROUTED_BENCHMARK_FINAL_FIFO_OK;
+}
+
+routed_benchmark_final_fifo_status_t routed_benchmark_final_fifo_snapshot(
+    const routed_benchmark_final_fifo_t *fifo,
+    routed_benchmark_final_fifo_snapshot_t *snapshot_out)
+{
+    if (!final_fifo_is_valid(fifo) || snapshot_out == NULL) {
+        return ROUTED_BENCHMARK_FINAL_FIFO_INVALID;
+    }
+    snapshot_out->count = fifo->count;
+    snapshot_out->high_water = fifo->high_water;
+    snapshot_out->dropped_count = fifo->dropped_count;
+    return ROUTED_BENCHMARK_FINAL_FIFO_OK;
 }
 
 int routed_benchmark_decode_payload(uint8_t app_kind, uint8_t app_len,

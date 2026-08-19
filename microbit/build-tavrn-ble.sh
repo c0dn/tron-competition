@@ -566,14 +566,12 @@ if [[ "$stack_usage" == "ON" ]]; then
             resource_inherited_fixed_state_delta=5304
         fi
         if [[ "$benchmark" == "ON" ]]; then
-            # The 1024-entry queue adds 18432 bytes over the 512-entry queue
-            # (512 * 36-byte copied records). Fresh ARM map evidence against
-            # the immutable 26680-byte baseline fixes the aligned total
-            # benchmark declaration at 43940 bytes without local repair and
-            # 44624 bytes with it.  The growth retains one exact retry terminal
-            # in each of the 16 ordered router-failure slots plus revision-bound
-            # local LEAVE facts; retain these measured totals rather than an
-            # arithmetic-only allowance.
+            # Observer-v3 replaces the old copied-attempt queue with independent
+            # accepted and final FIFOs. Their independent metadata adds 12 bytes
+            # and exact workload-split counters add 32 bytes: the reviewed
+            # 44-byte fixed-state delta changes 71088 to 71132. Keep the
+            # measured inherited declaration at 43940 bytes without local repair
+            # (44624 with it), rather than deriving it from queue arithmetic.
             if [[ "$repair" == "ON" ]]; then
                 resource_inherited_fixed_state_delta=44624
             else
