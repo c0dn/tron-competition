@@ -281,6 +281,8 @@ if ("routed_benchmark_final_fifo" in reserve or
 if not re.search(
         r"benchmark_logger_service_epoch\s*=\s*"
         r"routed_benchmark_logger_service_epoch.*?"
+        r"tk_set_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+        r"ROUTED_LOGGER_REQUEST_BIT\s*\).*?"
         r"for\s*\(\s*;\s*;\s*\).*?"
         r"tk_clr_flg\s*\(\s*routed_release_flag_id\s*,\s*"
         r"~ROUTED_RELEASE_BIT\s*\).*?"
@@ -288,12 +290,19 @@ if not re.search(
         r"release_progressed\s*=\s*routed_benchmark_logger_service_epoch\s*!=\s*"
         r"benchmark_logger_service_epoch",
         wait_release, re.S):
-    errors.append("benchmark wait does not require fresh logger service after stale-bit clear")
+    errors.append("benchmark wait does not request fresh logger service before stale-bit clear")
 if (not re.search(r"volatile\s+uint32_t\s+routed_benchmark_logger_service_epoch", main) or
         "routed_benchmark_logger_service_epoch++;" not in logger or
         not re.search(r"routed_benchmark_uart_tx_enqueue.*?"
                       r"routed_benchmark_logger_service_epoch\+\+", main, re.S)):
     errors.append("benchmark logger does not publish bounded service progress")
+if not re.search(
+        r"#if\s+TRON_BUILD_BENCHMARK_MODE\s*"
+        r"if\s*\(\s*tk_wai_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+        r"ROUTED_LOGGER_REQUEST_BIT\s*,\s*TWF_ORW\s*\|\s*TWF_BITCLR\s*,\s*"
+        r"&logger_request_pattern\s*,\s*TMO_FEVR\s*\)",
+        logger, re.S):
+    errors.append("benchmark logger does not block on explicit service requests")
 if not re.search(
         r"routed_benchmark_final_fifo_offer\(.*?"
         r"delivery_callback_end\(\);\s*return TAVRN_ROUTER_DELIVERY_OK;",

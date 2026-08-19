@@ -3291,6 +3291,9 @@ static ER routed_wait_for_release(void)
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
     uint32_t dispatch_epoch;
     uint32_t elapsed_since_scheduler_return_ms;
+#endif
+#if TRON_BUILD_BENCHMARK_MODE || \
+    (TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS)
     ER request_status;
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
@@ -3316,6 +3319,15 @@ static ER routed_wait_for_release(void)
                                 ROUTED_LOGGER_REQUEST_BIT);
     if (request_status != E_OK) {
         routed_logger_progress_wake_armed = 0u;
+        return request_status;
+    }
+#elif TRON_BUILD_BENCHMARK_MODE
+    /* A benchmark logger turn is part of the yield contract.  Request it
+     * explicitly instead of racing the logger's periodic delay against the
+     * next cyclic release. */
+    request_status = tk_set_flg(routed_release_flag_id,
+                                ROUTED_LOGGER_REQUEST_BIT);
+    if (request_status != E_OK) {
         return request_status;
     }
 #endif
@@ -3815,7 +3827,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     uint32_t next_control_at = now_ms();
     uint8_t benchmark_health_emitted = 0u;
 #endif
-#if !ROUTED_VERBOSE_RUNTIME_TELEMETRY
+#if TRON_BUILD_BENCHMARK_MODE || !ROUTED_VERBOSE_RUNTIME_TELEMETRY
     UINT logger_request_pattern;
 #endif
 
@@ -4020,7 +4032,13 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             next_summary_at = now + tron_timer_config.stats_ms;
         }
 #endif
-#if ROUTED_VERBOSE_RUNTIME_TELEMETRY
+#if TRON_BUILD_BENCHMARK_MODE
+        if (tk_wai_flg(routed_release_flag_id, ROUTED_LOGGER_REQUEST_BIT,
+                       TWF_ORW | TWF_BITCLR, &logger_request_pattern,
+                       TMO_FEVR) != E_OK) {
+            return;
+        }
+#elif ROUTED_VERBOSE_RUNTIME_TELEMETRY
         (void)tk_dly_tsk(1u);
 #else
         (void)tk_rot_rdq(MIND_UI_TASK_PRIORITY);
