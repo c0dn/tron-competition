@@ -770,11 +770,13 @@ endif()
 # strings; display code is likewise selected only for an explicit display mode.
 if(TRON_BENCHMARK_MODE STREQUAL "ON")
   list(APPEND TRON_BLE_ROUTED_SOURCE_LABELS
-       "app/tavrn_routed_node/src/routed_benchmark.c"
-       "app/tavrn_routed_node/src/routed_benchmark_observer.c")
+        "app/tavrn_routed_node/src/routed_benchmark.c"
+        "app/tavrn_routed_node/src/routed_benchmark_observer.c"
+        "app/tavrn_routed_node/src/routed_benchmark_uart_tx.c")
   list(APPEND TRON_BLE_ROUTED_SOURCES
-       "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark.c"
-       "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark_observer.c")
+        "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark_observer.c"
+        "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark_uart_tx.c")
   if(TAVRN_FEATURE_LEVEL STREQUAL "FULL_TAVRN")
     list(APPEND FULL_TAVRN_SOURCES
          "${TRON_BLE_APP_SOURCE_DIR}/tavrn_routed_node/src/routed_benchmark_full.c")

@@ -81,12 +81,14 @@ HEALTH_COUNTER_FIELDS = {
     "valid_throughput_finals", "invalid_identity_finals",
     "application_reserve_busy", "application_commit_busy", "accepted_fifo_faults",
     "final_fifo_faults", "guard_faults", "snapshot_faults", "diagnostic_dropped",
-    "rreq_dropped", "retry_log_dropped", "trace_over_budget",
+    "rreq_dropped", "retry_log_dropped", "uart_pending_bytes",
+    "uart_high_water_bytes", "uart_dropped_bytes", "uart_dropped_records",
+    "uart_transport_faults", "trace_over_budget",
     "trace_fault_latched", "mesh_fault", "router_fault",
 }
 HEALTH_GAUGES = {
     "accepted_fifo_count", "accepted_fifo_high_water", "final_fifo_count",
-    "final_fifo_high_water",
+    "final_fifo_high_water", "uart_pending_bytes",
 }
 
 REQUIRED: dict[str, set[str]] = {
@@ -1023,6 +1025,8 @@ def _critical_checkpoint_reasons(record: ObservationRecord) -> list[str]:
         "final_fifo_dropped", "accepted_fifo_faults", "final_fifo_faults",
         "guard_faults", "snapshot_faults", "invalid_identity_finals", "mesh_fault",
         "router_fault", "application_reserve_busy", "application_commit_busy",
+        "uart_pending_bytes", "uart_dropped_bytes", "uart_dropped_records",
+        "uart_transport_faults",
     )
     return [f"checkpoint_nonzero:{name}" for name in names if _health_value(record, name) != 0]
 
@@ -1237,6 +1241,15 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
         if not checkpoint["complete"]:
             for reason in checkpoint["reasons"]:
                 issue(checkpoint["record"], reason)
+    # A drained later checkpoint can supersede an earlier application FIFO
+    # backlog, but the latest A/C transport-cleanliness state is authoritative
+    # for the currently observed session.
+    for checkpoints in (source_health, destination_health):
+        if checkpoints:
+            latest = max(checkpoints, key=lambda checkpoint: (
+                checkpoint["record"].host_ms, checkpoint["record_id"]))
+            for reason in _critical_checkpoint_reasons(latest["record"]):
+                issue(latest["record"], reason)
     clean_source = [checkpoint for checkpoint in source_health
                     if checkpoint["clean"] and checkpoint["frontier_host_ms"] is not None and
                     checkpoint["prefix_start_host_ms"] is not None]
@@ -1247,14 +1260,6 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
     if destination_health and not clean_destination and any(
             checkpoint["clean"] for checkpoint in destination_health):
         incomplete.append("invalid_clock_fit:C")
-    if not clean_source or not clean_destination:
-        for checkpoints in (source_health, destination_health):
-            complete = [checkpoint for checkpoint in checkpoints if checkpoint["complete"]]
-            if complete:
-                latest = max(complete, key=lambda checkpoint: (checkpoint["record"].host_ms,
-                                                               checkpoint["record_id"]))
-                for reason in _critical_checkpoint_reasons(latest["record"]):
-                    issue(latest["record"], reason)
     settled = [(cutoff, destination, support) for cutoff in clean_source
                for destination in clean_destination for support in clean_source
                if cutoff["record"].session == support["record"].session and
@@ -1694,6 +1699,34 @@ def _auxiliary_validity(state: ObservationState, fits: dict[str, dict[str, Any]]
     }
 
 
+def _transport_validity(state: ObservationState) -> dict[str, Any]:
+    """Validate the latest health checkpoint of every active board session.
+
+    Pending bytes describe an observer line that has not physically completed;
+    drops and faults make that session's observation stream unprovable.  The
+    high-water mark is intentionally reported but is not an error counter.
+    """
+    invalid: list[str] = []
+    incomplete: list[str] = []
+    for role in ROLES:
+        session = state.role_state[role].session
+        if session is None:
+            incomplete.append(f"missing_transport_checkpoint:{role}")
+            continue
+        checkpoints = [record for record in state.records if record.role == role and
+                       record.session == session and record.kind == "health"]
+        if not checkpoints:
+            incomplete.append(f"missing_transport_checkpoint:{role}")
+            continue
+        latest = max(checkpoints, key=lambda record: (record.host_ms,
+                                                       _record_id_value(record)))
+        for name in ("uart_pending_bytes", "uart_dropped_bytes",
+                     "uart_dropped_records", "uart_transport_faults"):
+            if _health_value(latest, name) != 0:
+                invalid.append(f"transport_checkpoint_nonzero:{role}:{name}")
+    return _domain(invalid, incomplete)
+
+
 def snapshot(state: ObservationState) -> dict[str, Any]:
     """Build a deterministic summary without consuming or mutating live state."""
     state.flush()
@@ -1715,13 +1748,20 @@ def snapshot(state: ObservationState) -> dict[str, Any]:
     app_cumulative = _app_cumulative(state, origin)
     health = _health_metrics(state, origin)
     auxiliary = _auxiliary_validity(state, fits, gtt_pairs)
-    validity = {"application": application, **auxiliary}
+    transport = _transport_validity(state)
+    validity = {"application": application, "transport": transport, **auxiliary}
+    if application["status"] == "INVALID" or transport["status"] == "INVALID":
+        overall_status = "INVALID"
+    elif application["status"] == "INCOMPLETE" or transport["status"] == "INCOMPLETE":
+        overall_status = "INCOMPLETE"
+    else:
+        overall_status = "VALID"
     telemetry_corrupt = bool(all_invalid_intervals)
-    incomplete_reasons = sorted({reason for domain in validity.values()
-                                 if domain["status"] == "INCOMPLETE"
-                                 for reason in domain["reasons"]})
+    incomplete_reasons = sorted({reason for domain in (application, transport)
+                                  if domain["status"] == "INCOMPLETE"
+                                  for reason in domain["reasons"]})
     return {
-        "schema": SCHEMA, "status": application["status"], "record_count": len(state.records),
+        "schema": SCHEMA, "status": overall_status, "record_count": len(state.records),
         "schemas": sorted(state.schemas), "invalid_intervals": sorted(all_invalid_intervals, key=lambda item: (item["role"], item["start_ms"], item["reason"])),
         "clock_fits": fits, "app_packets": packets, "app_windows": heartbeat,
         "throughput_bursts": bursts, "application_totals": application_totals,
@@ -1731,9 +1771,9 @@ def snapshot(state: ObservationState) -> dict[str, Any]:
         "gtt_entries": gtt_entries, "gtt_fleet": gtt_fleet,
         "gtt_nodes": gtt_nodes, "control_deltas": control, "app_cumulative": app_cumulative, "telemetry_health": health,
         "telemetry_corruption": telemetry_corrupt, "incomplete_reasons": incomplete_reasons,
-        "evidence_complete": application["status"] == "VALID",
+        "evidence_complete": overall_status == "VALID",
         "finalized_host_ms": state.finalized_host_ms,
-        "proving_status": application["status"],
+        "proving_status": overall_status,
     }
 
 
@@ -1754,7 +1794,7 @@ def render_markdown(data: dict[str, Any]) -> str:
              f"| GTT fleet samples | {len(data['gtt_fleet'])} |",
              f"| Control delta rows | {len(data['control_deltas'])} |",
              "", "Validity domains:", ""]
-    for name in ("application", "control", "gtt"):
+    for name in ("application", "transport", "control", "gtt"):
         domain = validity.get(name, {})
         reasons = ", ".join(domain.get("reasons", [])) or "none"
         lines.append(f"- {name}: {domain.get('status', 'N/A')} ({reasons})")

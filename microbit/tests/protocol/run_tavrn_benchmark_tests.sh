@@ -52,15 +52,28 @@ COMMON_FLAGS=(
     -o "${BUILD_DIR}/test_routed_benchmark_observer"
 "${BUILD_DIR}/test_routed_benchmark_observer"
 
+"${CC_BIN}" "${COMMON_FLAGS[@]}" -DROUTED_BENCHMARK_UART_TX_HOST_TEST \
+    "${MICROBIT_ROOT}/tests/protocol/test_routed_benchmark_uart_tx.c" \
+    "${MICROBIT_ROOT}/app/tavrn_routed_node/src/routed_benchmark_uart_tx.c" \
+    -o "${BUILD_DIR}/test_routed_benchmark_uart_tx"
+"${BUILD_DIR}/test_routed_benchmark_uart_tx"
+
 python3 - "${MICROBIT_ROOT}/app/tavrn_routed_node/src/main.c" \
-    "${MICROBIT_ROOT}/app/drivers/display.c" <<'PY'
+    "${MICROBIT_ROOT}/app/drivers/display.c" \
+    "${MICROBIT_ROOT}/app/tavrn_routed_node/CMakeLists.txt" \
+    "${MICROBIT_ROOT}/app/tavrn_routed_node/src/routed_benchmark_uart_tx.c" \
+    "${MICROBIT_ROOT}/app/tavrn_routed_node/src/routed_benchmark_uart_tx.h" <<'PY'
 import pathlib
 import re
 import sys
 
-main_path, display_path = map(pathlib.Path, sys.argv[1:])
+main_path, display_path, cmake_path, uart_path, uart_header_path = map(
+    pathlib.Path, sys.argv[1:])
 main = main_path.read_text(encoding="utf-8")
 display = display_path.read_text(encoding="utf-8")
+cmake = cmake_path.read_text(encoding="utf-8")
+uart = uart_path.read_text(encoding="utf-8")
+uart_contract = uart + uart_header_path.read_text(encoding="utf-8")
 errors = []
 
 def body(name):
@@ -87,6 +100,7 @@ checkpoint = body("routed_benchmark_health_checkpoint")
 reserve = body("router_delivery_reserve")
 commit = body("router_delivery_commit")
 usermain = body("usermain")
+wait_release = body("routed_wait_for_release")
 for token in ("routed_benchmark_schedule", "routed_benchmark_destination_prepare",
                "routed_benchmark_record_not_ready_status",
                "routed_benchmark_pending_accepted",
@@ -111,11 +125,30 @@ for token in ("routed_benchmark_record_submission_status",
 if "routed_next_submit_at = trace.completed_at_ms + TRON_BUILD_LINK_TX_INTERVAL_MS;" not in submit:
     errors.append("nonbenchmark completion-relative submission schedule changed")
 for token in ("routed_benchmark_final_pop_record",
-              "routed_benchmark_accepted_pop_record", "log_benchmark_final",
-              "log_benchmark_accepted",
-              "log_benchmark_clock", "log_benchmark_control", "log_benchmark_health"):
+               "routed_benchmark_accepted_pop_record", "log_benchmark_final",
+               "log_benchmark_accepted",
+               "log_benchmark_clock", "log_benchmark_control", "log_benchmark_health"):
     if token not in logger:
         errors.append(f"logger lacks {token}")
+for token in ("routed_benchmark_uart_tx_has_headroom",
+              "routed_benchmark_uart_tx_settled", "start_benchmark_gtt_emission",
+              "next_health_at", "next_control_at"):
+    if token not in logger:
+        errors.append(f"benchmark logger lacks settled UARTE policy {token}")
+if not re.search(r"routed_benchmark_uart_tx_has_headroom\s*\(\s*\).*?"
+                 r"routed_benchmark_final_pop_record.*?"
+                 r"routed_benchmark_uart_tx_has_headroom\s*\(\s*\).*?"
+                 r"routed_benchmark_accepted_pop_record", logger, re.S):
+    errors.append("benchmark critical evidence is not guarded by UARTE headroom")
+if not re.search(r"critical_record\s*==\s*0.*?routed_benchmark_uart_tx_settled", logger, re.S):
+    errors.append("benchmark periodic records can run after a critical dequeue")
+benchmark_logger_match = re.search(r"#if TRON_BUILD_BENCHMARK_MODE\s*(?P<body>.*?)\s*#else",
+                                   logger, re.S)
+benchmark_logger = benchmark_logger_match.group("body") if benchmark_logger_match else ""
+if any(call in benchmark_logger for call in ("log_cycle_diagnostic(&routed_logger_record.diagnostic)",
+                                             "log_retry_exhausted_event(&routed_logger_record.retry_event)",
+                                             "log_rreq_lifecycle(&routed_logged_rreq)")):
+    errors.append("benchmark logger retains generic diagnostic formatting")
 for token in ("obs_gtt_begin", "obs_gtt_entry", "obs_gtt_end"):
     if token not in main:
         errors.append(f"benchmark source lacks {token}")
@@ -138,6 +171,15 @@ for observer_print in observer_prints:
         errors.append(f"{record} does not obtain now immediately before printing")
     if not re.search(r'\\n",\s*\(UW\)emission_now\s*,', call):
         errors.append(f"{record} common now is not the emission timestamp")
+    format_match = re.search(r'tm_printf\(\(UB \*\)"(?P<format>(?:[^"\\]|\\.)*)"', call,
+                             re.S)
+    if format_match is None:
+        errors.append(f"{record} has no literal format for max-line check")
+    else:
+        literal = bytes(format_match.group("format"), "utf-8").decode("unicode_escape")
+        conversions = len(re.findall(r'%(?:[-+ #0]*\d*(?:\.\d+)?[hl]?[diuoxXcsp])', literal))
+        if len(literal) + conversions * 64 + 2 >= 8192:
+            errors.append(f"{record} can exceed the 8 KiB UARTE logger headroom")
 for record, timestamp, event_source in (
         ("obs_accept", "offered_at_ms=%lu", "(UW)event->offered_at_ms"),
         ("obs_accept", "accepted_at_ms=%lu", "(UW)event->accepted_at_ms"),
@@ -203,10 +245,12 @@ if ("#define ROUTED_LOGGER_TASK_STACK_BYTES TRON_BUILD_ROUTED_LOGGER_TASK_STACK_
         ".stksz = 1536" in usermain):
     errors.append("logger task does not consume the generated stack declaration")
 for token in ("routed_benchmark_health_checkpoint", "heartbeat_offered",
-              "throughput_not_ready", "accepted_fifo_count", "final_fifo_count",
-              "final_commits", "application_reserve_busy",
-              "application_commit_busy", "accepted_fifo_faults",
-              "final_fifo_faults"):
+               "throughput_not_ready", "accepted_fifo_count", "final_fifo_count",
+               "final_commits", "application_reserve_busy",
+               "application_commit_busy", "accepted_fifo_faults",
+               "final_fifo_faults", "uart_pending_bytes",
+               "uart_high_water_bytes", "uart_dropped_bytes",
+               "uart_dropped_records", "uart_transport_faults"):
     if token not in health:
         errors.append(f"obs_health lacks observer-v3 field {token}")
 for token in ("routed_benchmark_state", "routed_benchmark_accepted_fifo_snapshot",
@@ -235,11 +279,21 @@ if ("routed_benchmark_final_fifo" in reserve or
         "ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY" in reserve):
     errors.append("benchmark reserve tests final FIFO fullness")
 if not re.search(
-        r"#if TRON_BUILD_BENCHMARK_MODE\s*/\*.*?\*/\s*"
-        r"diagnostic_pending\s*=\s*0;.*?#else\s*"
-        r"diagnostic_pending\s*=\s*routed_diagnostic_pending",
-        main, re.S):
-    errors.append("benchmark mesh release still waits for diagnostic logger progress")
+        r"benchmark_logger_service_epoch\s*=\s*"
+        r"routed_benchmark_logger_service_epoch.*?"
+        r"for\s*\(\s*;\s*;\s*\).*?"
+        r"tk_clr_flg\s*\(\s*routed_release_flag_id\s*,\s*"
+        r"~ROUTED_RELEASE_BIT\s*\).*?"
+        r"tk_wai_flg.*?"
+        r"release_progressed\s*=\s*routed_benchmark_logger_service_epoch\s*!=\s*"
+        r"benchmark_logger_service_epoch",
+        wait_release, re.S):
+    errors.append("benchmark wait does not require fresh logger service after stale-bit clear")
+if (not re.search(r"volatile\s+uint32_t\s+routed_benchmark_logger_service_epoch", main) or
+        "routed_benchmark_logger_service_epoch++;" not in logger or
+        not re.search(r"routed_benchmark_uart_tx_enqueue.*?"
+                      r"routed_benchmark_logger_service_epoch\+\+", main, re.S)):
+    errors.append("benchmark logger does not publish bounded service progress")
 if not re.search(
         r"routed_benchmark_final_fifo_offer\(.*?"
         r"delivery_callback_end\(\);\s*return TAVRN_ROUTER_DELIVERY_OK;",
@@ -304,6 +358,25 @@ if (display_benchmark is None or "tk_cre_tsk" in display_benchmark.group("body")
     errors.append("benchmark role indication does not leave the matrix off")
 if "#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE" not in main:
     errors.append("benchmark FULL logger does not suppress recurring snapshots")
+if not re.search(r"if\(TRON_BENCHMARK_MODE STREQUAL \"ON\" OR "
+                 r"TRON_ENABLE_WEARABLE_INGRESS STREQUAL \"ON\"\)\s*"
+                 r"target_link_options\(tavrn_routed_node PRIVATE -Wl,--wrap=tm_snd_dat\)",
+                 cmake, re.S):
+    errors.append("routed CMake does not select tm_snd_dat wrapping for benchmark or ingress")
+if not re.search(r"#if TRON_BUILD_BENCHMARK_MODE.*?"
+                 r"void __wrap_tm_snd_dat\(const UB \*buffer, INT size\).*?"
+                 r"routed_benchmark_uart_tx_ready.*?"
+                 r"__real_tm_snd_dat.*?"
+                 r"routed_benchmark_uart_tx_enqueue.*?"
+                 r"#elif TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS",
+                 main, re.S):
+    errors.append("benchmark async wrapper is not separate from wearable ingress wrapping")
+for token in ("ROUTED_BENCHMARK_UART_TX_CAPACITY 16384u", "ROUTED_UART_ENABLE_UARTE 8u",
+              "ROUTED_UART_INT_ENDTX", "ROUTED_UART_INTERRUPT_PRIORITY 6",
+              "routed_benchmark_uart_tx_publish_barrier", "DisableInt(INTNO(UART0_BASE))",
+              "EnableInt(INTNO(UART0_BASE), ROUTED_UART_INTERRUPT_PRIORITY)"):
+    if token not in uart_contract:
+        errors.append(f"benchmark UARTE transport lacks {token}")
 if errors:
     raise SystemExit("; ".join(errors))
 PY

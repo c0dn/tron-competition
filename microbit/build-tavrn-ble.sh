@@ -569,13 +569,16 @@ if [[ "$stack_usage" == "ON" ]]; then
             # Observer-v3 replaces the old copied-attempt queue with independent
             # accepted and final FIFOs. Their independent metadata adds 12 bytes
             # and exact workload-split counters add 32 bytes: the reviewed
-            # 44-byte fixed-state delta changes 71088 to 71132. Keep the
-            # measured inherited declaration at 43940 bytes without local repair
-            # (44624 with it), rather than deriving it from queue arithmetic.
+            # 44-byte fixed-state delta changes 71088 to 71132. Benchmark-only
+            # UARTE adds a 16 KiB EasyDMA ring plus 40 bytes of state, changing
+            # the measured fixed state to 87564. Complete-record accounting
+            # adds four more bytes of ring state. Keep the reviewed inherited
+            # declaration at 60372 bytes without local repair (61056 with it),
+            # rather than deriving it from queue arithmetic.
             if [[ "$repair" == "ON" ]]; then
-                resource_inherited_fixed_state_delta=44624
+                resource_inherited_fixed_state_delta=61056
             else
-                resource_inherited_fixed_state_delta=43940
+                resource_inherited_fixed_state_delta=60372
             fi
         fi
         if [[ "$wearable_ingress" == "ON" ]]; then

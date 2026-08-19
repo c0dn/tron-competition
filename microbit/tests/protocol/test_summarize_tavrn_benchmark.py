@@ -173,6 +173,7 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(data["proving_status"], "VALID")
         self.assertEqual(data["schemas"], ["observer-v3"])
         self.assertEqual(data["validity"]["application"]["status"], "VALID")
+        self.assertEqual(data["validity"]["transport"]["status"], "VALID")
         self.assertEqual(len(data["app_packets"]), 5)
         self.assertTrue(all(row["row_semantics"] == "accepted_event" and row["accepted"] == 1 and
                             row["attempted"] == 1 and row["status"] in (0, 1)
@@ -422,6 +423,30 @@ class ObservationTests(unittest.TestCase):
 
             with self.subTest(counter=old):
                 self.assertEqual(self.snapshot(transform=transform)["proving_status"], "INVALID")
+
+    def test_transport_checkpoint_requires_every_role_to_be_clean(self) -> None:
+        for target, old, new in (
+                ("A", "uart_pending_bytes=0", "uart_pending_bytes=1"),
+                ("B", "uart_dropped_bytes=0", "uart_dropped_bytes=1"),
+                ("D", "uart_dropped_records=0", "uart_dropped_records=1"),
+                ("F", "uart_transport_faults=0", "uart_transport_faults=1")):
+            def transform(role: str, payload: str, target: str = target,
+                          old: str = old, new: str = new) -> str:
+                return payload.replace(old, new) if role == target else payload
+
+            with self.subTest(counter=old):
+                data = self.snapshot(transform=transform)
+                self.assertEqual(data["proving_status"], "INVALID")
+                self.assertEqual(data["validity"]["transport"]["status"], "INVALID")
+
+        def no_role_checkpoint(role: str, payload: str) -> str:
+            return "\n".join(item for item in payload.splitlines()
+                             if " obs_health " not in item) + "\n" if role == "E" else payload
+
+        data = self.snapshot(transform=no_role_checkpoint)
+        self.assertEqual(data["proving_status"], "INCOMPLETE")
+        self.assertIn("missing_transport_checkpoint:E",
+                      data["validity"]["transport"]["reasons"])
 
     def test_duplicate_and_unmatched_identities_invalidate_application(self) -> None:
         def duplicate_accepted(role: str, payload: str) -> str:
