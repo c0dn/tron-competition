@@ -35,6 +35,7 @@
 #if TRON_BUILD_BENCHMARK_MODE
 #include "routed_benchmark.h"
 #include "routed_benchmark_observer.h"
+#include "routed_benchmark_uart_tx.h"
 #endif
 
 #if TRON_BUILD_BENCHMARK_MODE || TRON_BUILD_BENCH_IDENTIFY_DISPLAY || \
@@ -208,6 +209,7 @@ typedef struct routed_benchmark_snapshot {
     routed_benchmark_final_accounting_t final_accounting;
     routed_benchmark_health_faults_t faults;
     routed_benchmark_observer_t observer;
+    routed_benchmark_uart_tx_snapshot_t uart;
     uint32_t diagnostic_dropped;
     uint32_t rreq_dropped;
     uint32_t retry_log_dropped;
@@ -381,9 +383,35 @@ static volatile uint32_t routed_logger_dispatch_epoch;
 #endif
 /* Diagnostic progress remains a distinct successful-dequeue contract. */
 static volatile uint32_t routed_logger_progress_epoch;
+#if TRON_BUILD_BENCHMARK_MODE
+static volatile uint32_t routed_benchmark_logger_service_epoch;
+#endif
 static uint32_t routed_max_scheduler_gap_ms;
 
-#if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+#if TRON_BUILD_BENCHMARK_MODE
+/* Benchmark observer output is queued in the UARTE EasyDMA ring after takeover.
+ * Until readiness is published, including an initialization failure, preserve
+ * the legacy polling T-monitor implementation exactly. */
+void __real_tm_snd_dat(const UB *buffer, INT size);
+void __wrap_tm_snd_dat(const UB *buffer, INT size)
+{
+    while (size > 0) {
+        uint16_t chunk = size > 65535 ? 65535u : (uint16_t)size;
+
+        if (!routed_benchmark_uart_tx_ready()) {
+            __real_tm_snd_dat(buffer, (INT)chunk);
+        } else {
+            (void)routed_benchmark_uart_tx_enqueue((const uint8_t *)buffer, chunk);
+            /* A long observer line can span several voluntary mesh waits.
+             * Publish each bounded formatter step so the owner distinguishes
+             * resumed logger work from a clear/wait cyclic race. */
+            routed_benchmark_logger_service_epoch++;
+        }
+        buffer += chunk;
+        size -= (INT)chunk;
+    }
+}
+#elif TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
 static void routed_logger_publish_dispatch_progress(void)
 {
     ER dispatch_status = E_CTX;
@@ -1106,6 +1134,10 @@ static int routed_benchmark_health_checkpoint(routed_benchmark_snapshot_t *out,
     out->router_fault = tavrn_router_fault_reason(&routed_router);
     out->mesh_fault_latched = mesh_fault_latched;
     out->faults = routed_benchmark_health_faults;
+    /* The application queue guard snapshots producer-owned evidence.  The
+     * transport takes its own nested IRQ lock because ENDTX is independent of
+     * this task-level guard. */
+    routed_benchmark_uart_tx_snapshot(&out->uart);
     *session_out = routed_benchmark_state.session_id;
     result = routed_benchmark_next_record_id(&routed_benchmark_state, record_id_out);
     queue_guard_end();
@@ -1680,7 +1712,7 @@ static void log_benchmark_health(void)
         return;
     }
     emission_now = now_ms();
-    tm_printf((UB *)"obs_health schema=observer-v3 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offered=%lu accepted=%lu rejected=%lu not_ready=%lu skipped=%lu heartbeat_offered=%lu heartbeat_accepted=%lu heartbeat_rejected=%lu heartbeat_not_ready=%lu heartbeat_skipped=%lu throughput_offered=%lu throughput_accepted=%lu throughput_rejected=%lu throughput_not_ready=%lu throughput_skipped=%lu accepted_fifo_count=%u accepted_fifo_high_water=%u accepted_fifo_dropped=%lu final_fifo_count=%u final_fifo_high_water=%u final_fifo_dropped=%lu final_commits=%lu valid_heartbeat_finals=%lu valid_throughput_finals=%lu invalid_identity_finals=%lu application_reserve_busy=%lu application_commit_busy=%lu accepted_fifo_faults=%lu final_fifo_faults=%lu guard_faults=%lu snapshot_faults=%lu diagnostic_dropped=%lu rreq_dropped=%lu retry_log_dropped=%lu trace_over_budget=%lu trace_fault_latched=%lu mesh_fault=%u router_fault=%u\n",
+    tm_printf((UB *)"obs_health schema=observer-v3 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu offered=%lu accepted=%lu rejected=%lu not_ready=%lu skipped=%lu heartbeat_offered=%lu heartbeat_accepted=%lu heartbeat_rejected=%lu heartbeat_not_ready=%lu heartbeat_skipped=%lu throughput_offered=%lu throughput_accepted=%lu throughput_rejected=%lu throughput_not_ready=%lu throughput_skipped=%lu accepted_fifo_count=%u accepted_fifo_high_water=%u accepted_fifo_dropped=%lu final_fifo_count=%u final_fifo_high_water=%u final_fifo_dropped=%lu final_commits=%lu valid_heartbeat_finals=%lu valid_throughput_finals=%lu invalid_identity_finals=%lu application_reserve_busy=%lu application_commit_busy=%lu accepted_fifo_faults=%lu final_fifo_faults=%lu guard_faults=%lu snapshot_faults=%lu diagnostic_dropped=%lu rreq_dropped=%lu retry_log_dropped=%lu uart_pending_bytes=%u uart_high_water_bytes=%u uart_dropped_bytes=%lu uart_dropped_records=%lu uart_transport_faults=%lu trace_over_budget=%lu trace_fault_latched=%lu mesh_fault=%u router_fault=%u\n",
                (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                (UW)session,
                (UW)(record_id >> 32), (UW)record_id,
@@ -1715,10 +1747,15 @@ static void log_benchmark_health(void)
                (UW)storage->health.faults.final_fifo_faults,
                (UW)storage->health.faults.guard_faults,
                (UW)storage->health.faults.snapshot_faults,
-               (UW)storage->health.diagnostic_dropped,
-               (UW)storage->health.rreq_dropped,
-               (UW)storage->health.retry_log_dropped,
-                (UW)storage->health.observer.trace_over_budget,
+                (UW)storage->health.diagnostic_dropped,
+                (UW)storage->health.rreq_dropped,
+                (UW)storage->health.retry_log_dropped,
+                (UINT)storage->health.uart.pending_bytes,
+                (UINT)storage->health.uart.high_water_bytes,
+                (UW)storage->health.uart.dropped_bytes,
+                (UW)storage->health.uart.dropped_records,
+                (UW)storage->health.uart.transport_faults,
+                 (UW)storage->health.observer.trace_over_budget,
                 (UW)storage->health.observer.trace_fault_latched,
                (UINT)storage->health.mesh_fault_latched,
                (UINT)storage->health.router_fault);
@@ -1834,25 +1871,43 @@ static void start_benchmark_gtt_emission(void)
     }
 }
 #else
-static void log_benchmark_gtt_not_implemented(uint32_t now)
+static uint8_t routed_benchmark_gtt_aodv_stage;
+static uint32_t routed_benchmark_gtt_aodv_query_at_ms;
+
+static void start_benchmark_gtt_emission(void)
+{
+    if (routed_benchmark_gtt_aodv_stage == 0u) {
+        routed_benchmark_gtt_aodv_query_at_ms = now_ms();
+        routed_benchmark_gtt_aodv_stage = 1u;
+    }
+}
+
+static void log_benchmark_gtt_next(void)
 {
     uint32_t session;
     uint32_t emission_now;
     uint64_t record_id;
 
-    if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+    if (routed_benchmark_gtt_aodv_stage == 1u &&
+        routed_benchmark_logger_record(&session, &record_id, NULL)) {
         emission_now = now_ms();
         tm_printf((UB *)"obs_gtt_begin schema=observer-v3 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu slot_capacity=0 status=NOT_IMPLEMENTED\n",
                    (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                    (UW)session,
-                   (UW)(record_id >> 32), (UW)record_id, (UW)now);
+                   (UW)(record_id >> 32), (UW)record_id,
+                   (UW)routed_benchmark_gtt_aodv_query_at_ms);
+        routed_benchmark_gtt_aodv_stage = 2u;
+        return;
     }
-    if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
+    if (routed_benchmark_gtt_aodv_stage == 2u &&
+        routed_benchmark_logger_record(&session, &record_id, NULL)) {
         emission_now = now_ms();
         tm_printf((UB *)"obs_gtt_end schema=observer-v3 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu query_at_ms=%lu status=NOT_IMPLEMENTED entry_count=0 nondeparted_count=0\n",
                    (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
                    (UW)session,
-                  (UW)(record_id >> 32), (UW)record_id, (UW)now);
+                   (UW)(record_id >> 32), (UW)record_id,
+                   (UW)routed_benchmark_gtt_aodv_query_at_ms);
+        routed_benchmark_gtt_aodv_stage = 0u;
     }
 }
 #endif
@@ -3228,20 +3283,26 @@ static tavrn_router_phase_trace_t routed_cycle_router_link_service(void *context
 static ER routed_wait_for_release(void)
 {
     UINT pattern;
+#if TRON_BUILD_BENCHMARK_MODE
+    uint32_t benchmark_logger_service_epoch;
+#else
     uint32_t progress_epoch;
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
     uint32_t dispatch_epoch;
     uint32_t elapsed_since_scheduler_return_ms;
     ER request_status;
 #endif
+#if TRON_BUILD_BENCHMARK_MODE
+    ER stale_release_clear_status;
+#endif
+#if !TRON_BUILD_BENCHMARK_MODE
     int diagnostic_pending;
+#endif
     int release_progressed;
 
 #if TRON_BUILD_BENCHMARK_MODE
-    /* Benchmark evidence is drop-newest telemetry.  Never make mesh cadence
-     * wait for the lower-priority logger to reach a diagnostic record. */
-    diagnostic_pending = 0;
-    progress_epoch = routed_logger_progress_epoch;
+    benchmark_logger_service_epoch = routed_benchmark_logger_service_epoch;
 #else
     diagnostic_pending = routed_diagnostic_pending(&progress_epoch);
     if (diagnostic_pending < 0) {
@@ -3259,6 +3320,17 @@ static ER routed_wait_for_release(void)
     }
 #endif
     for (;;) {
+#if TRON_BUILD_BENCHMARK_MODE
+        /* tk_clr_flg applies flgptn &= clrptn.  Remove only an already-latched
+         * cyclic release.  If the cyclic interrupt races this clear and wait,
+         * the unchanged service epoch below repeats the operation and forces a
+         * real lower-priority logger turn before mesh cadence resumes. */
+        stale_release_clear_status = tk_clr_flg(routed_release_flag_id,
+                                                 ~ROUTED_RELEASE_BIT);
+        if (stale_release_clear_status != E_OK) {
+            return stale_release_clear_status;
+        }
+#endif
         ER wait_status = tk_wai_flg(routed_release_flag_id,
                                     ROUTED_RELEASE_WAIT_BITS,
                                     TWF_ORW | TWF_BITCLR, &pattern, TMO_FEVR);
@@ -3271,6 +3343,9 @@ static ER routed_wait_for_release(void)
         }
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
         release_progressed = routed_logger_dispatch_epoch != dispatch_epoch;
+#elif TRON_BUILD_BENCHMARK_MODE
+        release_progressed = routed_benchmark_logger_service_epoch !=
+            benchmark_logger_service_epoch;
 #else
         release_progressed = diagnostic_pending == 0 ||
             routed_logger_progress_epoch != progress_epoch;
@@ -3735,8 +3810,10 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     uint32_t next_summary_at = now_ms() + tron_timer_config.stats_ms;
 #endif
 #if TRON_BUILD_BENCHMARK_MODE
-    uint32_t next_clock_at = now_ms();
-    uint32_t next_observation_at = now_ms();
+    uint32_t next_clock_at = now_ms() + ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
+    uint32_t next_health_at = now_ms();
+    uint32_t next_control_at = now_ms();
+    uint8_t benchmark_health_emitted = 0u;
 #endif
 #if !ROUTED_VERBOSE_RUNTIME_TELEMETRY
     UINT logger_request_pattern;
@@ -3750,6 +3827,12 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
     log_benchmark_boot();
 #endif
     while (1) {
+#if TRON_BUILD_BENCHMARK_MODE
+        /* The mesh owner requires one fresh lower-priority turn, not merely a
+         * cyclic flag edge that could race its wait.  Wrap is safe because the
+         * owner compares only against the value captured for this yield. */
+        routed_benchmark_logger_service_epoch++;
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
         /* A stale release bit cannot count as a yield until the lower-priority
          * logger has actually run.  Long tm_printf calls publish finer-grained
@@ -3758,6 +3841,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
 #endif
         uint32_t now = now_ms();
 
+#if !TRON_BUILD_BENCHMARK_MODE
         if (pending_router_fault != TAVRN_ROUTER_FAULT_NONE &&
             pending_router_fault != logged_router_fault) {
             tm_printf((UB *)"routed router_fault reason=%u subreason=%u\n",
@@ -3765,6 +3849,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                       (UINT)tavrn_router_fault_subreason(&routed_router));
             logged_router_fault = pending_router_fault;
         }
+#endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
         if (ROUTED_VERBOSE_RUNTIME_TELEMETRY == 0 &&
             routed_cycle_state.fault_latched != 0u &&
@@ -3782,6 +3867,64 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                 &routed_mind_phase5_first_invalid);
         }
 #endif
+#if TRON_BUILD_BENCHMARK_MODE
+        {
+            int critical_record = 0;
+
+            /* Do not consume evidence until there is enough room for the
+             * complete, conservatively bounded observer line. */
+            if (routed_benchmark_uart_tx_has_headroom() &&
+                routed_benchmark_final_pop_record(final, &session, &record_id)) {
+                log_benchmark_final(final, session, record_id);
+                critical_record = 1;
+            } else if (routed_benchmark_uart_tx_has_headroom() &&
+                       routed_benchmark_accepted_pop_record(accepted, &session,
+                                                            &record_id)) {
+                log_benchmark_accepted(accepted, session, record_id);
+                critical_record = 1;
+            }
+            if (critical_record == 0) {
+                /* Benchmark runs still retire all generic telemetry queues,
+                 * but never format that telemetry onto the observer UART. */
+                if (routed_diagnostic_pop()) {
+                } else if (routed_retry_log_pop()) {
+                } else if (routed_rreq_pop()) {
+                } else {
+                    (void)local_event_pop(local_event);
+                }
+                if (routed_benchmark_uart_tx_settled()) {
+                    now = now_ms();
+                    /* obs_boot is startup metadata.  Health is the first
+                     * periodic observation and is only captured at physical
+                     * settlement, so its pending count is canonically zero. */
+                    if (benchmark_health_emitted != 0u &&
+                        (int32_t)(now - next_clock_at) >= 0) {
+                        log_benchmark_clock();
+                        next_clock_at = now_ms() +
+                            ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
+                    } else if ((int32_t)(now - next_health_at) >= 0) {
+                        log_benchmark_health();
+                        benchmark_health_emitted = 1u;
+                        next_health_at = now_ms() + 10000u;
+                    } else if (benchmark_health_emitted != 0u &&
+                               (int32_t)(now - next_control_at) >= 0) {
+                        log_benchmark_control();
+                        next_control_at = now_ms() + 10000u;
+                        /* Snapshot construction deliberately emits nothing;
+                         * the next settled turns emit one GTT line each. */
+                        start_benchmark_gtt_emission();
+#if TRON_BUILD_ROUTED_FULL_TAVRN
+                    } else if (routed_benchmark_gtt_emission.active != 0u) {
+                        log_benchmark_gtt_next();
+#else
+                    } else if (routed_benchmark_gtt_aodv_stage != 0u) {
+                        log_benchmark_gtt_next();
+#endif
+                    }
+                }
+            }
+        }
+#else
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
         if (routed_full_snapshot_is_ready()) {
             if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
@@ -3792,14 +3935,6 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
                 log_expiry_sweep(&routed_logged_expiry_sweep);
             }
-        } else
-#endif
-#if TRON_BUILD_BENCHMARK_MODE
-        if (routed_benchmark_final_pop_record(final, &session, &record_id)) {
-            log_benchmark_final(final, session, record_id);
-        } else if (routed_benchmark_accepted_pop_record(accepted, &session,
-                                                         &record_id)) {
-            log_benchmark_accepted(accepted, session, record_id);
         } else
 #endif
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
@@ -3875,30 +4010,6 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                           (UINT)delivery->transmitter.adva.bytes[5]);
             }
 #endif
-#if TRON_BUILD_BENCHMARK_MODE
-        }
-        /* Drain at most one copied event above, then give due periodic
-         * observer records a bounded one-turn latency under sustained load. */
-        if ((int32_t)(now - next_clock_at) >= 0) {
-            log_benchmark_clock();
-            next_clock_at += ((now - next_clock_at) /
-                              ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS + 1u) *
-                ROUTED_BENCHMARK_HEARTBEAT_INTERVAL_MS;
-        } else if ((int32_t)(now - next_observation_at) >= 0) {
-            log_benchmark_control();
-            log_benchmark_health();
-#if TRON_BUILD_ROUTED_FULL_TAVRN
-            start_benchmark_gtt_emission();
-#else
-            log_benchmark_gtt_not_implemented(now);
-#endif
-            next_observation_at += ((now - next_observation_at) / 10000u + 1u) *
-                10000u;
-#if TRON_BUILD_ROUTED_FULL_TAVRN
-        } else if (routed_benchmark_gtt_emission.active != 0u) {
-            log_benchmark_gtt_next();
-#endif
-#else
         } else if ((int32_t)(now - next_summary_at) >= 0) {
             if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
                 log_summary(now);
@@ -3907,8 +4018,8 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
 #endif
             }
             next_summary_at = now + tron_timer_config.stats_ms;
-#endif
         }
+#endif
 #if ROUTED_VERBOSE_RUNTIME_TELEMETRY
         (void)tk_dly_tsk(1u);
 #else
@@ -4328,6 +4439,15 @@ EXPORT INT usermain(void)
         tm_printf((UB *)"routed logger task creation failed id=%d\n", logger_id);
         return 1;
     }
+#if TRON_BUILD_BENCHMARK_MODE
+    /* Object creation is complete and no task/cyclic source can emit yet.  On
+     * failure the module intentionally left legacy polling UART0 enabled, so
+     * this diagnostic is synchronous through __real_tm_snd_dat. */
+    if (!routed_benchmark_uart_tx_init()) {
+        tm_printf((UB *)"routed benchmark UARTE transport initialization failed\n");
+        return 1;
+    }
+#endif
     if (tk_sta_tsk(logger_id, 0) != E_OK) {
         tm_printf((UB *)"routed logger task start failed\n");
         return 1;

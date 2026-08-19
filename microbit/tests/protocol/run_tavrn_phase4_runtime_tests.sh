@@ -136,6 +136,24 @@ def function_body(name):
     errors.append(f"{name} body is unterminated")
     return ""
 
+def function_bodies(name):
+    pattern = re.compile(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{")
+    result = []
+    for match in pattern.finditer(clean):
+        start = match.end() - 1
+        depth = 0
+        for index in range(start, len(clean)):
+            if clean[index] == "{":
+                depth += 1
+            elif clean[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    result.append(clean[start + 1:index])
+                    break
+        else:
+            errors.append(f"{name} body is unterminated")
+    return result
+
 logger_body = function_body("routed_logger_task")
 mesh_body = function_body("routed_mesh_task")
 healthy_body = function_body("routed_cycle_healthy_yield")
@@ -143,7 +161,9 @@ fault_body = function_body("routed_cycle_fault_idle")
 wait_body = function_body("routed_wait_for_release")
 diagnostic_pending_body = function_body("routed_diagnostic_pending")
 diagnostic_pop_body = function_body("routed_diagnostic_pop")
-tx_progress_body = function_body("__wrap_tm_snd_dat")
+wearable_tx_bodies = [body for body in function_bodies("__wrap_tm_snd_dat")
+                      if "routed_logger_publish_dispatch_progress" in body]
+tx_progress_body = wearable_tx_bodies[0] if len(wearable_tx_bodies) == 1 else ""
 dispatch_progress_body = function_body("routed_logger_publish_dispatch_progress")
 cyclic_body = function_body("routed_release_cyclic")
 main_body = function_body("usermain")
@@ -245,8 +265,9 @@ if "routed_logger_progress_epoch++" in logger_body:
 if len(re.findall(r"\brouted_logger_publish_dispatch_progress\s*\(\s*\)\s*;",
                   logger_body)) != 1:
     errors.append("each logger loop must publish one dispatch acknowledgement")
-if (len(re.findall(r"\b__real_tm_snd_dat\s*\(\s*buffer\s*,\s*1\s*\)\s*;",
-                   tx_progress_body)) != 1 or
+if (len(wearable_tx_bodies) != 1 or
+        len(re.findall(r"\b__real_tm_snd_dat\s*\(\s*buffer\s*,\s*1\s*\)\s*;",
+                    tx_progress_body)) != 1 or
         len(re.findall(r"\brouted_logger_publish_dispatch_progress\s*\(\s*\)\s*;",
                        tx_progress_body)) != 1 or
         tx_progress_body.find("__real_tm_snd_dat") >
@@ -888,6 +909,11 @@ router_tick_case = re.search(
 if router_tick_case is None or "link_event" in router_tick_case.group("body"):
     errors.append("fault diagnostic logger still prints retry tuples")
 logger_task = function_body(main, "routed_logger_task")
+benchmark_split = "#else\n#if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE"
+if benchmark_split not in logger_task:
+    errors.append("logger lacks a separate nonbenchmark diagnostics branch")
+else:
+    logger_task = logger_task.split(benchmark_split, 1)[1]
 diagnostic_pop_index = logger_task.find("routed_diagnostic_pop")
 diagnostic_print_index = logger_task.find("log_cycle_diagnostic")
 retry_pop_index = logger_task.find("routed_retry_log_pop")

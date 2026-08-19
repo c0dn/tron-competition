@@ -36,6 +36,8 @@ target_compile_options(tavrn_routed_node PRIVATE
 )
 if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
   target_compile_definitions(tavrn_routed_node PRIVATE TRON_MIND_STATIC_TASK_BUFFERS=1)
+endif()
+if(TRON_BENCHMARK_MODE STREQUAL "ON" OR TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
   target_link_options(tavrn_routed_node PRIVATE -Wl,--wrap=tm_snd_dat)
 endif()
 target_compile_definitions(mtkernel3_microbit_kernel_tavrn_routed_node PRIVATE

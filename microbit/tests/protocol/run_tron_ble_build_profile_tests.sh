@@ -1257,6 +1257,7 @@ require_line 'bench.role_number=0' "$routed_manifest"
 require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 0
 if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 50 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
@@ -1361,6 +1362,7 @@ require_line 'application.wearable_ingress.effective=OFF' "$routed_full_manifest
 require_selected_source_count "$routed_full_manifest" 'app/drivers/display.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 0
 require_selected_source_count "$routed_full_manifest" 'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 require_selected_source_count "$routed_full_manifest" \
     'app/mind_application/mind_application_wire.c' 0
@@ -1508,6 +1510,8 @@ require_selected_source_count "$routed_full_production_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_full_production_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
+require_selected_source_count "$routed_full_production_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 0
 require_selected_source_count "$routed_full_production_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 require_exact_selected_sources "$routed_full_production_manifest" \
@@ -1760,6 +1764,8 @@ require_selected_source_count "$benchmark_aodv_manifest" \
 require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_observer.c' 1
 require_selected_source_count "$benchmark_aodv_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 1
+require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 if ! grep -Fqx '#define TRON_BUILD_BENCHMARK_MODE 1' "$benchmark_aodv_config" ||
     ! grep -Fqx '#define TRON_BUILD_BENCHMARK_ACCEPTED_FIFO_CAPACITY 1024u' "$benchmark_aodv_config" ||
@@ -1799,6 +1805,8 @@ require_selected_source_count "$benchmark_full_manifest" \
 require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_observer.c' 1
 require_selected_source_count "$benchmark_full_manifest" \
+    'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 1
+require_selected_source_count "$benchmark_full_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 1
 require_selected_source_count "$benchmark_full_manifest" \
     'app/mind_application/mind_application_wire.c' 0
@@ -1820,6 +1828,7 @@ require_exact_selected_sources "$benchmark_full_manifest" \
     'app/protocol/tavrn_wire_v2.c' \
     'app/tavrn_routed_node/src/routed_benchmark.c' \
     'app/tavrn_routed_node/src/routed_benchmark_observer.c' \
+    'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' \
     'app/tavrn_routed_node/src/routed_full_telemetry.c' \
     'app/protocol/tavrn_esc.c' \
     'app/protocol/tavrn_full.c' \
@@ -3007,6 +3016,8 @@ require_selected_source_count "${benchmark_published_manifest[0]}" \
     'app/mind_application/mind_application_ingress.c' 0
 require_selected_source_count "${benchmark_published_manifest[0]}" \
     'app/mind_application/mind_event_forwarder.c' 0
+require_selected_source_count "${benchmark_published_manifest[0]}" \
+    'app/tavrn_routed_node/src/routed_benchmark_uart_tx.c' 1
 benchmark_resource_publisher_out="$WORK_DIR/benchmark-resource-published"
 bash "$MICROBIT_ROOT/build-tavrn-ble.sh" --target tavrn_routed_node \
     --feature FULL_TAVRN --timer BALANCED --enable-hooks ON --benchmark ON \
@@ -3046,13 +3057,13 @@ if manifest.get("artifact.name") != artifact_name.name or \
             "SATURATING_COUNTER" or
             manifest.get(f"capacity.benchmark_{fifo}_fifo.state") != "IMPLEMENTED"
             for fifo in ("accepted", "final")) or \
-        manifest.get("resource.fixed_state.declared_delta_bytes") != "43940":
+        manifest.get("resource.fixed_state.declared_delta_bytes") != "60372":
     raise SystemExit("benchmark FIFO/fixed-state manifest binding differs")
 resource = json.loads(resource_path.read_text(encoding="utf-8"))
 if resource["fixed_state"] != {
-        "after_bytes": 71132,
-        "before_bytes": 71132,
-        "declared_delta_bytes": 43940,
+        "after_bytes": 87564,
+        "before_bytes": 87564,
+        "declared_delta_bytes": 60372,
         "unexplained_delta_bytes": 0,
 }:
     raise SystemExit("benchmark resource fixed-state binding differs")
