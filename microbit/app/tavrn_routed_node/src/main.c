@@ -1541,16 +1541,36 @@ static void log_benchmark_boot(void)
 
 static void log_benchmark_clock(void)
 {
+    UB timestamp_suffix[24];
+    ER dispatch_status;
+    INT suffix_length;
     uint32_t session;
     uint32_t emission_now;
     uint64_t record_id;
 
     if (routed_benchmark_logger_record(&session, &record_id, NULL)) {
-        emission_now = now_ms();
-        tm_printf((UB *)"obs_clock schema=observer-v3 now=%lu role=%u session=%lu record_id_hi=%lu record_id_lo=%lu\n",
-                   (UW)emission_now, (UINT)TRON_BUILD_BENCH_ROLE_NUMBER,
-                   (UW)session,
+        /* An incomplete record is not EasyDMA-visible.  Format its variable
+         * prefix before sampling, then bound only the short timestamp suffix
+         * against task preemption so grabserial's first-byte time tracks the
+         * LF commit rather than the complete-line formatting cost. */
+        tm_printf((UB *)"obs_clock schema=observer-v3 role=%u session=%lu record_id_hi=%lu record_id_lo=%lu",
+                   (UINT)TRON_BUILD_BENCH_ROLE_NUMBER, (UW)session,
                    (UW)(record_id >> 32), (UW)record_id);
+        dispatch_status = tk_dis_dsp();
+        emission_now = now_ms();
+        suffix_length = tm_sprintf(timestamp_suffix, (UB *)" now=%lu\n",
+                                   (UW)emission_now);
+        if (suffix_length <= 0 ||
+            suffix_length >= (INT)sizeof(timestamp_suffix) ||
+            !routed_benchmark_uart_tx_enqueue(timestamp_suffix,
+                                               (uint16_t)suffix_length)) {
+            routed_benchmark_record_snapshot_fault();
+        }
+        if (dispatch_status == E_OK) {
+            (void)tk_ena_dsp();
+        } else {
+            routed_benchmark_record_guard_fault();
+        }
     }
 }
 
