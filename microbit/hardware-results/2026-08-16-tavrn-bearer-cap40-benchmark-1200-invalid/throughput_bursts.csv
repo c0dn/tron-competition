@@ -1,0 +1,2 @@
+accepted,accepted_pdr,app_goodput_bytes_per_second,attempted,delivered,duration_seconds,first_delivery_ms,invalid,invalid_roles,label,not_ready,offered,offered_pdr,p50_ms,p95_ms,p99_ms,packet_goodput_packets_per_second,rejected,window_start_s,workload
+165,0.218182,4.2,395,36,60.0,7.276367,True,"['A', 'B', 'D']",0,0,395,0.091139,5931.984619,8663.307373,9240.344238,0.6,230,50,throughput
