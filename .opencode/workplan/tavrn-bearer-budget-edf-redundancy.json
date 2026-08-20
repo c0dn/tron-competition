@@ -246,7 +246,7 @@
     {
       "id": "phase-young-slope-270205",
       "title": "Acceptance and explicitly approved rollout",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-quiet-bridge-190568",
@@ -254,7 +254,7 @@
           "target": "focused, protocol, application, profile, resource, and D2 gates",
           "action": "Run narrow checks first, then the complete existing suite. Review each final hunk against the KISS scope and known pre-bearer behavior; use available D2 source hashes as evidence only where applicable and do not claim automated pre-bearer reconstruction.",
           "validation": "All required checks are green; no unused owner/reset scaffolding remains; manual hunk review records any shared pre-bearer file that cannot be mechanically attributed.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-spruce-meadow-452199",
@@ -285,9 +285,10 @@
     "Observer-v3 non-perturbation hardening completed in original commits 4069d29, 9f76264, and beb776a; the original chain remains reachable from the consolidated branch, and the working tree matches the hardware-tested observer paths.",
     "The queue-40 130-second smoke is VALID. The recovered 1200-second FULL_TAVRN run is overall VALID with 18,234 complete records, zero invalid telemetry intervals, application/transport/control VALID, heartbeat delivered/accepted PDR 0.990385, and throughput delivered/accepted PDR 0.921586.",
     "Canonical FULL evidence is persisted at microbit/hardware-results/2026-08-20-tavrn-observer-v3-benchmark-1200-recovered. The runner timed out only after all six capture windows ended; recovery conservatively right-censored one terminal role-C partial record.",
-    "GTT remains formally INCOMPLETE because role E had one 12,034 ms cadence interval. Reporting resumed and the final nine fleet windows contained all six boards and were converged. AODV rerun and final comparison remain pending."
+    "GTT remains formally INCOMPLETE because role E had one 12,034 ms cadence interval. Reporting resumed and the final nine fleet windows contained all six boards and were converged. AODV rerun and final comparison remain pending.",
+    "Final consolidated verification passed: observer benchmark shell tests; 24 analyzer tests; 26 runner tests; phase-4 telemetry and scheduler green modes; MIND application tests; 23 host tests; 25 dashboard tests and production build; wearable tests and linked production/injector builds; clean-source BLE build/profile/resource gates; both evidence checksum and archive-integrity checks; Python compilation; observer-path equality; and diff hygiene."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-16T12:56:08.481Z",
-  "updatedAt": "2026-08-20T10:09:18.961Z"
+  "updatedAt": "2026-08-20T10:13:46.139Z"
 }
