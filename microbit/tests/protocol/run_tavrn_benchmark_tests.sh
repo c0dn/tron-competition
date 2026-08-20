@@ -156,7 +156,9 @@ observer_records = ("obs_boot", "obs_clock", "obs_accept", "obs_control",
                      "obs_health", "obs_gtt_begin", "obs_gtt_entry", "obs_gtt_end",
                      "obs_final")
 for record in observer_records:
-    if f'{record} schema=observer-v3 now=' not in main:
+    expected_prefix = (f'{record} schema=observer-v3 role=' if record == "obs_clock" else
+                       f'{record} schema=observer-v3 now=')
+    if expected_prefix not in main:
         errors.append(f"{record} lacks observer-v3 self-identification")
 observer_prints = list(re.finditer(
     r'tm_printf\(\(UB \*\)"(?P<record>obs_[a-z_]+).*?\);', main, re.S))
@@ -166,6 +168,8 @@ for record in observer_records:
 for observer_print in observer_prints:
     record = observer_print.group("record")
     call = observer_print.group(0)
+    if record == "obs_clock":
+        continue
     preceding = main[max(0, observer_print.start() - 100):observer_print.start()]
     if not re.search(r'emission_now\s*=\s*now_ms\(\);\s*$', preceding):
         errors.append(f"{record} does not obtain now immediately before printing")
@@ -180,6 +184,35 @@ for observer_print in observer_prints:
         conversions = len(re.findall(r'%(?:[-+ #0]*\d*(?:\.\d+)?[hl]?[diuoxXcsp])', literal))
         if len(literal) + conversions * 64 + 2 >= 8192:
             errors.append(f"{record} can exceed the 8 KiB UARTE logger headroom")
+clock_logger = body("log_benchmark_clock")
+if not re.search(
+        r'tm_printf\(\(UB \*\)"obs_clock schema=observer-v3 '
+        r'role=%u session=%lu record_id_hi=%lu record_id_lo=%lu".*?'
+        r'dispatch_status\s*=\s*tk_dis_dsp\(\);\s*'
+        r'emission_now\s*=\s*now_ms\(\);\s*'
+        r'suffix_length\s*=\s*tm_sprintf\(timestamp_suffix,\s*'
+        r'\(UB \*\)" now=%lu\\n",\s*\(UW\)emission_now\);.*?'
+        r'routed_benchmark_uart_tx_enqueue\(timestamp_suffix,\s*'
+        r'\(uint16_t\)suffix_length\).*?'
+        r'if\s*\(dispatch_status\s*==\s*E_OK\)\s*\{\s*'
+        r'\(void\)tk_ena_dsp\(\);',
+        clock_logger, re.S):
+    errors.append("obs_clock does not commit an LF-adjacent timestamp under bounded dispatch")
+clock_guarded = re.search(
+    r'dispatch_status\s*=\s*tk_dis_dsp\(\);(?P<body>.*?)'
+    r'if\s*\(dispatch_status\s*==\s*E_OK\)', clock_logger, re.S)
+if (clock_guarded is None or "return" in clock_guarded.group("body") or
+        "tk_ena_dsp" in clock_guarded.group("body")):
+    errors.append("obs_clock guarded timestamp commit can exit or re-enable dispatch early")
+for token in ("routed_benchmark_record_snapshot_fault()",
+              "routed_benchmark_record_guard_fault()"):
+    if token not in clock_logger:
+        errors.append(f"obs_clock timestamp failure path lacks {token}")
+clock_prefix = re.search(r'tm_printf\(\(UB \*\)"(?P<format>obs_clock[^\"]*)"',
+                         clock_logger)
+if (clock_prefix is None or "now=" in clock_prefix.group("format") or
+        "\\n" in clock_prefix.group("format") or "\\r" in clock_prefix.group("format")):
+    errors.append("obs_clock prefix is not an uncommitted timestamp-free record")
 for record, timestamp, event_source in (
         ("obs_accept", "offered_at_ms=%lu", "(UW)event->offered_at_ms"),
         ("obs_accept", "accepted_at_ms=%lu", "(UW)event->accepted_at_ms"),

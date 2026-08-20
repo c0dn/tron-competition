@@ -168,6 +168,22 @@ class ObservationTests(unittest.TestCase):
     def snapshot(self, **kwargs: object) -> dict[str, object]:
         return MODULE.snapshot(self.state(**kwargs))
 
+    def test_clock_now_field_may_be_the_final_wire_field(self) -> None:
+        def transform(_role: str, payload: str) -> str:
+            reordered, substitutions = re.subn(
+                r"(obs_clock schema=observer-v3) now=(\d+) "
+                r"(role=\d session=\d+ record_id_hi=\d+ record_id_lo=\d+)",
+                r"\1 \3 now=\2", payload)
+            self.assertGreater(substitutions, 0)
+            return reordered
+
+        data = self.snapshot(transform=transform)
+        self.assertTrue(all(
+            fit["valid"]
+            for sessions in data["clock_fits"].values()
+            for fit in sessions.values()))
+        self.assertEqual(data["proving_status"], "VALID")
+
     def test_dense_v3_capture_has_exact_checkpoint_totals(self) -> None:
         data = self.snapshot()
         self.assertEqual(data["proving_status"], "VALID")
