@@ -1236,6 +1236,10 @@ require_line 'capacity.retry_log_mailbox=1' "$routed_manifest"
 require_line 'capacity.retry_log_mailbox.policy=RETAIN_OLDEST_DROP_NEWEST' "$routed_manifest"
 require_line 'capacity.retry_log_mailbox.dropped_telemetry=SATURATING_COUNTER' "$routed_manifest"
 require_line 'capacity.retry_log_mailbox.state=IMPLEMENTED' "$routed_manifest"
+require_line 'capacity.benchmark_accepted_fifo=1024' "$routed_manifest"
+require_line 'capacity.benchmark_accepted_fifo.state=NOT_APPLICABLE' "$routed_manifest"
+require_line 'capacity.benchmark_final_fifo=1024' "$routed_manifest"
+require_line 'capacity.benchmark_final_fifo.state=NOT_APPLICABLE' "$routed_manifest"
 require_line 'capacity.gtt_membership.state=NOT_IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.router_pending_incarnation_reset.state=IMPLEMENTED' "$routed_manifest"
 require_line 'capacity.mentor_offers.state=NOT_IMPLEMENTED' "$routed_manifest"
@@ -1253,7 +1257,7 @@ require_line 'bench.role_number=0' "$routed_manifest"
 require_selected_source_count "$routed_manifest" 'app/drivers/display.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark.c' 0
 require_selected_source_count "$routed_manifest" 'app/tavrn_routed_node/src/routed_benchmark_observer.c' 0
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 49 ]]; then
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_manifest")" -ne 50 ]]; then
     printf '%s\n' 'routed AODV_ONLY capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1364,7 +1368,7 @@ require_selected_source_count "$routed_full_manifest" \
     'app/mind_application/mind_application_ingress.c' 0
 require_selected_source_count "$routed_full_manifest" \
     'app/mind_application/mind_event_forwarder.c' 0
-if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 49 ]]; then
+if [[ "$(grep -c '^capacity\.[^.]*=' "$routed_full_manifest")" -ne 50 ]]; then
     printf '%s\n' 'routed FULL_TAVRN capacity schema width is not exact' >&2
     exit 1
 fi
@@ -1741,10 +1745,14 @@ for expected in \
     'build.routed_logger_task_stack_bytes=1840' \
     'capacity.routed_logger_task_stack_bytes=1840' \
     'capacity.routed_logger_task_stack_bytes.state=IMPLEMENTED' \
-    'capacity.benchmark_attempt_queue=1024' \
-    'capacity.benchmark_attempt_queue.policy=RETAIN_OLDEST_DROP_NEWEST' \
-    'capacity.benchmark_attempt_queue.dropped_telemetry=SATURATING_COUNTER' \
-    'capacity.benchmark_attempt_queue.state=IMPLEMENTED'; do
+    'capacity.benchmark_accepted_fifo=1024' \
+    'capacity.benchmark_accepted_fifo.policy=RETAIN_OLDEST_DROP_NEWEST' \
+    'capacity.benchmark_accepted_fifo.dropped_telemetry=SATURATING_COUNTER' \
+    'capacity.benchmark_accepted_fifo.state=IMPLEMENTED' \
+    'capacity.benchmark_final_fifo=1024' \
+    'capacity.benchmark_final_fifo.policy=RETAIN_OLDEST_DROP_NEWEST' \
+    'capacity.benchmark_final_fifo.dropped_telemetry=SATURATING_COUNTER' \
+    'capacity.benchmark_final_fifo.state=IMPLEMENTED'; do
     require_line "$expected" "$benchmark_aodv_manifest"
 done
 require_selected_source_count "$benchmark_aodv_manifest" \
@@ -1754,17 +1762,24 @@ require_selected_source_count "$benchmark_aodv_manifest" \
 require_selected_source_count "$benchmark_aodv_manifest" \
     'app/tavrn_routed_node/src/routed_benchmark_full.c' 0
 if ! grep -Fqx '#define TRON_BUILD_BENCHMARK_MODE 1' "$benchmark_aodv_config" ||
-    ! grep -Fqx '#define TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u' "$benchmark_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_BENCHMARK_ACCEPTED_FIFO_CAPACITY 1024u' "$benchmark_aodv_config" ||
+    ! grep -Fqx '#define TRON_BUILD_BENCHMARK_FINAL_FIFO_CAPACITY 1024u' "$benchmark_aodv_config" ||
     ! grep -Fqx '#define TRON_BUILD_ROUTED_LOGGER_TASK_STACK_BYTES 1840u' "$benchmark_aodv_config" ||
     grep -Fq 'TRON_BUILD_BENCH_WARMUP_MS' "$benchmark_aodv_config"; then
     printf '%s\n' 'AODV benchmark generated config lacks benchmark fields' >&2
     exit 1
 fi
-if ! grep -Fqx '#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u' \
+if ! grep -Fqx '#define ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY 1024u' \
         "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
-   ! grep -Fq 'ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY == 1024u' \
+    ! grep -Fqx '#define ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY 1024u' \
         "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
-   ! grep -Fq 'TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY ==' \
+    ! grep -Fq 'ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY == 1024u' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
+    ! grep -Fq 'ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY == 1024u' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/routed_benchmark.h" ||
+    ! grep -Fq 'TRON_BUILD_BENCHMARK_ACCEPTED_FIFO_CAPACITY ==' \
+        "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c" ||
+    ! grep -Fq 'TRON_BUILD_BENCHMARK_FINAL_FIFO_CAPACITY ==' \
         "$MICROBIT_ROOT/app/tavrn_routed_node/src/main.c"; then
     printf '%s\n' 'benchmark source/config capacity binding is absent' >&2
     exit 1
@@ -2320,7 +2335,7 @@ if grep -Fq 'TAVRN_LINK_V2_HOST_TEST_IMMEDIATE_HACK' \
     exit 1
 fi
 if [[ "$(grep -c '^timer\.' "$runtime_manifest")" -ne 75 ]] ||
-    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 49 ]]; then
+    [[ "$(grep -c '^capacity\.[^.]*=' "$runtime_manifest")" -ne 50 ]]; then
     printf '%s\n' 'manifest timer/capacity schema width is not exact' >&2
     exit 1
 fi
@@ -3011,22 +3026,32 @@ import pathlib
 import sys
 
 source, config, manifest_path, resource_path, artifact_name = map(pathlib.Path, sys.argv[1:])
-if "#define ROUTED_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u\n" not in \
-        source.read_text(encoding="utf-8"):
-    raise SystemExit("benchmark source capacity is not 1024")
-if "#define TRON_BUILD_BENCHMARK_ATTEMPT_QUEUE_CAPACITY 1024u\n" not in \
-        config.read_text(encoding="utf-8"):
-    raise SystemExit("generated benchmark capacity is not 1024")
+source_text = source.read_text(encoding="utf-8")
+config_text = config.read_text(encoding="utf-8")
+for macro in ("ROUTED_BENCHMARK_ACCEPTED_FIFO_CAPACITY",
+              "ROUTED_BENCHMARK_FINAL_FIFO_CAPACITY"):
+    if f"#define {macro} 1024u\n" not in source_text:
+        raise SystemExit("benchmark source FIFO capacity is not 1024")
+for macro in ("TRON_BUILD_BENCHMARK_ACCEPTED_FIFO_CAPACITY",
+              "TRON_BUILD_BENCHMARK_FINAL_FIFO_CAPACITY"):
+    if f"#define {macro} 1024u\n" not in config_text:
+        raise SystemExit("generated benchmark FIFO capacity is not 1024")
 manifest = dict(line.split("=", 1) for line in
                 manifest_path.read_text(encoding="utf-8").splitlines() if line)
 if manifest.get("artifact.name") != artifact_name.name or \
-        manifest.get("capacity.benchmark_attempt_queue") != "1024" or \
-         manifest.get("resource.fixed_state.declared_delta_bytes") != "43940":
-    raise SystemExit("benchmark manifest capacity/fixed-state binding differs")
+        any(manifest.get(f"capacity.benchmark_{fifo}_fifo") != "1024" or
+            manifest.get(f"capacity.benchmark_{fifo}_fifo.policy") !=
+            "RETAIN_OLDEST_DROP_NEWEST" or
+            manifest.get(f"capacity.benchmark_{fifo}_fifo.dropped_telemetry") !=
+            "SATURATING_COUNTER" or
+            manifest.get(f"capacity.benchmark_{fifo}_fifo.state") != "IMPLEMENTED"
+            for fifo in ("accepted", "final")) or \
+        manifest.get("resource.fixed_state.declared_delta_bytes") != "43940":
+    raise SystemExit("benchmark FIFO/fixed-state manifest binding differs")
 resource = json.loads(resource_path.read_text(encoding="utf-8"))
 if resource["fixed_state"] != {
-        "after_bytes": 71088,
-        "before_bytes": 71088,
+        "after_bytes": 71132,
+        "before_bytes": 71132,
         "declared_delta_bytes": 43940,
         "unexplained_delta_bytes": 0,
 }:

@@ -6,10 +6,11 @@ watch and an offline replay feed exactly the same :class:`ObservationState`.
 Firmware records are timestamped by grabserial and use ``routed obs_*``
 prefixes.  No record is terminal; records may repeat indefinitely.
 
-``now`` is the monotonic timestamp at which firmware emits a record.  Delivery
-and source events also carry their own ``event_at_ms`` timestamp.  Keeping
-those clocks separate prevents logger delay from becoming a claimed one-way
-latency while retaining record-order checks on ``now``.
+``now`` is the monotonic timestamp at which firmware emits a record.  Accepted
+source events carry ``offered_at_ms`` and final destination events carry
+``delivered_at_ms``.  Keeping those clocks separate prevents logger delay from
+becoming a claimed one-way latency while retaining record-order checks on
+``now``.
 """
 
 from __future__ import annotations
@@ -31,26 +32,23 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA = "tron.tavrn.observation.capture.v2"
+SCHEMA = "tron.tavrn.observation.capture.v3"
 RUN_SCHEMA = "tron.tavrn.observation.run.v2"
 MATPLOTLIB_PIN = "matplotlib==3.11.1"
-OBSERVER_SCHEMA = "observer-v2"
+OBSERVER_SCHEMA = "observer-v3"
 ROLES = ("A", "B", "C", "D", "E", "F")
 HALF_RANGE = 0x80000000
 UINT32_MAX = 0xFFFFFFFF
 HEARTBEAT_WINDOW_SECONDS = 10.0
 THROUGHPUT_BURST_SECONDS = 60.0
-CLOCK_CADENCE_MS = 1500.0
 TELEMETRY_CADENCE_MS = 12000.0
-HEARTBEAT_MINIMUM_OFFERS = 120
-THROUGHPUT_BURST_SLOT_COUNT = 600
+DATA_DEADLINE_MS = 5000.0
 HEARTBEAT_INTERVAL_MS = 1000
 THROUGHPUT_START_MS = 60000
 THROUGHPUT_BURST_PERIOD_MS = 450000
 THROUGHPUT_INTERVAL_MS = 100
-NOT_READY_STATUS = UINT32_MAX
-AODV_ACCEPTED_STATUSES = {0, 1}
-AODV_STATUS_MAX = 8
+THROUGHPUT_BURST_SLOT_COUNT = 600
+GTT_SLOT_CAPACITY = 16
 TIMESTAMP_RE = re.compile(
     r"^\[?(?P<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)"
     r"(?:\s+[^\]]+)?\]?\s+(?P<payload>(?:routed\s+)?obs_[^\r\n]*)$"
@@ -73,50 +71,56 @@ CONTROL_COUNTER_FIELDS = {
     "aodv_rreq_rate_limited", "aodv_action_backpressure", "router_failure_invariant",
 }
 HEALTH_COUNTER_FIELDS = {
-    "offered", "accepted", "rejected", "not_ready", "skipped", "heartbeat_skipped",
-    "throughput_skipped", "event_q", "event_q_high_water", "event_q_dropped",
-    "attempt_queue_faults", "guard_faults", "snapshot_faults", "final_q",
-    "diagnostic_dropped", "rreq_dropped", "retry_log_dropped", "trace_over_budget",
+    "offered", "accepted", "rejected", "not_ready", "skipped",
+    "heartbeat_offered", "heartbeat_accepted", "heartbeat_rejected",
+    "heartbeat_not_ready", "heartbeat_skipped", "throughput_offered",
+    "throughput_accepted", "throughput_rejected", "throughput_not_ready",
+    "throughput_skipped", "accepted_fifo_count", "accepted_fifo_high_water",
+    "accepted_fifo_dropped", "final_fifo_count", "final_fifo_high_water",
+    "final_fifo_dropped", "final_commits", "valid_heartbeat_finals",
+    "valid_throughput_finals", "invalid_identity_finals",
+    "application_reserve_busy", "application_commit_busy", "accepted_fifo_faults",
+    "final_fifo_faults", "guard_faults", "snapshot_faults", "diagnostic_dropped",
+    "rreq_dropped", "retry_log_dropped", "trace_over_budget",
     "trace_fault_latched", "mesh_fault", "router_fault",
 }
-HEALTH_GAUGES = {"event_q", "final_q"}
+HEALTH_GAUGES = {
+    "accepted_fifo_count", "accepted_fifo_high_water", "final_fifo_count",
+    "final_fifo_high_water",
+}
 
 REQUIRED: dict[str, set[str]] = {
     "boot": {"now", "role", "schema", "session", "started_at_ms"},
     "clock": {"now", "role", "schema", "session"},
-    "offer": {"now", "role", "schema", "session", "event_at_ms", "identity", "sequence",
-                "workload", "burst", "offer", "payload_id", "deadline_ms", "destination", "width",
-                "attempted", "accepted", "status"},
-    "final": {"now", "role", "schema", "session", "origin_session", "origin", "destination",
-               "event_at_ms", "identity", "sequence", "identity_valid", "workload", "burst",
-               "payload_id", "app_kind", "app_len"},
-    "app": {"now", "role", "schema", "session", "event_at_ms", "identity", "sequence",
-              "offer_record_id_hi", "offer_record_id_lo", "deadline_ms", "workload", "burst",
-              "payload_id", "destination", "width", "attempted", "accepted", "status"},
+    "accept": {"now", "offered_at_ms", "accepted_at_ms", "role", "schema", "session",
+               "identity", "submit_status"},
+    "final": {"now", "delivered_at_ms", "role", "schema", "session", "origin_session",
+              "identity_valid", "identity", "logical_origin", "logical_destination", "app_kind",
+              "app_len"},
     "gtt_begin": {"now", "role", "schema", "session", "query_at_ms", "slot_capacity"},
     "gtt_entry": {"now", "role", "schema", "session", "query_at_ms", "slot", "adva",
                   "freshness", "departed", "last_evidence_ms"},
     "gtt_end": {"now", "role", "schema", "session", "query_at_ms", "status", "entry_count",
                 "nondeparted_count"},
     "control": {"now", "role", "schema", "session", "control_tx_scope", *CONTROL_COUNTER_FIELDS},
-    "health": {"now", "role", "schema", "session", "record_seq", *HEALTH_COUNTER_FIELDS},
+    "health": {"now", "role", "schema", "session", *HEALTH_COUNTER_FIELDS},
 }
 RECORD_ID_FIELDS = {"record_id_hi", "record_id_lo"}
 NUMERIC_FIELDS: dict[str, set[str]] = {
     "boot": {"started_at_ms"}, "clock": set(),
-    "offer": {"event_at_ms", "deadline_ms", "sequence", "offer", "payload_id", "attempted",
-              "accepted", "width", "burst", "status"},
-    "final": {"event_at_ms", "sequence", "origin_session", "identity_valid", "burst", "payload_id", "app_kind", "app_len"},
-    "app": {"event_at_ms", "deadline_ms", "sequence", "offer_record_id_hi", "offer_record_id_lo",
-            "burst", "payload_id", "width", "attempted", "accepted", "status"},
+    "accept": {"offered_at_ms", "accepted_at_ms", "submit_status"},
+    "final": {"delivered_at_ms", "origin_session", "identity_valid", "app_kind", "app_len"},
     "gtt_begin": {"query_at_ms", "slot_capacity"},
-    "gtt_entry": {"query_at_ms", "slot", "departed", "last_evidence_ms"},
+    "gtt_entry": {"query_at_ms", "slot", "serial", "serial_state", "hop_count",
+                  "hop_state", "departed", "last_evidence_ms"},
     "gtt_end": {"query_at_ms", "entry_count", "nondeparted_count"},
     "control": CONTROL_COUNTER_FIELDS,
     "health": HEALTH_COUNTER_FIELDS,
 }
-META_FIELDS = {"now", "role", "schema", "session", "record_seq", "control_tx_scope", "_record_id", *RECORD_ID_FIELDS}
-INTEGRITY_COUNTER_MARKERS = ("drop", "skip", "fault", "mesh", "router")
+META_FIELDS = {"now", "role", "schema", "session", "control_tx_scope", "_record_id", *RECORD_ID_FIELDS}
+INTEGRITY_COUNTER_MARKERS = ("drop", "fault", "mesh", "router")
+EVENT_TIMESTAMP_FIELDS = {"accept": "offered_at_ms", "final": "delivered_at_ms",
+                          "gtt_begin": "query_at_ms"}
 BUNDLE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -363,24 +367,21 @@ def _record_id(fields: dict[str, str], source: str, line_number: int) -> int:
         _uint(fields["record_id_lo"], "record_id_lo", source, line_number)
 
 
-def _validate_event_identity(fields: dict[str, str], source: str, line_number: int) -> None:
-    """Validate the firmware's exact compact 24-bit benchmark identity layout."""
-    burst = _uint(fields["burst"], "burst", source, line_number)
-    sequence = _uint(fields["sequence"], "sequence", source, line_number)
-    payload_id = _uint(fields["payload_id"], "payload_id", source, line_number)
-    if burst >= (1 << 13):
-        raise _error(source, line_number, "has out-of-range burst")
-    if sequence >= (1 << 10) or payload_id >= (1 << 10):
-        raise _error(source, line_number, "has out-of-range sequence/payload_id")
-    if sequence != payload_id:
-        raise _error(source, line_number, "has sequence/payload_id mismatch")
-    identity_text = fields["identity"]
+def _decode_identity(identity_text: str, source: str, line_number: int) -> tuple[str, int, int, int]:
+    """Decode the firmware's compact 24-bit benchmark identity."""
     if IDENTITY_RE.fullmatch(identity_text) is None:
         raise _error(source, line_number, "has malformed identity")
-    workload = fields["workload"]
-    expected = ((1 if workload == "throughput" else 0) << 23) | (burst << 10) | payload_id
-    if int(identity_text[2:], 16) != expected:
-        raise _error(source, line_number, "has identity/workload/burst/sequence mismatch")
+    identity = int(identity_text[2:], 16)
+    workload = "throughput" if identity & (1 << 23) else "heartbeat"
+    burst = (identity >> 10) & 0x1FFF
+    sequence = identity & 0x03FF
+    return workload, burst, sequence, sequence
+
+
+EXACT_WIRE_FIELDS = {
+    kind: REQUIRED[kind] | RECORD_ID_FIELDS for kind in ("accept", "final", "health", "control")
+}
+GTT_ENTRY_EXTRA_FIELDS = {"serial", "serial_state", "hop_count", "hop_state"}
 
 
 def _validate_strict_counters(kind: str, fields: dict[str, str], source: str,
@@ -426,22 +427,37 @@ def parse_observation_line(line: str, source: str = "stream", line_number: int =
         raise _error(source, line_number, "has incomplete record ID")
     if fields["schema"] != OBSERVER_SCHEMA:
         raise _error(source, line_number, f"has unsupported observation schema {fields['schema']}")
-    if kind in ("offer", "app", "final"):
-        if fields["workload"] == "0":
-            fields["workload"] = "heartbeat"
-        elif fields["workload"] == "1":
-            fields["workload"] = "throughput"
+    expected_fields = EXACT_WIRE_FIELDS.get(kind)
+    if kind == "gtt_begin":
+        if "status" in fields:
+            if fields["status"] != "NOT_IMPLEMENTED":
+                raise _error(source, line_number, "has unsupported GTT begin status")
+            expected_fields = REQUIRED[kind] | RECORD_ID_FIELDS | {"status"}
+        else:
+            expected_fields = REQUIRED[kind] | RECORD_ID_FIELDS | {"retained_entry_count"}
+    elif kind == "gtt_entry":
+        expected_fields = REQUIRED[kind] | RECORD_ID_FIELDS | GTT_ENTRY_EXTRA_FIELDS
+    elif kind == "gtt_end":
+        expected_fields = REQUIRED[kind] | RECORD_ID_FIELDS
+    if expected_fields is not None and set(fields) != expected_fields:
+        raise _error(source, line_number, "has unexpected observation field")
     for name in {"now", "session", *RECORD_ID_FIELDS, *NUMERIC_FIELDS[kind]}:
         _uint(fields[name], name, source, line_number)
+    if "retained_entry_count" in fields:
+        _uint(fields["retained_entry_count"], "retained_entry_count", source, line_number)
     fields["_record_id"] = str(_record_id(fields, source, line_number))
-    if kind in ("offer", "app", "final"):
-        _validate_event_identity(fields, source, line_number)
-    if kind in ("offer", "app") and (_uint(fields["accepted"], "accepted", source, line_number) not in (0, 1)):
-        raise _error(source, line_number, "has accepted outside 0..1")
-    if kind in ("offer", "app") and _uint(fields["attempted"], "attempted", source, line_number) not in (0, 1):
-        raise _error(source, line_number, "has attempted/accepted outside 0..1")
+    if kind in ("accept", "final"):
+        workload, burst, sequence, payload_id = _decode_identity(fields["identity"], source, line_number)
+        fields.update({"workload": workload, "burst": str(burst), "sequence": str(sequence),
+                       "payload_id": str(payload_id)})
+    if kind == "accept" and _uint(fields["submit_status"], "submit_status", source, line_number) not in (0, 1):
+        raise _error(source, line_number, "has submit_status outside 0..1")
     if kind == "final" and _uint(fields["identity_valid"], "identity_valid", source, line_number) not in (0, 1):
         raise _error(source, line_number, "has identity_valid outside 0..1")
+    if kind == "final":
+        for name in ("logical_origin", "logical_destination"):
+            if re.fullmatch(r"0x[0-9a-f]{4}", fields[name]) is None:
+                raise _error(source, line_number, f"has malformed {name}")
     if kind == "gtt_entry" and _uint(fields["departed"], "departed", source, line_number) not in (1, 2):
         raise _error(source, line_number, "has departed outside FALSE=1/TRUE=2")
     if kind == "gtt_entry":
@@ -450,16 +466,20 @@ def parse_observation_line(line: str, source: str = "stream", line_number: int =
         freshness = _uint(fields["freshness"], "freshness", source, line_number)
         if freshness not in (1, 2, 3, 4):
             raise _error(source, line_number, "has freshness outside 1..4")
+        if _uint(fields["serial"], "serial", source, line_number) > 0xFFFF:
+            raise _error(source, line_number, "has serial outside uint16")
+        if _uint(fields["hop_count"], "hop_count", source, line_number) > 0xFF:
+            raise _error(source, line_number, "has hop_count outside uint8")
+        if _uint(fields["serial_state"], "serial_state", source, line_number) not in (1, 2) or \
+                _uint(fields["hop_state"], "hop_state", source, line_number) != 1:
+            raise _error(source, line_number, "has invalid GTT value state")
     if kind == "control":
         if fields["control_tx_scope"] != "AODV_DISPATCH_PROXY_ONLY":
             raise _error(source, line_number, "has unsupported control_tx_scope")
         _validate_strict_counters(kind, fields, source, line_number)
     if kind == "health":
-        _uint64(fields["record_seq"], "record_seq", source, line_number)
         _validate_strict_counters(kind, fields, source, line_number)
-    if fields["workload"] not in ("heartbeat", "throughput") if kind in ("offer", "app", "final") else False:
-        raise _error(source, line_number, "has unsupported workload")
-    for name in ("schema", "status", "workload", "origin", "destination", "adva", "freshness"):
+    for name in ("schema", "status", "adva", "freshness"):
         if name in fields and not WORD_RE.fullmatch(fields[name]):
             raise _error(source, line_number, f"has invalid {name}")
     _role(fields["role"], expected_role, source, line_number)
@@ -700,11 +720,13 @@ class ObservationState:
         self.schemas.add(fields["schema"])
         now_unwrapped = state.epoch + now
         event_at_unwrapped: int | None = None
-        if kind in {"offer", "app", "final"}:
-            event_at = _uint(fields["event_at_ms"], "event_at_ms", source, line_number)
+        if kind in EVENT_TIMESTAMP_FIELDS:
+            event_field = EVENT_TIMESTAMP_FIELDS[kind]
+            event_at = _uint(fields[event_field], event_field, source, line_number)
             relative = (event_at - now) & UINT32_MAX
             if relative == HALF_RANGE:
-                raise _error(source, line_number, "has event_at_ms at uint32 half-range from now")
+                raise _error(source, line_number,
+                             f"has {event_field} at uint32 half-range from now")
             if relative > HALF_RANGE:
                 relative -= UINT32_MAX + 1
             event_at_unwrapped = now_unwrapped + relative
@@ -759,11 +781,27 @@ class ObservationState:
                 raise _error(end.source, end.line_number,
                              "has invalid NOT_IMPLEMENTED GTT evidence")
             return False
+        if end.fields["status"] == "INVALID":
+            if self.metadata.get("profile") != "FULL_TAVRN" or current.entries or \
+                    _uint(begin.fields["slot_capacity"], "slot_capacity",
+                          begin.source, begin.line_number) != GTT_SLOT_CAPACITY or \
+                    "retained_entry_count" not in begin.fields or \
+                    _uint(begin.fields["retained_entry_count"], "retained_entry_count",
+                          begin.source, begin.line_number) != 0 or \
+                    _uint(end.fields["entry_count"], "entry_count", end.source,
+                          end.line_number) != 0 or \
+                    _uint(end.fields["nondeparted_count"], "nondeparted_count", end.source,
+                          end.line_number) != 0:
+                raise _error(end.source, end.line_number, "has invalid INVALID GTT evidence")
+            return False
         if end.fields["status"] != "OK":
             raise _error(end.source, end.line_number, f"has rejected GTT snapshot status={end.fields['status']}")
         if self.metadata.get("profile") != "FULL_TAVRN":
             raise _error(end.source, end.line_number, "has FULL GTT snapshot outside FULL_TAVRN")
         capacity = _uint(begin.fields["slot_capacity"], "slot_capacity", begin.source, begin.line_number)
+        if capacity != GTT_SLOT_CAPACITY:
+            raise _error(begin.source, begin.line_number,
+                         "has invalid FULL GTT slot_capacity")
         expected_entries = _uint(end.fields["entry_count"], "entry_count", end.source, end.line_number)
         expected_nondeparted = _uint(end.fields["nondeparted_count"], "nondeparted_count", end.source, end.line_number)
         if "retained_entry_count" not in begin.fields or _uint(begin.fields["retained_entry_count"], "retained_entry_count",
@@ -812,10 +850,6 @@ class ObservationState:
             state.last_health_values = values
 
     def _health(self, record: ObservationRecord, state: _RoleClock) -> None:
-        sequence = _uint64(record.fields["record_seq"], "record_seq", record.source, record.line_number)
-        if sequence != (_record_id(record.fields, record.source, record.line_number) & UINT32_MAX):
-            raise _error(record.source, record.line_number,
-                         "has record_seq different from low 32 bits of record ID")
         self._cumulative_counters(record, state, "health")
         previous_host = state.last_health_host_ms or record.host_ms
         numbers = _counter_fields(record)
@@ -828,11 +862,13 @@ class ObservationState:
                                             "end_ms": record.host_ms,
                                             "reason": f"telemetry_integrity:{key}"})
         state.last_integrity_values = integrity
-        state.last_health_seq = sequence
+        state.last_health_seq = _record_id(record.fields, record.source, record.line_number)
         state.last_health_host_ms = record.host_ms
         if self.record_store is None:
             self.health_events.append({"role": record.role, "session": record.session,
-                                       "host_ms": record.host_ms, "record_seq": sequence, **numbers})
+                                        "host_ms": record.host_ms,
+                                        "record_id": _record_id(record.fields, record.source,
+                                                               record.line_number), **numbers})
 
     def clock_fits(self) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
@@ -930,11 +966,6 @@ def _window_start(host_ms: float, origin_ms: float, seconds: int = 10) -> int:
     return int(math.floor((host_ms - origin_ms) / (seconds * 1000))) * seconds
 
 
-def _event_key(record: ObservationRecord, session: str | None = None) -> tuple[str, str, str, int]:
-    return (session if session is not None else record.session, record.fields["workload"], record.fields["burst"],
-            _uint(record.fields["payload_id"], "payload_id", record.source, record.line_number))
-
-
 def _latency_summary(values: list[float]) -> dict[str, float | None]:
     if not values:
         return {"p50_ms": None, "p95_ms": None, "p99_ms": None}
@@ -951,231 +982,426 @@ def _invalid_roles(start_ms: float, end_ms: float, invalid: list[dict[str, Any]]
                    if float(item["start_ms"]) <= end_ms and float(item["end_ms"]) >= start_ms})
 
 
-def _uint32_elapsed(later: int, earlier: int) -> int:
-    return (later - earlier) & UINT32_MAX
+def _record_id_value(record: ObservationRecord) -> int:
+    return _record_id(record.fields, record.source, record.line_number)
 
 
-def _expected_offer_deadline(started_at_ms: int, record: ObservationRecord) -> tuple[int, int]:
-    """Return the exact fixed deadline and slot interval for a source offer."""
-    sequence = _uint(record.fields["sequence"], "sequence", record.source, record.line_number)
-    burst = _uint(record.fields["burst"], "burst", record.source, record.line_number)
-    if record.fields["workload"] == "heartbeat":
-        global_sequence = (burst << 10) | sequence
-        return ((started_at_ms + global_sequence * HEARTBEAT_INTERVAL_MS) & UINT32_MAX,
-                HEARTBEAT_INTERVAL_MS)
-    return ((started_at_ms + THROUGHPUT_START_MS + burst * THROUGHPUT_BURST_PERIOD_MS +
-             sequence * THROUGHPUT_INTERVAL_MS) & UINT32_MAX, THROUGHPUT_INTERVAL_MS)
+def _identity_key(record: ObservationRecord, session: str | None = None) -> tuple[str, int]:
+    return (session if session is not None else record.session,
+            int(record.fields["identity"][2:], 16))
+
+
+def _application_totals_template() -> dict[str, dict[str, int | float | None]]:
+    fields = ("offered", "accepted", "rejected", "not_ready", "skipped", "delivered",
+              "accepted_pdr", "offered_pdr")
+    return {name: {field: None for field in fields}
+            for name in ("combined", "heartbeat", "throughput")}
+
+
+def _health_value(record: ObservationRecord, name: str) -> int:
+    return _uint(record.fields[name], name, record.source, record.line_number)
+
+
+def _checkpoint_records(state: ObservationState, role: str, session: str,
+                        record_id: int) -> list[ObservationRecord]:
+    return [record for record in state.records if record.role == role and record.session == session and
+            _record_id_value(record) < record_id]
+
+
+def _checkpoint_has_record_gap(state: ObservationState, role: str, session: str,
+                               checkpoint_id: int) -> bool:
+    record_ids = sorted(_record_id_value(record) for record in state.records
+                        if record.role == role and record.session == session and
+                        _record_id_value(record) <= checkpoint_id)
+    return not record_ids or record_ids[0] != 1 or any(
+        later != earlier + 1 for earlier, later in zip(record_ids, record_ids[1:]))
+
+
+def _critical_checkpoint_reasons(record: ObservationRecord) -> list[str]:
+    names = (
+        "accepted_fifo_count", "accepted_fifo_dropped", "final_fifo_count",
+        "final_fifo_dropped", "accepted_fifo_faults", "final_fifo_faults",
+        "guard_faults", "snapshot_faults", "invalid_identity_finals", "mesh_fault",
+        "router_fault", "application_reserve_busy", "application_commit_busy",
+    )
+    return [f"checkpoint_nonzero:{name}" for name in names if _health_value(record, name) != 0]
+
+
+def _source_checkpoint(state: ObservationState, record: ObservationRecord) -> dict[str, Any]:
+    record_id = _record_id_value(record)
+    emitted = [item for item in _checkpoint_records(state, "A", record.session, record_id)
+               if item.kind == "accept"]
+    reasons: list[str] = []
+    if _checkpoint_has_record_gap(state, "A", record.session, record_id):
+        reasons.append("source_record_id_gap_before_checkpoint")
+    accepted = _health_value(record, "accepted")
+    if accepted != len(emitted) + _health_value(record, "accepted_fifo_count") + \
+            _health_value(record, "accepted_fifo_dropped"):
+        reasons.append("source_checkpoint_accepted_equation")
+    if _health_value(record, "offered") != accepted + _health_value(record, "rejected"):
+        reasons.append("source_checkpoint_offered_equation")
+    split = (("heartbeat", "heartbeat_offered", "heartbeat_accepted", "heartbeat_rejected",
+              "heartbeat_not_ready"),
+             ("throughput", "throughput_offered", "throughput_accepted", "throughput_rejected",
+              "throughput_not_ready"))
+    for label, offered, split_accepted, rejected, not_ready in split:
+        if _health_value(record, offered) != _health_value(record, split_accepted) + \
+                _health_value(record, rejected):
+            reasons.append(f"source_checkpoint_{label}_offered_equation")
+        if _health_value(record, not_ready) > _health_value(record, rejected):
+            reasons.append(f"source_checkpoint_{label}_not_ready_equation")
+    if _health_value(record, "offered") != _health_value(record, "heartbeat_offered") + \
+            _health_value(record, "throughput_offered") or \
+            accepted != _health_value(record, "heartbeat_accepted") + \
+            _health_value(record, "throughput_accepted") or \
+            _health_value(record, "rejected") != _health_value(record, "heartbeat_rejected") + \
+            _health_value(record, "throughput_rejected"):
+        reasons.append("source_checkpoint_workload_split_equation")
+    if _health_value(record, "not_ready") > _health_value(record, "rejected") or \
+            _health_value(record, "not_ready") != _health_value(record, "heartbeat_not_ready") + \
+            _health_value(record, "throughput_not_ready"):
+        reasons.append("source_checkpoint_not_ready_equation")
+    critical_reasons = _critical_checkpoint_reasons(record)
+    if not critical_reasons:
+        for workload, counter in (("heartbeat", "heartbeat_accepted"),
+                                  ("throughput", "throughput_accepted")):
+            if sum(item.fields["workload"] == workload for item in emitted) != \
+                    _health_value(record, counter):
+                reasons.append(f"source_checkpoint_{workload}_accepted_identity_count")
+    return {"record": record, "record_id": record_id, "events": emitted, "reasons": reasons,
+            "complete": not reasons,
+            "clean": not reasons and not critical_reasons}
+
+
+def _destination_checkpoint(state: ObservationState, record: ObservationRecord) -> dict[str, Any]:
+    record_id = _record_id_value(record)
+    emitted = [item for item in _checkpoint_records(state, "C", record.session, record_id)
+               if item.kind == "final"]
+    reasons: list[str] = []
+    if _checkpoint_has_record_gap(state, "C", record.session, record_id):
+        reasons.append("destination_record_id_gap_before_checkpoint")
+    commits = _health_value(record, "final_commits")
+    if commits != len(emitted) + _health_value(record, "final_fifo_count") + \
+            _health_value(record, "final_fifo_dropped"):
+        reasons.append("destination_checkpoint_final_equation")
+    if commits != _health_value(record, "valid_heartbeat_finals") + \
+            _health_value(record, "valid_throughput_finals") + \
+            _health_value(record, "invalid_identity_finals"):
+        reasons.append("destination_checkpoint_final_split_equation")
+    critical_reasons = _critical_checkpoint_reasons(record)
+    if not critical_reasons:
+        valid = [item for item in emitted if _bool_field(item, "identity_valid") == 1]
+        for workload, counter in (("heartbeat", "valid_heartbeat_finals"),
+                                  ("throughput", "valid_throughput_finals")):
+            if sum(item.fields["workload"] == workload for item in valid) != \
+                    _health_value(record, counter):
+                reasons.append(f"destination_checkpoint_{workload}_identity_count")
+        if len(emitted) - len(valid) != _health_value(record, "invalid_identity_finals"):
+            reasons.append("destination_checkpoint_invalid_identity_count")
+    return {"record": record, "record_id": record_id, "events": emitted, "reasons": reasons,
+            "complete": not reasons,
+            "clean": not reasons and not critical_reasons}
+
+
+def _checkpoint_totals(source: ObservationRecord,
+                       packets: list[dict[str, Any]]) -> dict[str, dict[str, int | float | None]]:
+    result = _application_totals_template()
+    for label, prefix in (("combined", ""), ("heartbeat", "heartbeat_"),
+                          ("throughput", "throughput_")):
+        offered = _health_value(source, f"{prefix}offered") if prefix else _health_value(source, "offered")
+        accepted = _health_value(source, f"{prefix}accepted") if prefix else _health_value(source, "accepted")
+        rejected = _health_value(source, f"{prefix}rejected") if prefix else _health_value(source, "rejected")
+        not_ready = _health_value(source, f"{prefix}not_ready") if prefix else _health_value(source, "not_ready")
+        skipped = _health_value(source, f"{prefix}skipped") if prefix else _health_value(source, "skipped")
+        delivered = sum(int(packet["delivered"]) for packet in packets
+                        if label == "combined" or packet["workload"] == label)
+        result[label] = {
+            "offered": offered, "accepted": accepted, "rejected": rejected,
+            "not_ready": not_ready, "skipped": skipped, "delivered": delivered,
+            "accepted_pdr": round(delivered / accepted, 6) if accepted else None,
+            "offered_pdr": round(delivered / offered, 6) if offered else None,
+        }
+    return result
+
+
+def _uint32_forward_elapsed(later: int, earlier: int) -> int | None:
+    elapsed = (later - earlier) & UINT32_MAX
+    return elapsed if elapsed < HALF_RANGE else None
+
+
+def _accepted_schedule_reasons(state: ObservationState,
+                               accepted_events: Iterable[ObservationRecord]) -> list[tuple[ObservationRecord, str]]:
+    started_at = {record.session: _uint(record.fields["started_at_ms"], "started_at_ms",
+                                        record.source, record.line_number)
+                  for record in state.records if record.role == "A" and record.kind == "boot"}
+    reasons: list[tuple[ObservationRecord, str]] = []
+    for accepted in accepted_events:
+        offered = _uint(accepted.fields["offered_at_ms"], "offered_at_ms", accepted.source,
+                        accepted.line_number)
+        accepted_at = _uint(accepted.fields["accepted_at_ms"], "accepted_at_ms", accepted.source,
+                            accepted.line_number)
+        if _uint32_forward_elapsed(accepted_at, offered) is None:
+            reasons.append((accepted, "accepted_timestamp_offer_to_accept"))
+        if _uint32_forward_elapsed(accepted.now, accepted_at) is None:
+            reasons.append((accepted, "accepted_timestamp_accept_to_emission"))
+        started = started_at.get(accepted.session)
+        if started is None:
+            reasons.append((accepted, "accepted_without_boot_started_at"))
+            continue
+        workload = accepted.fields["workload"]
+        burst = _uint(accepted.fields["burst"], "burst", accepted.source, accepted.line_number)
+        sequence = _uint(accepted.fields["sequence"], "sequence", accepted.source,
+                         accepted.line_number)
+        if workload == "heartbeat":
+            deadline = (started + ((burst << 10) | sequence) * HEARTBEAT_INTERVAL_MS) & UINT32_MAX
+            limit = HEARTBEAT_INTERVAL_MS
+        else:
+            if sequence >= THROUGHPUT_BURST_SLOT_COUNT:
+                reasons.append((accepted, "throughput_sequence_out_of_range"))
+                continue
+            deadline = (started + THROUGHPUT_START_MS + burst * THROUGHPUT_BURST_PERIOD_MS +
+                        sequence * THROUGHPUT_INTERVAL_MS) & UINT32_MAX
+            limit = THROUGHPUT_INTERVAL_MS
+        lateness = _uint32_forward_elapsed(offered, deadline)
+        if lateness is None or lateness >= limit:
+            reasons.append((accepted, "accepted_offered_deadline_mismatch"))
+    return reasons
+
+
+def _accepted_metric_row(workload: str, label: str, window: int,
+                         rows: list[dict[str, Any]], period_start_ms: float,
+                         duration: float, application_issues: list[dict[str, Any]]) -> dict[str, Any]:
+    accepted = len(rows)
+    delivered = sum(int(item["delivered"]) for item in rows)
+    app_bytes = sum(int(item["app_bytes"]) for item in rows)
+    latencies = [float(item["latency_ms"]) for item in rows if item["latency_ms"] is not None]
+    starts = [float(item["offered_host_ms"]) for item in rows if item["offered_host_ms"] is not None]
+    ends = [float(item["delivered_host_ms"]) for item in rows if item["delivered_host_ms"] is not None]
+    invalid_roles = _invalid_roles(period_start_ms, period_start_ms + duration * 1000.0,
+                                   application_issues)
+    return {
+        "workload": workload, "label": label, "window_start_s": window,
+        "duration_seconds": round(duration, 6), "offered": None, "attempted": None,
+        "rejected": None, "not_ready": None, "accepted": accepted, "delivered": delivered,
+        "accepted_pdr": round(delivered / accepted, 6) if accepted else None,
+        "offered_pdr": None,
+        "packet_goodput_packets_per_second": round(delivered / duration, 6),
+        "app_goodput_bytes_per_second": round(app_bytes / duration, 6),
+        "first_delivery_ms": round(min(ends) - min(starts), 6) if starts and ends else None,
+        "invalid": bool(invalid_roles), "invalid_roles": invalid_roles,
+        **_latency_summary(latencies),
+    }
 
 
 def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origin_ms: float) -> tuple[
-        list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]],
+        dict[str, dict[str, int | float | None]], list[dict[str, Any]], list[str], dict[str, Any] | None]:
+    """Analyze only the latest clean A/C observer-v3 checkpoint prefix."""
     source_role, destination_role = _metadata_roles(state.metadata)
-    if source_role not in ROLES or destination_role not in ROLES or source_role == destination_role:
-        raise CaptureError("observation source/destination roles must be distinct A..F roles")
-    offers = [record for record in state.records if record.kind == "offer" and record.role == source_role]
-    apps = [record for record in state.records if record.kind == "app" and record.role == source_role]
-    finals = [record for record in state.records if record.kind == "final" and record.role == destination_role]
+    assert source_role == "A" and destination_role == "C"
+    records = list(state.records)
+    source_health = [_source_checkpoint(state, record) for record in records
+                     if record.kind == "health" and record.role == source_role]
+    destination_health = [_destination_checkpoint(state, record) for record in records
+                           if record.kind == "health" and record.role == destination_role]
+    for checkpoint in [*source_health, *destination_health]:
+        checkpoint["frontier_host_ms"] = state.host_from_firmware(checkpoint["record"], fits)
+        accepted_hosts = [state.host_from_event(event, fits) for event in checkpoint["events"]
+                          if event.kind == "accept"]
+        checkpoint["prefix_start_host_ms"] = (
+            min(accepted_hosts) if accepted_hosts and all(
+                host is not None for host in accepted_hosts)
+            else checkpoint["frontier_host_ms"] if not accepted_hosts else None)
+    destination_boot_host = {
+        record.session: state.host_from_firmware(record, fits) for record in records
+        if record.kind == "boot" and record.role == destination_role
+    }
     issues: list[dict[str, Any]] = []
+    incomplete: list[str] = []
 
-    def invalidate(record: ObservationRecord, reason: str) -> None:
+    def issue(record: ObservationRecord, reason: str) -> None:
         issues.append({"role": record.role, "start_ms": record.host_ms, "end_ms": record.host_ms,
                        "reason": reason})
 
-    for record in state.records:
-        if record.kind in {"offer", "app"} and record.role != source_role:
-            invalidate(record, f"unexpected_{record.kind}_role")
+    for record in records:
+        if record.kind == "accept" and record.role != source_role:
+            issue(record, "unexpected_accept_role")
         if record.kind == "final" and record.role != destination_role:
-            invalidate(record, "unexpected_final_role")
+            issue(record, "unexpected_final_role")
 
+    if not source_health:
+        incomplete.append("missing_source_checkpoint:A")
+    if not destination_health:
+        incomplete.append("missing_destination_checkpoint:C")
+    for checkpoint in [*source_health, *destination_health]:
+        if not checkpoint["complete"]:
+            for reason in checkpoint["reasons"]:
+                issue(checkpoint["record"], reason)
+    clean_source = [checkpoint for checkpoint in source_health
+                    if checkpoint["clean"] and checkpoint["frontier_host_ms"] is not None and
+                    checkpoint["prefix_start_host_ms"] is not None]
+    clean_destination = [checkpoint for checkpoint in destination_health
+                         if checkpoint["clean"] and checkpoint["frontier_host_ms"] is not None]
+    if source_health and not clean_source and any(checkpoint["clean"] for checkpoint in source_health):
+        incomplete.append("invalid_clock_fit:A")
+    if destination_health and not clean_destination and any(
+            checkpoint["clean"] for checkpoint in destination_health):
+        incomplete.append("invalid_clock_fit:C")
+    if not clean_source or not clean_destination:
+        for checkpoints in (source_health, destination_health):
+            complete = [checkpoint for checkpoint in checkpoints if checkpoint["complete"]]
+            if complete:
+                latest = max(complete, key=lambda checkpoint: (checkpoint["record"].host_ms,
+                                                               checkpoint["record_id"]))
+                for reason in _critical_checkpoint_reasons(latest["record"]):
+                    issue(latest["record"], reason)
+    settled = [(cutoff, destination, support) for cutoff in clean_source
+               for destination in clean_destination for support in clean_source
+               if cutoff["record"].session == support["record"].session and
+               destination_boot_host.get(destination["record"].session) is not None and
+               destination_boot_host[destination["record"].session] <=
+                   cutoff["prefix_start_host_ms"] and
+               destination["frontier_host_ms"] - cutoff["frontier_host_ms"] >= DATA_DEADLINE_MS and
+               support["frontier_host_ms"] >= destination["frontier_host_ms"]]
+    for _, destination, support in settled:
+        seen_accepted: set[tuple[str, int]] = set()
+        for accepted in support["events"]:
+            key = _identity_key(accepted)
+            if key in seen_accepted:
+                issue(accepted, "duplicate_accepted_identity")
+            seen_accepted.add(key)
+        seen_finals: set[tuple[str, int]] = set()
+        for final in destination["events"]:
+            key = _identity_key(final, final.fields["origin_session"])
+            if key in seen_finals:
+                issue(final, "duplicate_final_identity")
+            seen_finals.add(key)
+    candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for cutoff, destination, support in settled:
+        cutoff_keys = {_identity_key(record) for record in cutoff["events"]}
+        support_keys = {_identity_key(record) for record in support["events"]}
+        final_keys = {_identity_key(record, record.fields["origin_session"])
+                      for record in destination["events"]}
+        if cutoff_keys <= support_keys and final_keys <= support_keys:
+            candidates.append((cutoff, destination, support))
+    if settled and not candidates:
+        for cutoff, destination, support in settled:
+            support_keys = {_identity_key(record) for record in support["events"]}
+            for final in destination["events"]:
+                if _identity_key(final, final.fields["origin_session"]) not in support_keys:
+                    issue(final, "unmatched_final_identity")
+    if not clean_source or not clean_destination:
+        incomplete.append("no_clean_application_checkpoint_pair")
+    if not settled and clean_source and clean_destination:
+        incomplete.append("no_settled_application_frontier_tuple")
+    if not candidates and settled:
+        incomplete.append("no_correlatable_application_checkpoint_pair")
+    selected: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None
+    if candidates:
+        selected = max(candidates, key=lambda pair: (
+            pair[0]["frontier_host_ms"], pair[1]["frontier_host_ms"],
+            pair[2]["frontier_host_ms"],
+            pair[0]["record_id"], pair[1]["record_id"], pair[2]["record_id"]))
+    if selected is None:
+        return [], [], [], _application_totals_template(), issues, sorted(set(incomplete)), None
+
+    cutoff, destination, support = selected
+    source_record, destination_record, support_record = (cutoff["record"], destination["record"],
+                                                          support["record"])
+    source_session, destination_session, support_session = (source_record.session,
+                                                            destination_record.session,
+                                                            support_record.session)
+    source_fit = fits.get(source_role, {}).get(source_session)
+    destination_fit = fits.get(destination_role, {}).get(destination_session)
+    support_fit = fits.get(source_role, {}).get(support_session)
+    if not source_fit or not source_fit.get("valid"):
+        incomplete.append("invalid_clock_fit:A")
+    if not destination_fit or not destination_fit.get("valid"):
+        incomplete.append("invalid_clock_fit:C")
+    if not support_fit or not support_fit.get("valid"):
+        incomplete.append("invalid_clock_fit:A_support")
+    if state.finalized_host_ms is None:
+        incomplete.append("capture_not_finalized")
+
+    accepted_by_key: dict[tuple[str, int], ObservationRecord] = {}
+    for accepted in support["events"]:
+        key = _identity_key(accepted)
+        if key in accepted_by_key:
+            issue(accepted, "duplicate_accepted_identity")
+        else:
+            accepted_by_key[key] = accepted
+    for accepted, reason in _accepted_schedule_reasons(state, support["events"]):
+        issue(accepted, reason)
+    cutoff_by_key: dict[tuple[str, int], ObservationRecord] = {}
+    for accepted in cutoff["events"]:
+        key = _identity_key(accepted)
+        if key in cutoff_by_key:
+            issue(accepted, "duplicate_accepted_identity")
+        elif key not in accepted_by_key:
+            issue(accepted, "source_cutoff_identity_not_in_support")
+        else:
+            cutoff_by_key[key] = accepted
+    finals_by_key: dict[tuple[str, int], ObservationRecord] = {}
+    duplicate_final_keys: set[tuple[str, int]] = set()
     profile = _profile(state.metadata)
     boards = _boards_by_role(state.metadata)
-    expected_source_destination = _logical_id(boards[destination_role], profile)
-    expected_source_width = 1 if profile == "FULL_TAVRN" else 2
-    expected_source_destination_text = f"0x{expected_source_destination:04x}"
-
-    def validate_source_attempt(record: ObservationRecord) -> None:
-        attempted = _bool_field(record, "attempted")
-        accepted = _bool_field(record, "accepted")
-        status = _uint(record.fields["status"], "status", record.source, record.line_number)
-        if attempted:
-            if record.fields["destination"] != expected_source_destination_text or \
-                    _uint(record.fields["width"], "width", record.source, record.line_number) != expected_source_width:
-                invalidate(record, "invalid_source_destination_width")
-            if record.kind == "offer":
-                if accepted != 0 or status != 0:
-                    invalidate(record, "invalid_offer_submission_status")
-            elif status > AODV_STATUS_MAX or accepted != int(status in AODV_ACCEPTED_STATUSES):
-                invalidate(record, "invalid_app_submission_status")
-            return
-        if profile != "FULL_TAVRN" or record.fields["destination"] != "0x0000" or \
-                _uint(record.fields["width"], "width", record.source, record.line_number) != 1 or \
-                accepted != 0 or status != NOT_READY_STATUS:
-            invalidate(record, "invalid_not_ready_source_attempt")
-
-    for record in [*offers, *apps]:
-        validate_source_attempt(record)
-
-    boot_started_at: dict[str, int] = {}
-    for record in state.records:
-        if record.kind == "boot" and record.role == source_role:
-            boot_started_at[record.session] = _uint(record.fields["started_at_ms"], "started_at_ms",
-                                                    record.source, record.line_number)
-    expected_heartbeat: dict[str, int] = {}
-    expected_throughput: dict[str, tuple[int, int]] = {}
-    previous_deadline: dict[str, int] = {}
-    previous_event_at: dict[str, int] = {}
-    for offer in offers:
-        started_at_ms = boot_started_at.get(offer.session)
-        if started_at_ms is None:
-            invalidate(offer, "source_offer_without_started_at")
+    expected_origin = f"0x{_logical_id(boards[source_role], profile):04x}"
+    expected_destination = f"0x{_logical_id(boards[destination_role], profile):04x}"
+    for final in destination["events"]:
+        key = _identity_key(final, final.fields["origin_session"])
+        if key in finals_by_key:
+            duplicate_final_keys.add(key)
+            issue(final, "duplicate_final_identity")
             continue
-        expected_deadline, interval_ms = _expected_offer_deadline(started_at_ms, offer)
-        deadline = _uint(offer.fields["deadline_ms"], "deadline_ms", offer.source, offer.line_number)
-        event_at = _uint(offer.fields["event_at_ms"], "event_at_ms", offer.source, offer.line_number)
-        if deadline != expected_deadline:
-            invalidate(offer, "source_offer_deadline_mismatch")
-        elapsed = _uint32_elapsed(event_at, deadline)
-        if elapsed >= HALF_RANGE or elapsed >= interval_ms:
-            invalidate(offer, "stale_or_early_source_offer")
-        if offer.session in previous_deadline:
-            deadline_delta = _uint32_elapsed(deadline, previous_deadline[offer.session])
-            event_delta = _uint32_elapsed(event_at, previous_event_at[offer.session])
-            if deadline_delta >= HALF_RANGE or event_delta >= HALF_RANGE:
-                invalidate(offer, "stale_or_catch_up_source_order")
-        previous_deadline[offer.session] = deadline
-        previous_event_at[offer.session] = event_at
-        sequence = _uint(offer.fields["sequence"], "sequence", offer.source, offer.line_number)
-        burst = _uint(offer.fields["burst"], "burst", offer.source, offer.line_number)
-        if offer.fields["workload"] == "heartbeat":
-            global_sequence = (burst << 10) | sequence
-            expected = expected_heartbeat.get(offer.session, 0)
-            if global_sequence != expected:
-                invalidate(offer, "heartbeat_identity_not_contiguous")
-            expected_heartbeat[offer.session] = global_sequence + 1
-            continue
-        if sequence >= THROUGHPUT_BURST_SLOT_COUNT:
-            invalidate(offer, "throughput_sequence_out_of_range")
-        expected_burst, expected_sequence = expected_throughput.get(offer.session, (0, 0))
-        if (burst, sequence) != (expected_burst, expected_sequence):
-            invalidate(offer, "throughput_sequence_gap_or_repetition")
-        expected_throughput[offer.session] = ((burst + 1, 0) if sequence == THROUGHPUT_BURST_SLOT_COUNT - 1
-                                               else (burst, sequence + 1))
-
-    offers_by_id: dict[tuple[str, int], ObservationRecord] = {}
-    for offer in offers:
-        offer_id = _record_id(offer.fields, offer.source, offer.line_number)
-        key = (offer.session, offer_id)
-        if key in offers_by_id:
-            invalidate(offer, "duplicate_offer_record_id")
-            continue
-        offers_by_id[key] = offer
-    apps_by_offer_id: dict[tuple[str, int], ObservationRecord] = {}
-    for app in apps:
-        offer_id = _record_id({"record_id_hi": app.fields["offer_record_id_hi"],
-                                "record_id_lo": app.fields["offer_record_id_lo"]}, app.source, app.line_number)
-        key = (app.session, offer_id)
-        offer = offers_by_id.get(key)
-        if offer is None:
-            invalidate(app, "unmatched_source_app")
-            continue
-        if key in apps_by_offer_id:
-            invalidate(app, "duplicate_source_app")
-            continue
-        matching_fields = ("session", "workload", "burst", "sequence", "payload_id", "identity",
-                           "deadline_ms", "destination", "width", "attempted")
-        if _event_key(app) != _event_key(offer) or any(
-                app.fields[name] != offer.fields[name] for name in matching_fields):
-            invalidate(app, "source_app_identity_mismatch")
-            continue
-        apps_by_offer_id[key] = app
-    accepted: dict[tuple[str, str, str, int], ObservationRecord] = {}
-    censored_offer_ids: set[tuple[str, int]] = set()
-    source_log = boards[source_role].get("log")
-    source_terminal_censored = bool(
-        isinstance(source_log, dict) and source_log.get("terminal_censored"))
-    for record in offers:
-        record_key = (record.session, _record_id(record.fields, record.source, record.line_number))
-        app = apps_by_offer_id.get(record_key)
-        if app is None:
-            boundary_delta = ((state.finalized_host_ms - record.host_ms)
-                              if state.finalized_host_ms is not None else float("inf"))
-            if source_terminal_censored and record is offers[-1] and 0.0 <= boundary_delta <= 1000.0:
-                censored_offer_ids.add(record_key)
-                continue
-            invalidate(record, "missing_source_app")
-            continue
-        if _bool_field(app, "accepted") == 1:
-            key = _event_key(record)
-            if key in accepted:
-                invalidate(record, "duplicate_accepted_offer")
-                continue
-            accepted[key] = record
-    final_groups: dict[tuple[str, str, str, int], list[ObservationRecord]] = {}
-    for record in finals:
-        final_groups.setdefault(_event_key(record, record.fields["origin_session"]), []).append(record)
-    delivered: dict[tuple[str, str, str, int], ObservationRecord] = {}
-    expected_origin: int | None = None
-    expected_destination: int | None = None
-    if final_groups:
-        profile = _profile(state.metadata)
-        boards = _boards_by_role(state.metadata)
-        expected_origin = _logical_id(boards["A"], profile)
-        expected_destination = _logical_id(boards["C"], profile)
-    for key, candidates in final_groups.items():
-        if len(candidates) != 1:
-            for record in candidates:
-                invalidate(record, "duplicate_final")
-            continue
-        final = candidates[0]
+        finals_by_key[key] = final
         if _bool_field(final, "identity_valid") != 1:
-            invalidate(final, "invalid_final_identity")
-            continue
+            issue(final, "invalid_final_identity")
         if _uint(final.fields["app_kind"], "app_kind", final.source, final.line_number) != 127 or \
                 _uint(final.fields["app_len"], "app_len", final.source, final.line_number) != 7:
-            invalidate(final, "invalid_final_app_contract")
-            continue
-        assert expected_origin is not None and expected_destination is not None
-        if final.fields["origin"] != f"0x{expected_origin:04x}" or \
-                final.fields["destination"] != f"0x{expected_destination:04x}":
-            invalidate(final, "invalid_final_origin_destination")
-            continue
-        if key not in accepted:
-            invalidate(final, "unmatched_final")
-            continue
-        delivered[key] = final
+            issue(final, "invalid_final_app_contract")
+        if final.fields["logical_origin"] != expected_origin or \
+                final.fields["logical_destination"] != expected_destination:
+            issue(final, "invalid_final_logical_endpoints")
+        if key not in accepted_by_key:
+            issue(final, "unmatched_final_identity")
+    for key in duplicate_final_keys:
+        finals_by_key.pop(key, None)
+
     packets: list[dict[str, Any]] = []
-    for offer in offers:
-        if (offer.session, _record_id(offer.fields, offer.source, offer.line_number)) in censored_offer_ids:
-            continue
-        key = _event_key(offer)
-        final = delivered.get(key)
-        app = apps_by_offer_id.get((offer.session, _record_id(offer.fields, offer.source, offer.line_number)))
-        offered_host = state.host_from_event(offer, fits)
-        final_host = state.host_from_event(final, fits) if final else None
-        latency = final_host - offered_host if final_host is not None and offered_host is not None else None
+    for key, accepted in cutoff_by_key.items():
+        final = finals_by_key.get(key)
+        offered_host = state.host_from_event(accepted, fits)
+        delivered_host = state.host_from_event(final, fits) if final is not None else None
+        latency = delivered_host - offered_host if offered_host is not None and delivered_host is not None else None
         if latency is not None and latency < 0:
-            raise _error(final.source, final.line_number, "has negative fitted latency")
+            issue(final, "negative_fitted_latency")
+            latency = None
         packets.append({
-            "role": offer.role, "session": offer.session, "workload": offer.fields["workload"],
-            "burst": offer.fields["burst"], "offer": _uint(offer.fields["offer"], "offer", offer.source, offer.line_number),
-            "payload_id": key[3], "offered_host_ms": round(offered_host, 6) if offered_host is not None else None,
-            "attempted": _bool_field(offer, "attempted"), "accepted": _bool_field(app, "accepted") if app else 0,
-            "status": app.fields["status"] if app else "MISSING_APP", "delivered": int(final is not None),
-            "delivered_host_ms": round(final_host, 6) if final_host is not None else None,
+            "row_semantics": "accepted_event", "role": source_role, "session": accepted.session,
+            "origin_session": accepted.session, "accepted_event_record_id": _record_id_value(accepted),
+            "offer": None, "workload": accepted.fields["workload"],
+            "burst": _uint(accepted.fields["burst"], "burst", accepted.source, accepted.line_number),
+            "sequence": _uint(accepted.fields["sequence"], "sequence", accepted.source,
+                              accepted.line_number),
+            "payload_id": _uint(accepted.fields["payload_id"], "payload_id", accepted.source,
+                                accepted.line_number),
+            "identity": accepted.fields["identity"],
+            "offered_at_ms": _uint(accepted.fields["offered_at_ms"], "offered_at_ms", accepted.source,
+                                    accepted.line_number),
+            "accepted_at_ms": _uint(accepted.fields["accepted_at_ms"], "accepted_at_ms", accepted.source,
+                                     accepted.line_number),
+            "offered_host_ms": round(offered_host, 6) if offered_host is not None else None,
+            "attempted": 1, "accepted": 1,
+            "status": _uint(accepted.fields["submit_status"], "submit_status", accepted.source,
+                            accepted.line_number),
+            "delivered": int(final is not None),
+            "delivered_at_ms": _uint(final.fields["delivered_at_ms"], "delivered_at_ms", final.source,
+                                      final.line_number) if final is not None else None,
+            "delivered_host_ms": round(delivered_host, 6) if delivered_host is not None else None,
             "latency_ms": round(latency, 6) if latency is not None else None,
-            "app_bytes": _uint(final.fields["app_len"], "app_len", final.source, final.line_number) if final else 0,
+            "app_bytes": 7 if final is not None else 0,
         })
-    for key, candidates in final_groups.items():
-        if key not in accepted:
-            final = candidates[0]
-            packets.append({"role": source_role, "session": key[0], "workload": key[1], "burst": key[2],
-                            "offer": None, "payload_id": key[3], "offered_host_ms": None, "attempted": None,
-                            "accepted": None, "status": "UNMATCHED_FINAL", "delivered": 0,
-                            "delivered_host_ms": round(state.host_from_event(final, fits), 6)
-                            if state.host_from_event(final, fits) is not None else None,
-                            "latency_ms": None, "app_bytes": 0})
-    packets.sort(key=lambda item: (item["workload"], item["burst"], item["payload_id"],
-                                   item["offer"] is None, item["offer"] or -1))
+    packets.sort(key=lambda item: (str(item["workload"]), int(item["burst"]), int(item["sequence"])))
     heartbeat: dict[int, list[dict[str, Any]]] = {}
     bursts: dict[str, list[dict[str, Any]]] = {}
     for packet in packets:
@@ -1183,43 +1409,30 @@ def _app_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origi
             continue
         if packet["workload"] == "heartbeat":
             heartbeat.setdefault(_window_start(float(packet["offered_host_ms"]), origin_ms), []).append(packet)
-        elif packet["workload"] == "throughput":
+        else:
             bursts.setdefault(str(packet["burst"]), []).append(packet)
-    windows = [_metric_row("heartbeat", str(start), start, rows,
-                           origin_ms + start * 1000.0, HEARTBEAT_WINDOW_SECONDS, state.invalid_intervals + issues)
+    windows = [_accepted_metric_row("heartbeat", str(start), start, rows,
+                                    origin_ms + start * 1000.0, HEARTBEAT_WINDOW_SECONDS, issues)
                for start, rows in sorted(heartbeat.items())]
-    burst_rows: list[dict[str, Any]] = []
+    burst_rows = []
     for burst, rows in sorted(bursts.items()):
         starts = [float(item["offered_host_ms"]) for item in rows]
-        burst_rows.append(_metric_row("throughput", burst, _window_start(min(starts), origin_ms), rows,
-                                      min(starts), THROUGHPUT_BURST_SECONDS, state.invalid_intervals + issues))
-    return packets, windows, burst_rows, issues
-
-
-def _metric_row(workload: str, label: str, window: int, rows: list[dict[str, Any]], period_start_ms: float,
-                duration: float, invalid: list[dict[str, Any]]) -> dict[str, Any]:
-    offered = len(rows)
-    attempted = sum(int(item["attempted"] or 0) for item in rows)
-    accepted = sum(int(item["accepted"] or 0) for item in rows)
-    delivered = sum(int(item["delivered"] or 0) for item in rows)
-    app_bytes = sum(int(item["app_bytes"] or 0) for item in rows)
-    latencies = [float(item["latency_ms"]) for item in rows if item["latency_ms"] is not None]
-    starts = [float(item["offered_host_ms"]) for item in rows if item["offered_host_ms"] is not None]
-    ends = [float(item["delivered_host_ms"]) for item in rows if item["delivered_host_ms"] is not None]
-    not_ready = sum(1 for item in rows if item["status"].upper() in {"NOT_READY", "4294967295"})
-    rejected = sum(1 for item in rows if item["accepted"] == 0)
-    invalid_roles = _invalid_roles(period_start_ms, period_start_ms + duration * 1000.0, invalid)
-    return {
-        "workload": workload, "label": label, "window_start_s": window, "duration_seconds": round(duration, 6),
-        "offered": offered, "attempted": attempted, "accepted": accepted, "delivered": delivered,
-        "accepted_pdr": round(delivered / accepted, 6) if accepted else None,
-        "offered_pdr": round(delivered / offered, 6) if offered else None,
-        "packet_goodput_packets_per_second": round(delivered / duration, 6),
-        "app_goodput_bytes_per_second": round(app_bytes / duration, 6),
-        "first_delivery_ms": round(min(ends) - min(starts), 6) if starts and ends else None,
-        "not_ready": not_ready, "rejected": rejected, "invalid": bool(invalid_roles), "invalid_roles": invalid_roles,
-        **_latency_summary(latencies),
+        burst_rows.append(_accepted_metric_row("throughput", burst,
+                                               _window_start(min(starts), origin_ms), rows,
+                                               min(starts), THROUGHPUT_BURST_SECONDS, issues))
+    totals = _checkpoint_totals(source_record, packets)
+    selected_checkpoints = {
+        "source_cutoff": {"role": source_role, "session": source_session,
+                          "record_id": cutoff["record_id"],
+                          "host_ms": round(cutoff["frontier_host_ms"], 6)},
+        "destination_frontier": {"role": destination_role, "session": destination_session,
+                                  "record_id": destination["record_id"],
+                                  "host_ms": round(destination["frontier_host_ms"], 6)},
+        "source_support": {"role": source_role, "session": support_session,
+                            "record_id": support["record_id"],
+                            "host_ms": round(support["frontier_host_ms"], 6)},
     }
+    return packets, windows, burst_rows, totals, issues, sorted(set(incomplete)), selected_checkpoints
 
 
 def _subject_role(value: str, boards: dict[str, dict[str, Any]]) -> str | None:
@@ -1229,13 +1442,25 @@ def _subject_role(value: str, boards: dict[str, dict[str, Any]]) -> str | None:
     return None
 
 
-def _gtt_metrics(state: ObservationState, origin_ms: float, invalid: list[dict[str, Any]],
-                 gtt_pairs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def _gtt_metrics(state: ObservationState, fits: dict[str, dict[str, Any]], origin_ms: float,
+                 invalid: list[dict[str, Any]], gtt_pairs: list[dict[str, Any]]) -> tuple[
+                     list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     profile = _profile(state.metadata)
     if profile == "AODV_ONLY":
         return [], [{"window_start_s": 0, "status": "N/A_AODV_GTT",
                      "invalid": False, "invalid_roles": []}], []
-    snapshots = [pair for pair in gtt_pairs if pair["status"] == "OK"]
+    snapshots = []
+    for pair in gtt_pairs:
+        if pair["status"] != "OK":
+            continue
+        query_host_ms = state.host_from_event(pair["begin"], fits)
+        emitted_host_ms = state.host_from_firmware(pair["end"], fits)
+        if query_host_ms is None or emitted_host_ms is None:
+            continue
+        emission_lag_ms = emitted_host_ms - query_host_ms
+        if emission_lag_ms < 0 or emission_lag_ms > TELEMETRY_CADENCE_MS:
+            continue
+        snapshots.append((pair, query_host_ms, emitted_host_ms, emission_lag_ms))
     if not snapshots:
         return [], [], []
     boards = _boards_by_role(state.metadata)
@@ -1243,7 +1468,8 @@ def _gtt_metrics(state: ObservationState, origin_ms: float, invalid: list[dict[s
     fleet_rows: list[dict[str, Any]] = []
     by_window: dict[int, list[dict[str, Any]]] = {}
     previous: dict[str, set[str]] = {}
-    for snapshot in sorted(snapshots, key=lambda item: (item["end"].host_ms, item["role"])):
+    for snapshot, query_host_ms, emitted_host_ms, emission_lag_ms in sorted(
+            snapshots, key=lambda item: (item[1], item[0]["role"])):
         role = snapshot["role"]
         truth = set(ROLES) - {role}
         known: set[str] = set()
@@ -1269,17 +1495,19 @@ def _gtt_metrics(state: ObservationState, origin_ms: float, invalid: list[dict[s
                              "has last_evidence_ms after snapshot query_at_ms")
             age = str(age_value)
             ages.append(age_value)
-            entries_rows.append({"window_start_s": _window_start(snapshot["end"].host_ms, origin_ms),
+            entries_rows.append({"window_start_s": _window_start(query_host_ms, origin_ms),
                                    "role": role, "session": snapshot["session"], "subject": raw_subject,
                                    "subject_role": subject or "",
                                    "fresh": int(not stale), "evidence_age_ms": age,
-                                   "snapshot_host_ms": round(snapshot["end"].host_ms, 6)})
+                                    "snapshot_host_ms": round(query_host_ms, 6),
+                                    "snapshot_emitted_host_ms": round(emitted_host_ms, 6),
+                                    "snapshot_emission_lag_ms": round(emission_lag_ms, 6)})
         overlap = known & truth
         union = known | truth
         churn = len(known ^ previous.get(role, set())) if role in previous else 0
         previous[role] = known
         invalid_roles = _invalid_roles(snapshot["begin"].host_ms, snapshot["end"].host_ms, invalid)
-        row = {"window_start_s": _window_start(snapshot["end"].host_ms, origin_ms), "role": role,
+        row = {"window_start_s": _window_start(query_host_ms, origin_ms), "role": role,
                "precision": round(len(overlap) / len(known), 6) if known else None,
                "recall": round(len(overlap) / len(truth), 6) if truth else None,
                "jaccard": round(len(overlap) / len(union), 6) if union else 1.0,
@@ -1287,9 +1515,12 @@ def _gtt_metrics(state: ObservationState, origin_ms: float, invalid: list[dict[s
                "stale_ratio": round(len(known - fresh) / len(known), 6) if known else None,
                "evidence_age_mean_ms": round(sum(ages) / len(ages), 6) if ages else None,
                 "churn": churn, "known": len(known), "truth": len(truth), "known_set": sorted(known),
-                "invalid": bool(invalid_roles), "invalid_roles": invalid_roles,
-                "snapshot_start_host_ms": round(snapshot["begin"].host_ms, 6),
-                "snapshot_end_host_ms": round(snapshot["end"].host_ms, 6)}
+                 "invalid": bool(invalid_roles), "invalid_roles": invalid_roles,
+                 "snapshot_start_host_ms": round(snapshot["begin"].host_ms, 6),
+                 "snapshot_end_host_ms": round(snapshot["end"].host_ms, 6),
+                 "snapshot_query_host_ms": round(query_host_ms, 6),
+                 "snapshot_emitted_host_ms": round(emitted_host_ms, 6),
+                 "snapshot_emission_lag_ms": round(emission_lag_ms, 6)}
         by_window.setdefault(row["window_start_s"], []).append(row)
     for window, rows in sorted(by_window.items()):
         # GTT truth excludes the reporting node itself.  Restore that known
@@ -1369,8 +1600,7 @@ def _health_metrics(state: ObservationState, origin_ms: float) -> list[dict[str,
     rows: list[dict[str, Any]] = []
     events = state.health_events if state.record_store is None else (
         {"role": record.role, "session": record.session, "host_ms": record.host_ms,
-         "record_seq": _uint64(record.fields["record_seq"], "record_seq", record.source,
-                               record.line_number), **_counter_fields(record)}
+         "record_id": _record_id_value(record), **_counter_fields(record)}
         for record in state.records if record.kind == "health")
     invalid_intervals = state.invalid_intervals
     for event in events:
@@ -1391,78 +1621,77 @@ def _cadence_reason(role: str, kind: str, boot: ObservationRecord,
     return None
 
 
-def _incomplete_evidence_reasons(state: ObservationState, fits: dict[str, dict[str, Any]],
-                                 packets: list[dict[str, Any]],
-                                 gtt_pairs: list[dict[str, Any]]) -> list[str]:
-    if state.finalized_host_ms is None:
-        return ["capture_not_finalized"]
-    reasons: list[str] = []
+def _domain(status_invalid: Iterable[str], status_incomplete: Iterable[str]) -> dict[str, Any]:
+    invalid = sorted(set(status_invalid))
+    incomplete = sorted(set(status_incomplete))
+    if invalid:
+        return {"status": "INVALID", "reasons": invalid + incomplete}
+    if incomplete:
+        return {"status": "INCOMPLETE", "reasons": incomplete}
+    return {"status": "VALID", "reasons": []}
+
+
+def _auxiliary_validity(state: ObservationState, fits: dict[str, dict[str, Any]],
+                        gtt_pairs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Report control/GTT quality without widening the application proof domain."""
+    control_incomplete: list[str] = []
+    control_invalid: list[str] = []
+    gtt_incomplete: list[str] = []
+    gtt_invalid: list[str] = []
     end_ms = state.finalized_host_ms
-    profile = _profile(state.metadata)
-    source_role, _ = _metadata_roles(state.metadata)
-    for role in ROLES:
-        session = state.role_state[role].session
-        if session is None:
-            reasons.append(f"missing_boot:{role}")
-            continue
-        session_records = [record for record in state.records
-                           if record.role == role and record.session == session]
-        boots = [record for record in session_records if record.kind == "boot"]
-        if len(boots) != 1:
-            reasons.append(f"missing_boot:{role}")
-            continue
-        boot = boots[0]
-        fit = fits.get(role, {}).get(session)
-        if not fit or not fit.get("valid"):
-            reasons.append(f"invalid_clock_fit:{role}")
-        clock_reason = _cadence_reason(role, "clock", boot,
-                                       [record for record in session_records if record.kind == "clock"],
-                                       end_ms, CLOCK_CADENCE_MS)
-        if clock_reason:
-            reasons.append(clock_reason)
-        for kind in ("control", "health"):
-            reason = _cadence_reason(role, kind, boot,
-                                     [record for record in session_records if record.kind == kind],
+    if end_ms is None:
+        control_incomplete.append("capture_not_finalized")
+        gtt_incomplete.append("capture_not_finalized")
+    else:
+        for role in ROLES:
+            session = state.role_state[role].session
+            if session is None:
+                control_incomplete.append(f"missing_boot:{role}")
+                gtt_incomplete.append(f"missing_boot:{role}")
+                continue
+            records = [record for record in state.records if record.role == role and
+                       record.session == session]
+            boots = [record for record in records if record.kind == "boot"]
+            if len(boots) != 1:
+                control_incomplete.append(f"missing_boot:{role}")
+                gtt_incomplete.append(f"missing_boot:{role}")
+                continue
+            boot = boots[0]
+            for kind in ("control", "health"):
+                reason = _cadence_reason(role, kind, boot,
+                                         [record for record in records if record.kind == kind],
+                                         end_ms, TELEMETRY_CADENCE_MS)
+                if reason:
+                    control_incomplete.append(reason)
+            pairs = [pair for pair in gtt_pairs if pair["role"] == role and pair["session"] == session]
+            reason = _cadence_reason(role, "gtt", boot, [pair["end"] for pair in pairs],
                                      end_ms, TELEMETRY_CADENCE_MS)
             if reason:
-                reasons.append(reason)
-        pairs = [pair for pair in gtt_pairs if pair["role"] == role and pair["session"] == session]
-        gtt_samples = [pair["end"] for pair in pairs]
-        reason = _cadence_reason(role, "gtt", boot, gtt_samples, end_ms, TELEMETRY_CADENCE_MS)
-        if reason:
-            reasons.append(reason)
-        if profile == "FULL_TAVRN":
-            if not any(pair["status"] == "OK" for pair in pairs):
-                reasons.append(f"missing_full_gtt_snapshot:{role}")
-        elif not any(pair["status"] == "NOT_IMPLEMENTED" for pair in pairs):
-            reasons.append(f"missing_aodv_gtt_pair:{role}")
-    source_session = state.role_state[source_role].session
-    source_offers = [record for record in state.records
-                     if record.kind == "offer" and record.role == source_role and
-                     record.session == source_session]
-    heartbeat_offers = [record for record in source_offers
-                        if record.fields["workload"] == "heartbeat"]
-    heartbeat_sequences = [
-        (_uint(record.fields["burst"], "burst", record.source, record.line_number) << 10) |
-        _uint(record.fields["sequence"], "sequence", record.source, record.line_number)
-        for record in heartbeat_offers]
-    if heartbeat_sequences[:HEARTBEAT_MINIMUM_OFFERS] != list(range(HEARTBEAT_MINIMUM_OFFERS)):
-        reasons.append(f"incomplete_contiguous_heartbeat_offers:{source_role}")
-    throughput_zero_sequences = {
-        _uint(record.fields["sequence"], "sequence", record.source, record.line_number)
-        for record in source_offers
-        if record.fields["workload"] == "throughput" and
-        _uint(record.fields["burst"], "burst", record.source, record.line_number) == 0
+                gtt_incomplete.append(reason)
+            for pair in pairs:
+                query_host_ms = state.host_from_event(pair["begin"], fits)
+                emitted_host_ms = state.host_from_firmware(pair["end"], fits)
+                if query_host_ms is None or emitted_host_ms is None:
+                    gtt_incomplete.append(f"invalid_gtt_clock_fit:{role}")
+                elif emitted_host_ms < query_host_ms or \
+                        emitted_host_ms - query_host_ms > TELEMETRY_CADENCE_MS:
+                    gtt_incomplete.append(f"gtt_snapshot_emission_lag:{role}")
+            if _profile(state.metadata) == "FULL_TAVRN":
+                if any(pair["status"] == "INVALID" for pair in pairs):
+                    gtt_invalid.append(f"invalid_gtt_snapshot:{role}")
+                if not any(pair["status"] == "OK" for pair in pairs):
+                    gtt_incomplete.append(f"missing_full_gtt_snapshot:{role}")
+            elif not any(pair["status"] == "NOT_IMPLEMENTED" for pair in pairs):
+                gtt_incomplete.append(f"missing_aodv_gtt_pair:{role}")
+    for interval in state.invalid_intervals:
+        reason = str(interval["reason"])
+        role = str(interval["role"])
+        control_invalid.append(f"{reason}:{role}")
+        gtt_invalid.append(f"{reason}:{role}")
+    return {
+        "control": _domain(control_invalid, control_incomplete),
+        "gtt": _domain(gtt_invalid, gtt_incomplete),
     }
-    if throughput_zero_sequences != set(range(THROUGHPUT_BURST_SLOT_COUNT)):
-        reasons.append(f"incomplete_throughput_burst_0:{source_role}")
-    source_packets = [packet for packet in packets if packet["role"] == source_role and
-                      packet["offer"] is not None and packet["session"] == source_session]
-    if not source_packets:
-        reasons.append(f"missing_source_offer:{source_role}")
-    if not any(packet["status"] != "MISSING_APP" for packet in source_packets):
-        reasons.append(f"missing_source_app:{source_role}")
-    return sorted(set(reasons))
 
 
 def snapshot(state: ObservationState) -> dict[str, Any]:
@@ -1474,49 +1703,62 @@ def snapshot(state: ObservationState) -> dict[str, Any]:
         pass
     origin = min((record.host_ms for record in state.records), default=0.0)
     fits = state.clock_fits()
-    packets, heartbeat, bursts, correlation_invalid = _app_metrics(state, fits, origin)
+    packets, heartbeat, bursts, application_totals, correlation_invalid, application_incomplete, \
+        selected_checkpoints = _app_metrics(state, fits, origin)
+    application_invalid = [str(item["reason"]) for item in correlation_invalid]
+    application = _domain(application_invalid, application_incomplete)
     all_invalid_intervals = state.invalid_intervals + correlation_invalid
     gtt_pairs = state.completed_gtt_pairs()
-    gtt_entries, gtt_fleet, gtt_nodes = _gtt_metrics(state, origin, all_invalid_intervals, gtt_pairs)
+    gtt_entries, gtt_fleet, gtt_nodes = _gtt_metrics(
+        state, fits, origin, all_invalid_intervals, gtt_pairs)
     control = _control_metrics(state, origin, all_invalid_intervals)
     app_cumulative = _app_cumulative(state, origin)
     health = _health_metrics(state, origin)
+    auxiliary = _auxiliary_validity(state, fits, gtt_pairs)
+    validity = {"application": application, **auxiliary}
     telemetry_corrupt = bool(all_invalid_intervals)
-    incomplete_reasons = _incomplete_evidence_reasons(state, fits, packets, gtt_pairs)
-    if telemetry_corrupt and incomplete_reasons:
-        status = "INVALID_TELEMETRY_INCOMPLETE_EVIDENCE"
-    elif telemetry_corrupt:
-        status = "INVALID_TELEMETRY"
-    elif incomplete_reasons:
-        status = "INCOMPLETE_EVIDENCE"
-    else:
-        status = "VALID"
+    incomplete_reasons = sorted({reason for domain in validity.values()
+                                 if domain["status"] == "INCOMPLETE"
+                                 for reason in domain["reasons"]})
     return {
-        "schema": SCHEMA, "status": status, "record_count": len(state.records),
+        "schema": SCHEMA, "status": application["status"], "record_count": len(state.records),
         "schemas": sorted(state.schemas), "invalid_intervals": sorted(all_invalid_intervals, key=lambda item: (item["role"], item["start_ms"], item["reason"])),
         "clock_fits": fits, "app_packets": packets, "app_windows": heartbeat,
-        "throughput_bursts": bursts, "gtt_entries": gtt_entries, "gtt_fleet": gtt_fleet,
+        "throughput_bursts": bursts, "application_totals": application_totals,
+        "application_total_field_descriptions": {
+            "accepted_pdr": "delivered/accepted", "offered_pdr": "delivered/offered"},
+        "selected_checkpoints": selected_checkpoints, "validity": validity,
+        "gtt_entries": gtt_entries, "gtt_fleet": gtt_fleet,
         "gtt_nodes": gtt_nodes, "control_deltas": control, "app_cumulative": app_cumulative, "telemetry_health": health,
         "telemetry_corruption": telemetry_corrupt, "incomplete_reasons": incomplete_reasons,
-        "evidence_complete": not incomplete_reasons, "finalized_host_ms": state.finalized_host_ms,
-        "proving_status": "INVALID" if telemetry_corrupt else
-        ("INCOMPLETE" if incomplete_reasons else "VALID"),
+        "evidence_complete": application["status"] == "VALID",
+        "finalized_host_ms": state.finalized_host_ms,
+        "proving_status": application["status"],
     }
 
 
 def render_markdown(data: dict[str, Any]) -> str:
     heartbeat = data["app_windows"][-1] if data["app_windows"] else {}
+    totals = data.get("application_totals", {}).get("heartbeat", {})
+    validity = data.get("validity", {})
     lines = ["# TAVRN live observation", "", f"Status: **{data['proving_status']}**", "",
              "| Item | Value |", "| --- | ---: |",
              f"| Parsed records | {data['record_count']} |",
              f"| Invalid telemetry intervals | {len(data['invalid_intervals'])} |",
-             f"| Heartbeat offered/accepted/delivered | {heartbeat.get('offered', 0)}/{heartbeat.get('accepted', 0)}/{heartbeat.get('delivered', 0)} |",
-             f"| Heartbeat accepted/offered PDR | {heartbeat.get('accepted_pdr')}/{heartbeat.get('offered_pdr')} |",
+             f"| Exact heartbeat offered/accepted/delivered | {totals.get('offered')}/{totals.get('accepted')}/{totals.get('delivered')} |",
+             f"| Exact heartbeat delivered/accepted PDR | {totals.get('accepted_pdr')} |",
+             f"| Exact heartbeat delivered/offered PDR | {totals.get('offered_pdr')} |",
+             f"| Latest accepted heartbeat delivered/accepted | {heartbeat.get('delivered', 0)}/{heartbeat.get('accepted', 0)} |",
              f"| Heartbeat p50/p95/p99 latency (ms) | {heartbeat.get('p50_ms')}/{heartbeat.get('p95_ms')}/{heartbeat.get('p99_ms')} |",
              f"| Throughput bursts | {len(data['throughput_bursts'])} |",
              f"| GTT fleet samples | {len(data['gtt_fleet'])} |",
              f"| Control delta rows | {len(data['control_deltas'])} |",
-             "", "Clock fits:", ""]
+             "", "Validity domains:", ""]
+    for name in ("application", "control", "gtt"):
+        domain = validity.get(name, {})
+        reasons = ", ".join(domain.get("reasons", [])) or "none"
+        lines.append(f"- {name}: {domain.get('status', 'N/A')} ({reasons})")
+    lines += ["", "Clock fits:", ""]
     for role in ROLES:
         sessions = data["clock_fits"].get(role, {})
         summary = ", ".join(f"{session}:{fit.get('reason')}" for session, fit in sorted(sessions.items())) or "none"

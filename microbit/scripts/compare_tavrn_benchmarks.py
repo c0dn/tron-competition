@@ -23,22 +23,13 @@ def fmt(value: Any) -> str:
     return str(value)
 
 
-def packet_metrics(data: dict[str, Any], workload: str | None = None) -> dict[str, Any]:
-    rows = [row for row in data.get("app_packets", []) if row.get("offer") is not None]
-    if workload is not None:
-        rows = [row for row in rows if row.get("workload") == workload]
-    offered = len(rows)
-    attempted = sum(int(row.get("attempted") or 0) for row in rows)
-    accepted = sum(int(row.get("accepted") or 0) for row in rows)
-    delivered = sum(int(row.get("delivered") or 0) for row in rows)
-    return {
-        "offered": offered, "attempted": attempted, "accepted": accepted,
-        "delivered": delivered, "offered_pdr": ratio(delivered, offered),
-        "attempted_pdr": ratio(delivered, attempted),
-        "accepted_pdr": ratio(delivered, accepted),
-        "admission_ratio": ratio(accepted, attempted),
-        "statuses": dict(collections.Counter(str(row.get("status")) for row in rows)),
-    }
+def application_totals(data: dict[str, Any], workload: str | None = None) -> dict[str, Any]:
+    """Use observer-v3 checkpoint counters, never accepted-event row count."""
+    key = {None: "combined", "heartbeat": "heartbeat", "throughput": "throughput"}[workload]
+    totals = data.get("application_totals", {}).get(key, {})
+    return {name: totals.get(name) for name in
+            ("offered", "accepted", "rejected", "not_ready", "delivered",
+             "offered_pdr", "accepted_pdr")}
 
 
 def control_totals(path: Path) -> dict[str, int]:
@@ -72,7 +63,10 @@ def summarize(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     invalid = collections.Counter(
         str(row.get("reason")) for row in data.get("invalid_intervals", []))
-    fleet = [row for row in data.get("gtt_fleet", []) if row.get("status") == "OK"]
+    gtt_validity = data.get("validity", {}).get(
+        "gtt", {"status": "INCOMPLETE", "reasons": ["missing_gtt_validity"]})
+    fleet = [row for row in data.get("gtt_fleet", [])
+             if row.get("status") == "OK" and not row.get("invalid")]
     gtt = {
         "windows": len(fleet),
         "converged_windows": sum(int(row.get("converged") or 0) for row in fleet),
@@ -83,7 +77,9 @@ def summarize(path: Path) -> dict[str, Any]:
         "mean_pairwise_agreement": (
             sum(float(row.get("pairwise_agreement") or 0) for row in fleet) / len(fleet)
             if fleet else None),
-        "last": fleet[-1] if fleet else None,
+        "last": fleet[-1] if fleet and gtt_validity.get("status") == "VALID" else None,
+        "validity_status": gtt_validity.get("status"),
+        "validity_reasons": gtt_validity.get("reasons", []),
     }
     return {
         "source": str(path), "profile": data.get("metadata", {}).get("profile"),
@@ -92,9 +88,9 @@ def summarize(path: Path) -> dict[str, Any]:
         "telemetry_corruption": data.get("telemetry_corruption"),
         "incomplete_reasons": data.get("incomplete_reasons", []),
         "invalid_reasons": dict(invalid),
-        "application": packet_metrics(data),
-        "heartbeat": packet_metrics(data, "heartbeat"),
-        "throughput": packet_metrics(data, "throughput"),
+        "application": application_totals(data),
+        "heartbeat": application_totals(data, "heartbeat"),
+        "throughput": application_totals(data, "throughput"),
         "bursts": data.get("throughput_bursts", []),
         "gtt": gtt,
         "control": control_totals(path.parent / "control_deltas.csv"),
@@ -110,10 +106,12 @@ def markdown(left: dict[str, Any], right: dict[str, Any], left_name: str,
         lines += [f"## {section.title()}", "",
                   f"| Metric | {left_name} | {right_name} | {right_name}/{left_name} |",
                   "|---|---:|---:|---:|"]
-        for key in ("offered", "attempted", "accepted", "delivered", "offered_pdr",
-                    "attempted_pdr", "accepted_pdr", "admission_ratio"):
+        for key in ("offered", "accepted", "rejected", "not_ready", "delivered",
+                    "offered_pdr", "accepted_pdr"):
             lv, rv = left[section].get(key), right[section].get(key)
-            lines.append(f"| {key} | {fmt(lv)} | {fmt(rv)} | {fmt(ratio(rv, lv) if lv is not None and rv is not None else None)} |")
+            label = {"accepted_pdr": "delivered/accepted PDR",
+                     "offered_pdr": "delivered/offered PDR"}.get(key, key)
+            lines.append(f"| {label} | {fmt(lv)} | {fmt(rv)} | {fmt(ratio(rv, lv) if lv is not None and rv is not None else None)} |")
         lines.append("")
     lines += ["## Throughput bursts", "",
               f"| Burst | {left_name} delivered/goodput/p50/p95/p99 | {right_name} delivered/goodput/p50/p95/p99 |",
@@ -138,7 +136,9 @@ def markdown(left: dict[str, Any], right: dict[str, Any], left_name: str,
         lv, rv = left["control"].get(key), right["control"].get(key)
         lines.append(f"| {key} | {fmt(lv)} | {fmt(rv)} | {fmt(ratio(rv, lv) if lv is not None and rv is not None else None)} |")
     lines += ["", "## FULL GTT", "",
-              f"- Windows: {fmt(right['gtt']['windows'])}",
+               f"- Validity: {fmt(right['gtt']['validity_status'])}",
+               f"- Validity reasons: {right['gtt']['validity_reasons']}",
+               f"- Windows: {fmt(right['gtt']['windows'])}",
               f"- Converged windows: {fmt(right['gtt']['converged_windows'])}",
               f"- Mean recall: {fmt(right['gtt']['mean_recall'])}",
               f"- Mean precision: {fmt(right['gtt']['mean_precision'])}",
