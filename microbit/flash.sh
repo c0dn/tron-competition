@@ -76,7 +76,7 @@ if [[ -n "$uid" ]]; then
     pyocd_args+=(--uid "$uid")
 fi
 
-configure_build "$build_dir"
+configure_build "$build_dir" "$target"
 cmake --build "$build_dir" --target "$target" --parallel
 
 elf_path="$(firmware_elf "$build_dir" "$target")"

@@ -5467,8 +5467,6 @@ static int test_maint_04_real_owner_contract(void)
             copied.expiry_ms = now_ms + 10000u;
             copied.sweep_count = BLE_MESH_TX_SWEEP_COUNT_ONE;
             copied.budget_class = BLE_MESH_TX_BUDGET_GENERAL;
-            copied.owner_kind = BLE_MESH_TX_OWNER_NONE;
-            copied.owner_domain = BLE_MESH_TX_OWNER_DOMAIN_NONE;
             copied.adv_data[0] = (uint8_t)subject_sid8.value;
             ok &= ble_mesh_scheduler_enqueue_ex(&fixture.scheduler, &copied).status ==
                 BLE_MESH_SCHED_ENQUEUE_OK;
