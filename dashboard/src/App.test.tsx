@@ -4,8 +4,7 @@ import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { Header } from './components/Header';
-import { eventRecord, eventsResponse, healthDevice, healthResponse, jsonResponse, rootStatus } from './test/fixtures';
+import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, layoutReady, rootStatus } from './test/fixtures';
 import { restoreFetch, stubFetch } from './test/runtime';
 
 afterEach(() => {
@@ -14,156 +13,201 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function ui() {
-  return within(document.body);
+function gatewayHealth() {
+  const local = '1842de524add';
+  return healthResponse([healthDevice(0, {
+    root: rootStatus({ local, role: 'leaf' }),
+    gtt: gttSnapshot({ local, entries: [gttEntry({ adva: local }), gttEntry({ index: 1, adva: '0102545678c1', freshness: 'soft_stale', departed: 'unknown' })] }),
+  })]);
 }
 
-function bridgeFetch(page = eventsResponse([eventRecord()]), health = healthResponse()) {
+function bridgeFetch(health = gatewayHealth()) {
   return vi.fn((input: string, init?: RequestInit) => {
-    if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, page));
+    if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse([eventRecord({ observer_rssi_dbm: -72 })])));
     if (input === '/api/health') return Promise.resolve(jsonResponse(200, health));
+    if (input === '/api/layout') {
+      return Promise.resolve(jsonResponse(init?.method === 'PUT' ? 200 : 200, layoutReady()));
+    }
     if (input === '/api/root') {
       const request = JSON.parse(String(init?.body)) as { device: number; active: boolean };
-      return Promise.resolve(jsonResponse(202, {
-        schema: 'mind.command.v1', accepted: true, device: request.device, command: request.active ? 'on' : 'off',
-      }));
+      return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: request.device, command: request.active ? 'on' : 'off' }));
     }
-    if (input === '/api/gtt') {
-      const request = JSON.parse(String(init?.body)) as { device: number };
-      return Promise.resolve(jsonResponse(202, {
-        schema: 'mind.command.v1', accepted: true, device: request.device, command: 'gtt',
-      }));
-    }
+    if (input === '/api/gtt') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 0, command: 'gtt' }));
     throw new Error(`Unexpected request ${input}`);
   });
 }
 
-describe('operations dashboard', () => {
-  it('separates the bridge label and status message in the status region', () => {
-    render(<Header status={{ kind: 'online', message: 'Bridge receiving records' }} />);
-    const status = ui().getByRole('status', { name: 'Bridge: Bridge receiving records' });
-    expect(status.querySelector('strong')?.textContent).toBe('Bridge:');
-    expect(status.querySelector('span')?.textContent).toBe('Bridge receiving records');
-  });
-
-  it('keeps semantic landmarks and human wearable identity while placing topology between root devices and wearable state', async () => {
-    const health = healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]);
-    stubFetch(bridgeFetch(undefined, health));
+describe('Gateway floorplan dashboard', () => {
+  it('renders one Gateway, a focal floorplan, staged GTT nodes, and no visible ROOT vocabulary', async () => {
+    stubFetch(bridgeFetch());
     render(<App pollIntervalMs={60_000} />);
-
-    await ui().findByRole('switch', { name: 'Turn root on for Node 1' });
-    expect(ui().getByRole('banner')).not.toBeNull();
-    expect(ui().getByRole('main')).not.toBeNull();
-    expect(ui().getByRole('heading', { name: 'Root devices' })).not.toBeNull();
-    expect(ui().getByRole('heading', { name: 'Topology' })).not.toBeNull();
-    expect(ui().getByRole('heading', { name: 'Wearable state' })).not.toBeNull();
-    expect(ui().getByRole('heading', { name: 'Event feed' })).not.toBeNull();
-
-    const headings = [...document.querySelectorAll('.primary-column h2')].map((heading) => heading.textContent);
-    expect(headings).toEqual(['Root devices', 'Topology', 'Wearable state']);
-    const article = ui().getByRole('heading', { name: /Wearable 7 — Confirmed fall/ }).closest('article');
-    expect(article?.textContent?.indexOf('Wearable 7')).toBeLessThan(article?.textContent?.indexOf('Packet ID 00002a') ?? Infinity);
+    const ui = within(document.body);
+    await ui.findByRole('heading', { name: 'Floorplan' });
+    expect(ui.getByRole('switch', { name: 'Turn Gateway on' })).not.toBeNull();
+    expect(ui.getByText('Unpositioned nodes')).not.toBeNull();
+    expect(ui.getAllByText('0102545678c1')).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/root/i);
   });
 
-  it('uses the root switch to send only the opposite state and keeps it pending after HTTP 202', async () => {
-    const health = healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]);
-    const fetchMock = bridgeFetch(eventsResponse(), health);
+  it('sends the only Gateway toggle to device zero and retains RSSI evidence', async () => {
+    const fetchMock = bridgeFetch();
     stubFetch(fetchMock);
     const user = userEvent.setup();
     render(<App pollIntervalMs={60_000} />);
-
-    const rootSwitch = await ui().findByRole('switch', { name: 'Turn root on for Node 1' });
-    expect(rootSwitch.getAttribute('aria-checked')).toBe('false');
-    await user.click(rootSwitch);
+    const ui = within(document.body);
+    const toggle = await ui.findByRole('switch', { name: 'Turn Gateway on' });
+    await user.click(toggle);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/root', expect.objectContaining({ body: '{"device":0,"active":true}' })));
-    await waitFor(() => expect(ui().getByRole('status', { name: 'Root command status' }).textContent).toContain('accepted serial write'));
-    expect(rootSwitch).toHaveProperty('disabled', true);
-    await user.click(rootSwitch);
-    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/root')).toHaveLength(1);
-    expect(ui().getByText(/Requested ROOT ON; awaiting bridge confirmation/i)).not.toBeNull();
+    expect(ui.getByText(/-72 dBm/)).not.toBeNull();
   });
 
-  it('recovers a root switch after a mismatched accepted echo', async () => {
-    const health = healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]);
-    const fetchMock = vi.fn((input: string) => {
-      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse()));
-      if (input === '/api/health') return Promise.resolve(jsonResponse(200, health));
-      if (input === '/api/gtt') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 0, command: 'gtt' }));
-      if (input === '/api/root') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 1, command: 'on' }));
+  it('keeps stale health visible but prevents Gateway, GTT, and roster-placement authority', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_000));
+    const fetchMock = bridgeFetch();
+    stubFetch(fetchMock);
+    render(<App pollIntervalMs={60_000} />);
+    const ui = within(document.body);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const toggle = ui.getByRole('switch', { name: 'Turn Gateway on' });
+    expect(ui.getAllByRole('button', { name: 'Place at center' }).every((button) => !button.hasAttribute('disabled'))).toBe(true);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(ui.getByRole('status', { name: 'Bridge: Bridge data is stale' })).not.toBeNull();
+    expect(toggle).toHaveProperty('disabled', true);
+    expect(ui.queryByRole('button', { name: 'Place at center' })).toBeNull();
+    expect(ui.queryByRole('button', { name: /GTT/i })).toBeNull();
+    const gttCallsAtStale = fetchMock.mock.calls.filter(([input]) => input === '/api/gtt').length;
+    fireEvent.click(toggle);
+    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/root')).toHaveLength(0);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/gtt')).toHaveLength(gttCallsAtStale);
+  });
+
+  it('fails closed when lower-cursor health arrives before the event stream reports a bridge restart', async () => {
+    let eventRequests = 0;
+    let healthRequests = 0;
+    const local = '1842de524add';
+    const healthAt = (cursor: number) => ({
+      ...healthResponse([healthDevice(0, {
+        root: rootStatus({ cursor, local, role: 'leaf' }),
+        gtt: gttSnapshot({ generation: cursor, local, entries: [gttEntry({ adva: local })] }),
+      })]),
+      current_cursor: cursor,
+    });
+    const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+      if (input.startsWith('/api/events')) {
+        eventRequests += 1;
+        if (eventRequests === 1) {
+          return Promise.resolve(jsonResponse(200, eventsResponse(
+            Array.from({ length: 10 }, (_, index) => eventRecord({ cursor: index + 1 })),
+          )));
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        });
+      }
+      if (input === '/api/health') {
+        healthRequests += 1;
+        return Promise.resolve(jsonResponse(200, healthAt(healthRequests === 1 ? 10 : 1)));
+      }
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
       throw new Error(`Unexpected request ${input}`);
     });
     stubFetch(fetchMock);
-    const user = userEvent.setup();
-    render(<App pollIntervalMs={60_000} />);
-
-    const rootSwitch = await ui().findByRole('switch', { name: 'Turn root on for Node 1' });
-    await user.click(rootSwitch);
-    await waitFor(() => expect(ui().getByRole('status', { name: 'Root command status' }).textContent).toContain('did not echo'));
-    expect(rootSwitch).toHaveProperty('disabled', false);
+    render(<App pollIntervalMs={1} />);
+    const ui = within(document.body);
+    await ui.findByRole('switch', { name: 'Turn Gateway on' });
+    await waitFor(() => expect(healthRequests).toBe(2));
+    await waitFor(() => expect(ui.getByRole('checkbox', { name: 'Gateway status unknown' })).toHaveProperty('disabled', true));
+    expect(ui.queryByRole('button', { name: 'Place at center' })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/root')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/gtt')).toHaveLength(0);
   });
 
-  it('keeps bounded HTTP and authoritative-confirmation timeouts separate and recoverable', async () => {
+  it('keeps responsive, touch-sized, and reduced-motion floorplan rules in the stylesheet', async () => {
+    const styles = await readFile('src/styles.css', 'utf8');
+    expect(styles).toContain('.floorplan-content');
+    expect(styles).toContain('.floorplan-node');
+    expect(styles).toContain('width: 44px; height: 44px');
+    expect(styles).toContain('@media (max-width: 900px)');
+    expect(styles).toContain('@media (max-width: 620px)');
+    expect(styles).toContain('.node-table caption { display: block; width: 100%; }');
+    expect(styles).toContain('prefers-reduced-motion: reduce');
+  });
+
+  it('recovers the Gateway control after a mismatched accepted command echo without exposing ROOT wording', async () => {
+    const fetchMock = vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse()));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, gatewayHealth()));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      if (input === '/api/root') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 1, command: 'on' }));
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    render(<App pollIntervalMs={60_000} />);
+    const ui = within(document.body);
+    const toggle = await ui.findByRole('switch', { name: 'Turn Gateway on' });
+    fireEvent.click(toggle);
+    await ui.findByText('Gateway command could not be completed. Retry Gateway.');
+    expect(toggle).toHaveProperty('disabled', false);
+    expect(document.body.textContent).not.toMatch(/root command/i);
+  });
+
+  it('keeps root HTTP and confirmation waits bounded and retryable', async () => {
     vi.useFakeTimers();
-    const health = healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]);
     const hungRootFetch = vi.fn((input: string, init?: RequestInit) => {
       if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse()));
-      if (input === '/api/health') return Promise.resolve(jsonResponse(200, health));
-      if (input === '/api/gtt') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 0, command: 'gtt' }));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, gatewayHealth()));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
       if (input === '/api/root') {
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
         });
       }
-      throw new Error(`Unexpected request ${input}`);
+      throw new Error(`Unexpected ${input}`);
     });
     stubFetch(hungRootFetch);
     render(<App pollIntervalMs={60_000} rootRequestTimeoutMs={5} rootConfirmationTimeoutMs={50} />);
-    const ui = within(document.body);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    const rootSwitch = ui.getByRole('switch', { name: 'Turn root on for Node 1' });
-    fireEvent.click(rootSwitch);
+    const ui = within(document.body);
+    fireEvent.click(ui.getByRole('switch', { name: 'Turn Gateway on' }));
     await act(async () => { await vi.advanceTimersByTimeAsync(5); });
-    expect(ui.getByRole('status', { name: 'Root command status' }).textContent).toContain('Request timed out; retry this device.');
-    expect(rootSwitch).toHaveProperty('disabled', false);
+    expect(ui.getByRole('status', { name: 'Gateway command status' }).textContent).toContain('Request timed out; retry Gateway.');
+    expect(ui.getByRole('switch', { name: 'Turn Gateway on' })).toHaveProperty('disabled', false);
 
     cleanup();
-    const acceptedRootFetch = bridgeFetch(eventsResponse(), health);
-    stubFetch(acceptedRootFetch);
+    stubFetch(bridgeFetch());
     render(<App pollIntervalMs={60_000} rootRequestTimeoutMs={50} rootConfirmationTimeoutMs={5} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    const confirmationSwitch = within(document.body).getByRole('switch', { name: 'Turn root on for Node 1' });
-    fireEvent.click(confirmationSwitch);
+    fireEvent.click(within(document.body).getByRole('switch', { name: 'Turn Gateway on' }));
     await act(async () => { await vi.advanceTimersByTimeAsync(5); });
-    expect(within(document.body).getByRole('status', { name: 'Root command status' }).textContent).toContain('did not publish the requested ROOT ON state in time');
-    expect(confirmationSwitch).toHaveProperty('disabled', false);
+    expect(within(document.body).getByRole('status', { name: 'Gateway command status' }).textContent).toContain('did not confirm the requested ON state in time');
+    expect(within(document.body).getByRole('switch', { name: 'Turn Gateway on' })).toHaveProperty('disabled', false);
   });
 
-  it('shows gap, empty, and recoverable bridge error states without dropping landmarks', async () => {
-    stubFetch(bridgeFetch(eventsResponse([eventRecord({ cursor: 2 })], true), healthResponse([])));
+  it('retains the gap warning and sanitizes bridge errors at Gateway and event presentation boundaries', async () => {
+    stubFetch(bridgeFetch(healthResponse([])));
+    const gapFetch = vi.fn((input: string, init?: RequestInit) => {
+      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse([eventRecord({ cursor: 2 })], true)));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}:${init?.method ?? 'GET'}`);
+    });
+    stubFetch(gapFetch);
     render(<App pollIntervalMs={60_000} />);
-    await ui().findByText(/Event history gap detected/i);
-    expect(ui().getByText(/No configured serial devices/i)).not.toBeNull();
-    expect(ui().getByText(/No connected physical device is eligible/i)).not.toBeNull();
+    await within(document.body).findByText(/Event history gap detected/i);
+    cleanup();
 
-    const errorFetch = vi.fn((input: string) => Promise.resolve(jsonResponse(503, {
-      schema: 'mind.error.v1', accepted: false, error: input.includes('health') ? 'disconnected' : 'write_failed',
-    })));
+    const errorFetch = vi.fn((input: string) => {
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      return Promise.reject(new Error('ROOT STATUS transport failure'));
+    });
     stubFetch(errorFetch);
     render(<App pollIntervalMs={60_000} />);
-    await ui().findAllByRole('alert');
-    expect(ui().getByText(/Bridge offline — retrying/i)).not.toBeNull();
-  });
-
-  it('keeps compact responsive grids, touch targets, and reduced-motion support in the stylesheet', async () => {
-    const styles = await readFile('src/styles.css', 'utf8');
-    expect(styles).toContain('grid-template-columns: minmax(0, 2fr) minmax(21rem, 1fr)');
-    expect(styles).toContain('.compact-card');
-    expect(styles).toContain('border-left: 4px solid');
-    expect(styles).toContain('@media (max-width: 900px)');
-    expect(styles).toContain('@media (max-width: 620px)');
-    expect(styles).toContain('.topology-grid, .wearable-grid { grid-template-columns: 1fr; }');
-    expect(styles).toContain('.device-table { min-width: 0; display: block; }');
-    expect(styles).toContain('min-height: 44px');
-    expect(styles).toContain('prefers-reduced-motion: reduce');
+    const ui = within(document.body);
+    await ui.findByText(/Bridge offline — retrying/i);
+    expect(ui.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).not.toMatch(/ROOT STATUS/i);
   });
 });

@@ -1,5 +1,5 @@
-import type { CommandRecord, HealthDevice, RootRecord } from '../lib/api';
-import { authoritativeRootFor, nodeIdentity, physicalDevices } from '../state/devices';
+import type { HealthDevice, RootRecord } from '../lib/api';
+import { authoritativeRootFor, gatewayDevice } from '../state/devices';
 import type { PendingRootRequest } from '../state/store';
 
 interface RootControlPanelProps {
@@ -8,15 +8,18 @@ interface RootControlPanelProps {
   currentEpoch: number;
   healthCurrentCursor: number | null;
   rootRecords: Record<number, RootRecord>;
-  commandRecords: Record<number, CommandRecord>;
   pendingRoot: Record<number, PendingRootRequest | undefined>;
+  rootErrors?: Record<number, string | undefined>;
   announcement: string;
   healthError?: string;
+  healthAuthoritative?: boolean;
   onSetRoot: (device: number, active: boolean) => void;
 }
 
-function commandLabel(command: CommandRecord): string {
-  return `Last firmware command: ${command.command.toUpperCase()} (${command.status})`;
+function gatewayErrorMessage(error: string | undefined, fallback: string): string | undefined {
+  if (!error) return undefined;
+  if (/(?:\/api\/root|root(?:\b|_))/i.test(error)) return fallback;
+  return error;
 }
 
 export function RootControlPanel({
@@ -25,105 +28,108 @@ export function RootControlPanel({
   currentEpoch,
   healthCurrentCursor,
   rootRecords,
-  commandRecords,
   pendingRoot,
+  rootErrors,
   announcement,
   healthError,
+  healthAuthoritative = true,
   onSetRoot,
 }: RootControlPanelProps) {
-  const owners = physicalDevices(devices);
+  const gateway = gatewayDevice(devices);
+  const root = healthAuthoritative && gateway?.connected
+    ? authoritativeRootFor(gateway, healthEpoch, currentEpoch, healthCurrentCursor, rootRecords[0])
+    : null;
+  const pending = pendingRoot[0];
+  const error = gatewayErrorMessage(rootErrors?.[0], 'Gateway command could not be completed. Retry Gateway.');
+  const visibleHealthError = gatewayErrorMessage(healthError, 'Gateway health is unavailable. Retrying.');
+  const active = root?.role === 'root';
+  const unknown = root === null;
+  const disconnected = !gateway?.connected;
+  const disabled = !healthAuthoritative || !gateway || disconnected || unknown || pending !== undefined;
+  const state = !gateway
+    ? 'Gateway unavailable'
+    : !healthAuthoritative
+      ? 'Refreshing'
+      : disconnected
+      ? 'Disconnected'
+      : pending?.phase === 'writing'
+        ? 'Writing'
+        : pending?.phase === 'confirming'
+          ? 'Confirming'
+          : error
+            ? 'Error'
+            : unknown
+              ? 'Unknown'
+              : active
+                ? 'On'
+                : 'Off';
+  const actionLabel = unknown || !gateway
+    ? 'Gateway status unknown'
+    : `Turn Gateway ${active ? 'off' : 'on'}`;
+  const commandStatus = announcement
+    || (error
+      ? 'Gateway command failed.'
+      : !gateway
+        ? 'Gateway unavailable.'
+        : !healthAuthoritative
+          ? 'Gateway health is refreshing.'
+          : disconnected
+            ? 'Gateway disconnected.'
+            : unknown
+              ? 'Waiting for authoritative Gateway status.'
+              : `Gateway is ${active ? 'on' : 'off'}.`);
+
   return (
-    <section className="panel root-panel" aria-labelledby="bridge-controls-heading">
+    <section className="panel gateway-panel" aria-labelledby="gateway-heading">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Bridge and serial health</p>
-          <h2 id="bridge-controls-heading">Root devices</h2>
+          <p className="eyebrow">Gateway</p>
+          <h2 id="gateway-heading">Gateway control</h2>
         </div>
-        <p className="command-status" role="status" aria-live="polite" aria-label="Root command status">
-          {announcement || 'Runtime role is confirmed by the bridge after each serial command.'}
+        <p className="command-status" role="status" aria-live="polite" aria-label="Gateway command status">
+          {commandStatus}
         </p>
       </div>
-      {healthError && <p className="notice error" role="alert">Health request failed: {healthError} Retrying while preserving the last known devices.</p>}
-      {owners.length === 0 ? (
-        <p className="empty">No configured serial devices. Start the bridge with one or more serial paths.</p>
-      ) : (
-        <div className="table-wrap">
-          <table className="device-table">
-            <caption>Connected physical nodes and their authoritative runtime roles</caption>
-            <thead>
-              <tr>
-                <th scope="col">Node</th>
-                <th scope="col">Serial</th>
-                <th scope="col">Runtime</th>
-                <th scope="col">Root control</th>
-              </tr>
-            </thead>
-            <tbody>
-              {owners.map((device) => {
-                const root = authoritativeRootFor(device, healthEpoch, currentEpoch, healthCurrentCursor, rootRecords[device.device]);
-                const identity = nodeIdentity(device, root);
-                const active = root?.role === 'root';
-                const pending = pendingRoot[device.device];
-                const unknown = root === null;
-                const disabled = !device.connected || pending !== undefined || unknown;
-                const switchLabel = unknown
-                  ? `Root role unknown for Device ${device.device}`
-                  : `${active ? 'Turn root off' : 'Turn root on'} for ${identity.primary}`;
-                const command = commandRecords[device.device];
-                const rootCommand = command?.command === 'gtt' ? undefined : command;
-                const serialIssues = device.reconnects + device.parse_errors + device.overlong_lines;
-                return (
-                  <tr key={device.device}>
-                    <th scope="row">
-                      <strong>{identity.primary}</strong>
-                      <span>{identity.secondary}</span>
-                    </th>
-                    <td data-label="Serial">
-                      <strong>{device.connected ? 'Connected' : 'Offline'}</strong>
-                      {serialIssues > 0 && <span>{device.reconnects} reconnects · {device.parse_errors} parse errors · {device.overlong_lines} overlong</span>}
-                    </td>
-                    <td data-label="Runtime">
-                      <span className={`status-chip ${!device.connected ? 'danger' : pending ? 'warning' : unknown ? 'muted' : active ? 'good' : 'info'}`}>
-                        {!device.connected ? 'Serial offline' : pending ? `ROOT ${pending.desired ? 'ON' : 'OFF'} pending` : unknown ? 'Role unknown' : active ? 'Runtime root' : 'Runtime leaf'}
-                      </span>
-                      <span>{root ? `${root.roots} active root${root.roots === 1 ? '' : 's'} · ${root.pending} pending` : 'Awaiting ROOT STATUS'}</span>
-                      {rootCommand && <small>{commandLabel(rootCommand)}</small>}
-                    </td>
-                    <td data-label="Root control">
-                      <div className="root-switch-row">
-                        <button
-                          type="button"
-                          role={unknown ? 'checkbox' : 'switch'}
-                          aria-checked={unknown ? 'mixed' : active}
-                          aria-label={switchLabel}
-                          aria-describedby={`root-detail-${device.device}`}
-                          disabled={disabled}
-                          className={`root-switch${active ? ' checked' : ''}${unknown ? ' unknown' : ''}`}
-                          onClick={() => {
-                            if (root) onSetRoot(device.device, !active);
-                          }}
-                        >
-                          <span aria-hidden="true" className="switch-track"><span className="switch-thumb" /></span>
-                          <span>{unknown ? 'Role unknown' : active ? 'Root on' : 'Root off'}</span>
-                        </button>
-                        <span id={`root-detail-${device.device}`} className="root-switch-detail">
-                          {pending
-                            ? `Requested ROOT ${pending.desired ? 'ON' : 'OFF'}; ${pending.phase === 'writing' ? 'writing serial command' : 'awaiting bridge confirmation'}.`
-                            : unknown
-                              ? 'Disabled while awaiting bridge status.'
-                              : device.connected
-                                ? `Click to request ROOT ${active ? 'OFF' : 'ON'}.`
-                                : 'Reconnect the serial device before changing its role.'}
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {visibleHealthError && <p className="notice error" role="alert">Gateway health unavailable: {visibleHealthError}</p>}
+      <div className="gateway-control-row">
+        <div>
+          <strong>Gateway</strong>
+          <span>{root ? `AdvA ${root.local}` : 'Waiting for Gateway status'}</span>
         </div>
-      )}
+        <span className={`status-chip ${state === 'On' ? 'good' : state === 'Error' || state === 'Disconnected' ? 'danger' : state === 'Off' ? 'info' : 'warning'}`}>
+          {state}
+        </span>
+        <div className="root-switch-row">
+          <button
+            type="button"
+            role={unknown ? 'checkbox' : 'switch'}
+            aria-checked={unknown ? 'mixed' : active}
+            aria-label={actionLabel}
+            aria-describedby="gateway-control-detail"
+            disabled={disabled}
+            className={`root-switch${active ? ' checked' : ''}${unknown ? ' unknown' : ''}`}
+            onClick={() => {
+              if (gateway && root) onSetRoot(0, !active);
+            }}
+          >
+            <span aria-hidden="true" className="switch-track"><span className="switch-thumb" /></span>
+            <span>{pending ? state : active ? 'Gateway on' : unknown ? 'Status unknown' : 'Gateway off'}</span>
+          </button>
+          <span id="gateway-control-detail" className="root-switch-detail">
+            {error
+              ? error
+              : pending
+                ? `${pending.phase === 'writing' ? 'Writing command.' : 'Waiting for confirmation.'}`
+                : disconnected
+                  ? 'Reconnect the Gateway to change state.'
+                  : !healthAuthoritative
+                    ? 'Waiting for current Gateway health before changing state.'
+                  : unknown
+                    ? 'Waiting for authoritative Gateway status.'
+                    : `Activate to turn Gateway ${active ? 'off' : 'on'}.`}
+          </span>
+        </div>
+      </div>
     </section>
   );
 }

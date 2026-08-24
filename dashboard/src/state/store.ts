@@ -22,6 +22,7 @@ export interface Evidence {
   observer: string;
   path: EventRecord['path'];
   device: number;
+  observerRssiDbm: number | null;
 }
 
 export interface LogicalEvent {
@@ -66,6 +67,8 @@ export interface DashboardState {
   rootRecords: Record<number, RootRecord>;
   commandRecords: Record<number, CommandRecord>;
   pendingRoot: Record<number, PendingRootRequest | undefined>;
+  rootErrors: Record<number, string | undefined>;
+  rootErrorBaselines: Record<number, number | undefined>;
   announcement: string;
   conflictCount: number;
   gapCount: number;
@@ -87,6 +90,8 @@ export const initialState: DashboardState = {
   rootRecords: {},
   commandRecords: {},
   pendingRoot: {},
+  rootErrors: {},
+  rootErrorBaselines: {},
   announcement: '',
   conflictCount: 0,
   gapCount: 0,
@@ -115,7 +120,8 @@ function sameEvidence(left: Evidence, right: Evidence): boolean {
   return left.root === right.root
     && left.observer === right.observer
     && left.path === right.path
-    && left.device === right.device;
+    && left.device === right.device
+    && left.observerRssiDbm === right.observerRssiDbm;
 }
 
 function addEvidence(logical: LogicalEvent, event: EventRecord): LogicalEvent {
@@ -124,6 +130,7 @@ function addEvidence(logical: LogicalEvent, event: EventRecord): LogicalEvent {
     observer: event.observer,
     path: event.path,
     device: event.device,
+    observerRssiDbm: event.observer_rssi_dbm,
   };
   if (logical.evidence.some((item) => sameEvidence(item, evidence))) return logical;
   if (logical.evidence.length >= EVIDENCE_LIMIT) {
@@ -181,6 +188,23 @@ function clearPendingRoot(
   return next;
 }
 
+function clearSupersededRootError(
+  rootErrors: DashboardState['rootErrors'],
+  rootErrorBaselines: DashboardState['rootErrorBaselines'],
+  device: number,
+  cursor: number,
+): Pick<DashboardState, 'rootErrors' | 'rootErrorBaselines'> {
+  const baseline = rootErrorBaselines[device];
+  if (!rootErrors[device] || baseline === undefined || cursor <= baseline) {
+    return { rootErrors, rootErrorBaselines };
+  }
+  const nextErrors = { ...rootErrors };
+  const nextBaselines = { ...rootErrorBaselines };
+  delete nextErrors[device];
+  delete nextBaselines[device];
+  return { rootErrors: nextErrors, rootErrorBaselines: nextBaselines };
+}
+
 interface PendingRootResolution {
   pendingRoot: DashboardState['pendingRoot'];
   announcement?: string;
@@ -192,7 +216,7 @@ function resolvePendingRoot(
   active: boolean,
   cursor: number,
   epoch: number,
-  source: 'an authoritative root record' | 'the authoritative health snapshot',
+  source: 'an authoritative Gateway status record' | 'the authoritative Gateway health snapshot',
 ): PendingRootResolution {
   const pending = pendingRoot[device];
   if (!pending
@@ -205,8 +229,8 @@ function resolvePendingRoot(
   return {
     pendingRoot: clearPendingRoot(pendingRoot, device, pending.requestId),
     announcement: active === pending.desired
-      ? `Device ${device} confirmed ROOT ${reported} from ${source}.`
-      : `Device ${device} reported ROOT ${reported} from ${source}; requested ROOT ${desired} did not match.`,
+      ? `Gateway confirmed ${reported} from ${source}.`
+      : `Gateway reported ${reported} from ${source}; requested ${desired} did not match.`,
   };
 }
 
@@ -221,7 +245,7 @@ function rootResolvesPending(
     record.role === 'root',
     record.cursor,
     epoch,
-    'an authoritative root record',
+    'an authoritative Gateway status record',
   );
 }
 
@@ -255,7 +279,7 @@ function healthResolvesPending(state: DashboardState, health: HealthResponse, ep
       device.root.role === 'root',
       device.root.cursor,
       epoch,
-      'the authoritative health snapshot',
+      'the authoritative Gateway health snapshot',
     );
     pendingRoot = resolution.pendingRoot;
     announcement = resolution.announcement ?? announcement;
@@ -278,7 +302,7 @@ function applyEvent(
     const logical: LogicalEvent = {
       key,
       record: event,
-      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device }],
+      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device, observerRssiDbm: event.observer_rssi_dbm }],
       evidenceSaturated: false,
       conflict: false,
     };
@@ -299,7 +323,7 @@ function applyEvent(
     : {
       key,
       record: event,
-      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device }],
+      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device, observerRssiDbm: event.observer_rssi_dbm }],
       evidenceSaturated: false,
       conflict: nextConflict,
     };
@@ -336,11 +360,13 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
           const existing = next.rootRecords[record.device];
           if (!existing || existing.cursor < record.cursor) {
             const resolution = rootResolvesPending(next.pendingRoot, record, action.epoch);
+            const rootError = clearSupersededRootError(next.rootErrors, next.rootErrorBaselines, record.device, record.cursor);
             rootResolutionAnnouncement = resolution.announcement ?? rootResolutionAnnouncement;
             next = {
               ...next,
               rootRecords: { ...next.rootRecords, [record.device]: record },
               pendingRoot: resolution.pendingRoot,
+              ...rootError,
               announcement: resolution.announcement ?? next.announcement,
             };
           }
@@ -352,8 +378,8 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
             const announcement = record.command === 'gtt'
               ? next.announcement
               : request && pendingRoot !== next.pendingRoot
-                ? `Device ${record.device} firmware command ROOT ${record.command.toUpperCase()} failed: ${record.status}.`
-                : `Device ${record.device} reported ROOT ${record.command.toUpperCase()}: ${record.status}.`;
+                ? `Gateway firmware command ${record.command.toUpperCase()} failed: ${record.status}.`
+                : `Gateway reported ${record.command.toUpperCase()}: ${record.status}.`;
             next = {
               ...next,
               commandRecords: { ...next.commandRecords, [record.device]: record },
@@ -375,16 +401,30 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
         commandRecords: {},
         pendingRoot: {},
         lastGap: null,
-        announcement: 'Bridge cursor restarted; root confirmations were reset and current records are refreshing.',
+        rootErrors: {},
+        rootErrorBaselines: {},
+        announcement: 'Bridge cursor restarted; Gateway confirmations were reset and current records are refreshing.',
       };
     case 'healthReceived': {
       const resolution = healthResolvesPending(state, action.health, action.epoch);
+      let rootErrors = state.rootErrors;
+      let rootErrorBaselines = state.rootErrorBaselines;
+      if (action.epoch === state.epoch) {
+        for (const device of action.health.devices) {
+          if (device.device !== device.owner_device || !device.connected || !device.root) continue;
+          const superseded = clearSupersededRootError(rootErrors, rootErrorBaselines, device.device, device.root.cursor);
+          rootErrors = superseded.rootErrors;
+          rootErrorBaselines = superseded.rootErrorBaselines;
+        }
+      }
       return {
         ...state,
         health: action.health,
         healthEpoch: action.epoch,
         healthRequest: { phase: 'ready', lastSuccessAt: action.receivedAt },
         pendingRoot: resolution.pendingRoot,
+        rootErrors,
+        rootErrorBaselines,
         announcement: resolution.announcement ?? state.announcement,
       };
     }
@@ -408,7 +448,9 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
             phase: 'writing',
           },
         },
-        announcement: `Sending ROOT ${action.active ? 'ON' : 'OFF'} to Device ${action.device}.`,
+        rootErrors: { ...state.rootErrors, [action.device]: undefined },
+        rootErrorBaselines: { ...state.rootErrorBaselines, [action.device]: undefined },
+        announcement: `Sending Gateway ${action.active ? 'ON' : 'OFF'} command.`,
       };
     case 'rootAccepted': {
       const pending = state.pendingRoot[action.device];
@@ -416,16 +458,19 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
       return {
         ...state,
         pendingRoot: { ...state.pendingRoot, [action.device]: { ...pending, phase: 'confirming' } },
-        announcement: `Device ${action.device} accepted serial write for ROOT ${action.command.toUpperCase()}; waiting for authoritative confirmation.`,
+        announcement: `Gateway ${action.command.toUpperCase()} command sent; confirming state.`,
       };
     }
     case 'rootFailed': {
+      const pending = state.pendingRoot[action.device];
       const pendingRoot = clearPendingRoot(state.pendingRoot, action.device, action.requestId);
       if (pendingRoot === state.pendingRoot) return state;
       return {
         ...state,
         pendingRoot,
-        announcement: `Device ${action.device} root command failed: ${action.message}`,
+        rootErrors: { ...state.rootErrors, [action.device]: action.message },
+        rootErrorBaselines: { ...state.rootErrorBaselines, [action.device]: pending?.baselineCursor ?? 0 },
+        announcement: `Gateway command failed: ${action.message}`,
       };
     }
     case 'rootConfirmationTimedOut': {
@@ -434,7 +479,9 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
       return {
         ...state,
         pendingRoot: clearPendingRoot(state.pendingRoot, action.device, action.requestId),
-        announcement: `Device ${action.device} did not publish the requested ROOT ${pending.desired ? 'ON' : 'OFF'} state in time; retry this device.`,
+        rootErrors: { ...state.rootErrors, [action.device]: 'State confirmation timed out; retry Gateway.' },
+        rootErrorBaselines: { ...state.rootErrorBaselines, [action.device]: pending.baselineCursor },
+        announcement: `Gateway did not confirm the requested ${pending.desired ? 'ON' : 'OFF'} state in time; retry Gateway.`,
       };
     }
   }

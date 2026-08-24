@@ -6,11 +6,15 @@ import {
   DecodeError,
   decodeEventsResponse,
   decodeHealthResponse,
+  decodeDashboardErrorResponse,
   fetchEvents,
+  getLayout,
+  LayoutConflictError,
   postGtt,
   postRoot,
+  putLayout,
 } from './api';
-import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, rootStatus } from '../test/fixtures';
+import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, layoutReady, rootStatus } from '../test/fixtures';
 import { restoreFetch, stubFetch } from '../test/runtime';
 
 afterEach(restoreFetch);
@@ -19,14 +23,20 @@ describe('frozen bridge API decoders', () => {
   it('decodes empty and populated JSON emitted by the real host.bridge implementation', () => {
     const script = [
       'import json',
+      'import tempfile',
+      'from pathlib import Path',
       'from host import bridge',
-      'state = bridge.Bridge(["test"])',
-      'empty_events = state.ring.page(0, 100)',
-      'empty_health = state.health()',
-      'state.devices[0].feed_bytes(b"mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 path=tavrn\\n")',
-      'state.devices[0].feed_bytes(b"mind_root_v1 now=99 local=8081545678c0 node=6 role=root roots=16 announced=2 acked=1 rejected=3 pending=4 rootless_drop=7\\n")',
-      'print(json.dumps({"empty_events": empty_events, "empty_health": empty_health, "events": state.ring.page(0, 100), "health": state.health()}))',
-    ].join('; ');
+      'with tempfile.TemporaryDirectory() as temporary:',
+      '    state = bridge.Bridge(["test"], state_dir=Path(temporary))',
+      '    try:',
+      '        empty_events = state.ring.page(0, 100)',
+      '        empty_health = state.health()',
+      '        state.devices[0].feed_bytes(b"mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 path=tavrn\\n")',
+      '        state.devices[0].feed_bytes(b"mind_root_v1 now=99 local=8081545678c0 node=6 role=root roots=16 announced=2 acked=1 rejected=3 pending=4 rootless_drop=7\\n")',
+      '        print(json.dumps({"empty_events": empty_events, "empty_health": empty_health, "events": state.ring.page(0, 100), "health": state.health()}))',
+      '    finally:',
+      '        state.stop()',
+    ].join('\n');
     const output = execFileSync('python3', ['-c', script], {
       cwd: resolve(process.cwd(), '..'),
       encoding: 'utf8',
@@ -69,8 +79,8 @@ describe('frozen bridge API decoders', () => {
     expect(() => decodeEventsResponse({ ...page, current_cursor: 2 }, 0)).toThrow(DecodeError);
     expect(() => decodeEventsResponse(eventsResponse([eventRecord({ cursor: 2 })]), 2)).toThrow(DecodeError);
     expect(() => decodeEventsResponse({ ...eventsResponse([eventRecord({ cursor: 2 })], false), oldest_cursor: 2, current_cursor: 2 }, 0)).toThrow(DecodeError);
-    expect(decodeEventsResponse({ schema: 'mind.api.v1', gap: false, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toMatchObject({ current_cursor: 4 });
-    expect(() => decodeEventsResponse({ schema: 'mind.api.v1', gap: true, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
+    expect(decodeEventsResponse({ schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toMatchObject({ current_cursor: 4 });
+    expect(() => decodeEventsResponse({ schema: 'mind.api.v2', gap: true, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
   });
 
   it('accepts only exact health v2 GTT snapshots, normalized states, and physical owner references', () => {
@@ -94,6 +104,7 @@ describe('frozen bridge API decoders', () => {
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, extra: true } }, response.devices[1]] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, hop: 16 }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, index: 2 }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [entry, { ...snapshot.entries[1], index: 2 }, snapshot.entries[2]] } }, response.devices[1]] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [entry, { ...snapshot.entries[1], adva: entry.adva }, snapshot.entries[2]] } }, response.devices[1]] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, nondeparted_count: 0 } }, response.devices[1]] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, freshness: 'departed', departed: 'false' }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
@@ -123,7 +134,7 @@ describe('frozen bridge API decoders', () => {
   it('surfaces HTTP API errors and rejects a malformed successful response before state can consume it', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(503, { schema: 'mind.error.v1', accepted: false, error: 'disconnected' }))
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v1', gap: false, oldest_cursor: 1, current_cursor: 0, events: [{}] }));
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 0, events: [{}] }));
     stubFetch(fetchMock);
 
     await expect(fetchEvents(0)).rejects.toBeInstanceOf(ApiError);
@@ -132,8 +143,8 @@ describe('frozen bridge API decoders', () => {
 
   it('validates fetched pages against the requested exclusive cursor while allowing a reset response', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v1', gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 2 })] }))
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v1', gap: false, oldest_cursor: 1, current_cursor: 2, events: [] }));
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 2 })] }))
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 2, events: [] }));
     stubFetch(fetchMock);
 
     await expect(fetchEvents(2)).rejects.toBeInstanceOf(DecodeError);
@@ -178,5 +189,25 @@ describe('frozen bridge API decoders', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/gtt', expect.objectContaining({ method: 'POST', body: '{"device":3}' }));
     await expect(postGtt(3)).rejects.toBeInstanceOf(ApiError);
     await expect(postGtt(3)).rejects.toBeInstanceOf(DecodeError);
+  });
+
+  it('requires v2 nullable observer RSSI and decodes exact layout/error/conflict responses', async () => {
+    const decoded = decodeEventsResponse(eventsResponse([eventRecord({ observer_rssi_dbm: -63 })])).events[0];
+    expect(decoded?.kind === 'event' && decoded.observer_rssi_dbm).toBe(-63);
+    expect(() => decodeEventsResponse({
+      ...eventsResponse([eventRecord()]),
+      events: [{ ...eventRecord(), observer_rssi_dbm: undefined }],
+    })).toThrow(DecodeError);
+    expect(decodeDashboardErrorResponse({ schema: 'mind.dashboard.error.v1', accepted: false, error: 'storage_unavailable' })).toMatchObject({ error: 'storage_unavailable' });
+    expect(() => decodeDashboardErrorResponse({ schema: 'mind.dashboard.error.v1', accepted: false, error: 'bad' })).toThrow(DecodeError);
+
+    const current = layoutReady({ revision: 3, positions: [{ adva: '0102545678c0', x: 0.2, y: 0.8 }] });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, current))
+      .mockResolvedValueOnce(jsonResponse(409, { schema: 'mind.dashboard.layout.conflict.v1', error: 'revision_conflict', current }));
+    stubFetch(fetchMock);
+    await expect(getLayout()).resolves.toMatchObject({ revision: 3 });
+    await expect(putLayout(2, [])).rejects.toBeInstanceOf(LayoutConflictError);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/layout', expect.objectContaining({ method: 'PUT', body: '{"schema":"mind.dashboard.layout.update.v1","base_revision":2,"positions":[]}' }));
   });
 });

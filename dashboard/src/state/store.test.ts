@@ -13,14 +13,15 @@ function receive(events = eventsResponse().events, at = 10_000, epoch = 0) {
 
 describe('dashboard event store', () => {
   it('globally deduplicates reports across roots, observers, and reconnect cursor overlap', () => {
-    const first = eventRecord({ cursor: 10, root: '1842de524add', observer: 'dc4b0a0603f8' });
-    const secondRoot = eventRecord({ cursor: 11, device: 1, root: '1842de524aee', observer: 'dc4b0a0603f9', path: 'local' });
+    const first = eventRecord({ cursor: 10, root: '1842de524add', observer: 'dc4b0a0603f8', observer_rssi_dbm: null });
+    const secondRoot = eventRecord({ cursor: 11, device: 1, root: '1842de524aee', observer: 'dc4b0a0603f9', observer_rssi_dbm: -68, path: 'local' });
     let state = receive([first])();
     state = receive([secondRoot])(state);
     state = receive([first], 11_000)(state);
 
     expect(state.feedKeys).toHaveLength(1);
     expect(state.logicalEvents['7:00002a'].evidence).toHaveLength(2);
+    expect(state.logicalEvents['7:00002a'].evidence[1]?.observerRssiDbm).toBe(-68);
     expect(state.wearables[7].record.cursor).toBe(11);
   });
 
@@ -163,7 +164,7 @@ describe('dashboard event store', () => {
     expect(state.health?.devices[0].root?.role).toBe('leaf');
   });
 
-  it('keeps a 202 root command pending until a newer authoritative root record or health cursor confirms the desired state', () => {
+  it('keeps a 202 Gateway command pending until a newer authoritative status record or health cursor confirms the desired state', () => {
     let state = reducer(initialState, {
       type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 5, baselineEpoch: 0,
     });
@@ -173,7 +174,7 @@ describe('dashboard event store', () => {
     expect(state.pendingRoot[0]).toBeDefined();
     state = receive([{ device: 0, ...rootStatus({ role: 'root' }), cursor: 6 }])(state);
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 confirmed ROOT ON from an authoritative root record.');
+    expect(state.announcement).toBe('Gateway confirmed ON from an authoritative Gateway status record.');
 
     state = reducer(state, {
       type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 6, baselineEpoch: 0,
@@ -185,7 +186,7 @@ describe('dashboard event store', () => {
       epoch: 0,
     });
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 confirmed ROOT OFF from the authoritative health snapshot.');
+    expect(state.announcement).toBe('Gateway confirmed OFF from the authoritative Gateway health snapshot.');
   });
 
   it('clears a post-baseline authoritative role mismatch immediately and replaces waiting copy with the mismatch', () => {
@@ -195,7 +196,7 @@ describe('dashboard event store', () => {
     state = reducer(state, { type: 'rootAccepted', device: 0, command: 'on', requestId: 1 });
     state = receive([{ device: 0, ...rootStatus({ role: 'leaf' }), cursor: 6 }])(state);
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 reported ROOT OFF from an authoritative root record; requested ROOT ON did not match.');
+    expect(state.announcement).toBe('Gateway reported OFF from an authoritative Gateway status record; requested ON did not match.');
 
     state = reducer(state, {
       type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 6, baselineEpoch: 0,
@@ -207,7 +208,7 @@ describe('dashboard event store', () => {
       epoch: 0,
     });
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 reported ROOT ON from the authoritative health snapshot; requested ROOT OFF did not match.');
+    expect(state.announcement).toBe('Gateway reported ON from the authoritative Gateway health snapshot; requested OFF did not match.');
   });
 
   it('treats matching post-baseline busy and rejection statuses as terminal firmware failures and ignores stale actions', () => {
@@ -218,7 +219,7 @@ describe('dashboard event store', () => {
       cursor: 6, kind: 'command', device: 0, now: 1, local: '1842de524add', command: 'on', status: 'busy',
     }])(state);
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 firmware command ROOT ON failed: busy.');
+    expect(state.announcement).toBe('Gateway firmware command ON failed: busy.');
     state = reducer(state, {
       type: 'rootPending', device: 0, active: true, requestId: 3, baselineCursor: 6, baselineEpoch: 0,
     });
@@ -235,13 +236,13 @@ describe('dashboard event store', () => {
     expect(state.pendingRoot[0]).toMatchObject({ requestId: 4, desired: false });
   });
 
-  it('records GTT command evidence without overwriting root-control status copy', () => {
+  it('records GTT command evidence without overwriting Gateway-control status copy', () => {
     const state = receive([{
       cursor: 1, kind: 'command', device: 0, now: 1, local: '1842de524add', command: 'gtt', status: 'accepted',
-    }])({ ...initialState, announcement: 'Root controls are ready.' });
+    }])({ ...initialState, announcement: 'Gateway controls are ready.' });
 
     expect(state.commandRecords[0]).toMatchObject({ command: 'gtt', status: 'accepted' });
-    expect(state.announcement).toBe('Root controls are ready.');
+    expect(state.announcement).toBe('Gateway controls are ready.');
   });
 
   it('resets epoch-bound root confirmation state and does not let an old timeout clear a new request', () => {
@@ -286,7 +287,38 @@ describe('dashboard event store', () => {
       epoch: 0,
     });
     expect(state.pendingRoot[0]).toBeUndefined();
-    expect(state.announcement).toBe('Device 0 confirmed ROOT ON from the authoritative health snapshot.');
+    expect(state.announcement).toBe('Gateway confirmed ON from the authoritative Gateway health snapshot.');
+  });
+
+  it('clears stale Gateway command errors only when a newer authoritative status supersedes them', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 5, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'rootFailed', device: 0, requestId: 1, message: 'Gateway command could not be completed. Retry Gateway.' });
+    expect(state.rootErrors[0]).toBeDefined();
+    state = receive([{ device: 0, ...rootStatus({ role: 'leaf' }), cursor: 5 }])(state);
+    expect(state.rootErrors[0]).toBeDefined();
+    state = receive([{ device: 0, ...rootStatus({ role: 'leaf' }), cursor: 6 }])(state);
+    expect(state.rootErrors[0]).toBeUndefined();
+
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 6, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'rootConfirmationTimedOut', device: 0, requestId: 2 });
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: { ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 6 }) })]), current_cursor: 6 },
+      receivedAt: 7_000,
+      epoch: 0,
+    });
+    expect(state.rootErrors[0]).toBeDefined();
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: { ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 7 }) })]), current_cursor: 7 },
+      receivedAt: 8_000,
+      epoch: 0,
+    });
+    expect(state.rootErrors[0]).toBeUndefined();
   });
 
   it('shows loading, offline, stale, and reconnecting bridge states without discarding data', () => {

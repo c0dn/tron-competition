@@ -21,6 +21,7 @@ export interface EventRecord {
   mic: number;
   seq: number;
   observer: string;
+  observer_rssi_dbm: number | null;
   path: EventPath;
 }
 
@@ -61,7 +62,7 @@ export interface CommandRecord {
 export type StreamRecord = EventRecord | RootRecord | CommandRecord;
 
 export interface EventsResponse {
-  schema: 'mind.api.v1';
+  schema: 'mind.api.v2';
   gap: boolean;
   oldest_cursor: number;
   current_cursor: number;
@@ -133,6 +134,68 @@ interface ErrorResponse {
   error: 'invalid_query' | 'invalid_json' | 'invalid_body' | 'unknown_device' | 'disconnected' | 'write_failed';
 }
 
+export type LayoutErrorCode =
+  | 'invalid_json'
+  | 'invalid_body'
+  | 'invalid_base64'
+  | 'forbidden_request'
+  | 'request_too_large'
+  | 'image_too_large'
+  | 'unsupported_media_type'
+  | 'image_type_mismatch'
+  | 'invalid_image'
+  | 'animated_image'
+  | 'image_dimensions'
+  | 'upload_busy'
+  | 'storage_unavailable'
+  | 'not_found';
+
+export interface DashboardErrorResponse {
+  schema: 'mind.dashboard.error.v1';
+  accepted: false;
+  error: LayoutErrorCode;
+}
+
+export interface LayoutPosition {
+  adva: string;
+  x: number;
+  y: number;
+}
+
+export interface Floorplan {
+  sha256: string;
+  mime: 'image/png' | 'image/jpeg' | 'image/webp';
+  width: number;
+  height: number;
+  url: string;
+}
+
+export interface LayoutReadyResponse {
+  schema: 'mind.dashboard.layout.v1';
+  status: 'ready';
+  error: null;
+  revision: number;
+  floorplan: Floorplan | null;
+  positions: LayoutPosition[];
+}
+
+export interface LayoutCorruptResponse {
+  schema: 'mind.dashboard.layout.v1';
+  status: 'corrupt';
+  error: 'corrupt_state';
+  revision: number;
+  floorplan: null;
+  positions: [];
+}
+
+export type LayoutResponse = LayoutReadyResponse | LayoutCorruptResponse;
+
+export interface LayoutConflictResponse {
+  schema: 'mind.dashboard.layout.conflict.v1';
+  error: 'revision_conflict';
+  current: LayoutResponse;
+}
+
 type JsonObject = Record<string, unknown>;
 
 export class DecodeError extends Error {
@@ -146,6 +209,13 @@ export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
     this.name = 'ApiError';
+  }
+}
+
+export class LayoutConflictError extends ApiError {
+  constructor(readonly current: LayoutResponse) {
+    super('Layout changed in another session.', 409);
+    this.name = 'LayoutConflictError';
   }
 }
 
@@ -173,6 +243,13 @@ function integer(value: unknown, context: string, minimum = 0, maximum = Number.
     throw new DecodeError(`${context} must be an integer in range.`);
   }
   return value;
+}
+
+function finiteNumber(value: unknown, context: string, minimum: number, maximum: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new DecodeError(`${context} must be a finite number in range.`);
+  }
+  return value === 0 ? 0 : value;
 }
 
 function boolean(value: unknown, context: string): boolean {
@@ -221,7 +298,7 @@ function rootStatus(value: unknown, context: string): RootStatus {
 
 function eventRecord(value: unknown): EventRecord {
   const input = object(value, 'event record');
-  exactKeys(input, ['cursor', 'kind', 'device', 'now', 'root', 'wearable', 'packet', 'schema', 'event', 'confidence', 'svm', 'mic', 'seq', 'observer', 'path'], 'event record');
+  exactKeys(input, ['cursor', 'kind', 'device', 'now', 'root', 'wearable', 'packet', 'schema', 'event', 'confidence', 'svm', 'mic', 'seq', 'observer', 'observer_rssi_dbm', 'path'], 'event record');
   const record: EventRecord = {
     cursor: integer(input.cursor, 'event.cursor', 1),
     kind: enumValue(input.kind, ['event'], 'event.kind'),
@@ -237,6 +314,9 @@ function eventRecord(value: unknown): EventRecord {
     mic: integer(input.mic, 'event.mic', 0, 255),
     seq: integer(input.seq, 'event.seq', 0, 255),
     observer: hex(input.observer, 12, 'event.observer'),
+    observer_rssi_dbm: input.observer_rssi_dbm === null
+      ? null
+      : integer(input.observer_rssi_dbm, 'event.observer_rssi_dbm', -127, -1),
     path: enumValue(input.path, ['local', 'tavrn'], 'event.path'),
   };
   if (record.seq !== Number.parseInt(record.packet.slice(-2), 16)) {
@@ -335,7 +415,7 @@ export function decodeEventsResponse(value: unknown, requestedAfter = 0): Events
   integer(requestedAfter, 'requested after');
   const input = object(value, 'events response');
   exactKeys(input, ['schema', 'gap', 'oldest_cursor', 'current_cursor', 'events'], 'events response');
-  if (input.schema !== 'mind.api.v1') throw new DecodeError('events response.schema is invalid.');
+  if (input.schema !== 'mind.api.v2') throw new DecodeError('events response.schema is invalid.');
   if (!Array.isArray(input.events)) throw new DecodeError('events response.events must be an array.');
   if (input.events.length > 100) throw new DecodeError('events response exceeds the maximum page size.');
   const records = input.events.map(streamRecord);
@@ -372,7 +452,7 @@ export function decodeEventsResponse(value: unknown, requestedAfter = 0): Events
     }
   }
   return {
-    schema: 'mind.api.v1',
+    schema: 'mind.api.v2',
     gap,
     oldest_cursor: oldest,
     current_cursor: current,
@@ -416,9 +496,9 @@ function gttSnapshot(value: unknown, context: string): GttSnapshot {
   if (snapshot.entries.length !== snapshot.entry_count || snapshot.nondeparted_count > snapshot.entry_count) {
     throw new DecodeError(`${context} entry counts are inconsistent.`);
   }
-  for (let index = 1; index < entries.length; index += 1) {
-    if (entries[index - 1].index >= entries[index].index) {
-      throw new DecodeError(`${context}.entries must have strictly increasing indices.`);
+  for (let index = 0; index < entries.length; index += 1) {
+    if (entries[index]?.index !== index) {
+      throw new DecodeError(`${context}.entries must have contiguous zero-based indices.`);
     }
   }
   if (new Set(entries.map((entry) => entry.adva)).size !== entries.length) {
@@ -472,6 +552,99 @@ export function decodeHealthResponse(value: unknown): HealthResponse {
     throw new DecodeError('health response root cursor exceeds the ring cursor.');
   }
   return { schema: 'mind.health.v2', oldest_cursor: oldest, current_cursor: current, devices };
+}
+
+function layoutPosition(value: unknown, context: string): LayoutPosition {
+  const input = object(value, context);
+  exactKeys(input, ['adva', 'x', 'y'], context);
+  return {
+    adva: hex(input.adva, 12, `${context}.adva`),
+    x: finiteNumber(input.x, `${context}.x`, 0, 1),
+    y: finiteNumber(input.y, `${context}.y`, 0, 1),
+  };
+}
+
+function floorplan(value: unknown, context: string): Floorplan {
+  const input = object(value, context);
+  exactKeys(input, ['sha256', 'mime', 'width', 'height', 'url'], context);
+  const sha256 = hex(input.sha256, 64, `${context}.sha256`);
+  const result: Floorplan = {
+    sha256,
+    mime: enumValue(input.mime, ['image/png', 'image/jpeg', 'image/webp'], `${context}.mime`),
+    width: integer(input.width, `${context}.width`, 1, 8192),
+    height: integer(input.height, `${context}.height`, 1, 8192),
+    url: string(input.url, `${context}.url`),
+  };
+  if (result.width * result.height > 64_000_000 || result.url !== `/api/floorplan/${sha256}`) {
+    throw new DecodeError(`${context} is inconsistent.`);
+  }
+  return result;
+}
+
+export function decodeLayoutResponse(value: unknown): LayoutResponse {
+  const input = object(value, 'layout response');
+  exactKeys(input, ['schema', 'status', 'error', 'revision', 'floorplan', 'positions'], 'layout response');
+  if (input.schema !== 'mind.dashboard.layout.v1') throw new DecodeError('layout response.schema is invalid.');
+  const revision = integer(input.revision, 'layout response.revision');
+  if (!Array.isArray(input.positions)) throw new DecodeError('layout response.positions must be an array.');
+  const positions = input.positions.map((position, index) => layoutPosition(position, `layout response.positions[${index}]`));
+  if (positions.length > 16) throw new DecodeError('layout response.positions exceeds its capacity.');
+  for (let index = 1; index < positions.length; index += 1) {
+    if (positions[index - 1].adva >= positions[index].adva) {
+      throw new DecodeError('layout response.positions must be sorted and unique by AdvA.');
+    }
+  }
+  if (input.status === 'ready' && input.error === null) {
+    return {
+      schema: 'mind.dashboard.layout.v1',
+      status: 'ready',
+      error: null,
+      revision,
+      floorplan: input.floorplan === null ? null : floorplan(input.floorplan, 'layout response.floorplan'),
+      positions,
+    };
+  }
+  if (input.status === 'corrupt' && input.error === 'corrupt_state' && input.floorplan === null && positions.length === 0) {
+    return {
+      schema: 'mind.dashboard.layout.v1',
+      status: 'corrupt',
+      error: 'corrupt_state',
+      revision,
+      floorplan: null,
+      positions: [],
+    };
+  }
+  throw new DecodeError('layout response status is invalid.');
+}
+
+export function decodeLayoutConflictResponse(value: unknown): LayoutConflictResponse {
+  const input = object(value, 'layout conflict response');
+  exactKeys(input, ['schema', 'error', 'current'], 'layout conflict response');
+  if (input.schema !== 'mind.dashboard.layout.conflict.v1' || input.error !== 'revision_conflict') {
+    throw new DecodeError('layout conflict response is invalid.');
+  }
+  return {
+    schema: 'mind.dashboard.layout.conflict.v1',
+    error: 'revision_conflict',
+    current: decodeLayoutResponse(input.current),
+  };
+}
+
+export function decodeDashboardErrorResponse(value: unknown): DashboardErrorResponse {
+  const input = object(value, 'dashboard error response');
+  exactKeys(input, ['schema', 'accepted', 'error'], 'dashboard error response');
+  if (input.schema !== 'mind.dashboard.error.v1' || input.accepted !== false) {
+    throw new DecodeError('dashboard error response is invalid.');
+  }
+  return {
+    schema: 'mind.dashboard.error.v1',
+    accepted: false,
+    error: enumValue(input.error, [
+      'invalid_json', 'invalid_body', 'invalid_base64', 'forbidden_request', 'request_too_large',
+      'image_too_large', 'unsupported_media_type', 'image_type_mismatch', 'invalid_image',
+      'animated_image', 'image_dimensions', 'upload_busy', 'storage_unavailable', 'not_found',
+    ], 'dashboard error response.error'),
+  };
 }
 
 function decodeErrorResponse(value: unknown): ErrorResponse | null {
@@ -530,9 +703,38 @@ async function get(path: string, signal?: AbortSignal): Promise<unknown> {
   const body = await responseJson(response);
   if (response.status !== 200) {
     const error = decodeErrorResponse(body);
-    throw new ApiError(error ? `Bridge error: ${error.error}.` : `Bridge request failed (${response.status}).`, response.status);
+    if (error) throw new ApiError(`Bridge error: ${error.error}.`, response.status);
+    try {
+      const dashboardError = decodeDashboardErrorResponse(body);
+      throw new ApiError(`Layout request failed: ${dashboardError.error}.`, response.status);
+    } catch (dashboardError) {
+      if (dashboardError instanceof ApiError) throw dashboardError;
+      throw new ApiError(`Bridge request failed (${response.status}).`, response.status);
+    }
   }
   return body;
+}
+
+async function layoutMutation(path: string, body: object, signal?: AbortSignal): Promise<LayoutResponse> {
+  const response = await fetch(path, {
+    method: path === '/api/layout' ? 'PUT' : 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const responseBody = await responseJson(response);
+  if (response.status === 200) return decodeLayoutResponse(responseBody);
+  if (response.status === 409) {
+    const conflict = decodeLayoutConflictResponse(responseBody);
+    throw new LayoutConflictError(conflict.current);
+  }
+  try {
+    const error = decodeDashboardErrorResponse(responseBody);
+    throw new ApiError(`Layout request failed: ${error.error}.`, response.status);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(`Layout request failed (${response.status}).`, response.status);
+  }
 }
 
 export async function fetchEvents(after: number, signal?: AbortSignal): Promise<EventsResponse> {
@@ -541,6 +743,39 @@ export async function fetchEvents(after: number, signal?: AbortSignal): Promise<
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
   return decodeHealthResponse(await get('/api/health', signal));
+}
+
+export async function getLayout(signal?: AbortSignal): Promise<LayoutResponse> {
+  return decodeLayoutResponse(await get('/api/layout', signal));
+}
+
+export async function putLayout(baseRevision: number, positions: readonly LayoutPosition[], signal?: AbortSignal): Promise<LayoutResponse> {
+  return layoutMutation('/api/layout', {
+    schema: 'mind.dashboard.layout.update.v1',
+    base_revision: baseRevision,
+    positions,
+  }, signal);
+}
+
+export async function uploadFloorplan(
+  baseRevision: number,
+  mime: Floorplan['mime'],
+  dataBase64: string,
+  signal?: AbortSignal,
+): Promise<LayoutResponse> {
+  return layoutMutation('/api/floorplan/upload', {
+    schema: 'mind.dashboard.floorplan.upload.v1',
+    base_revision: baseRevision,
+    mime,
+    data_base64: dataBase64,
+  }, signal);
+}
+
+export async function removeFloorplan(baseRevision: number, signal?: AbortSignal): Promise<LayoutResponse> {
+  return layoutMutation('/api/floorplan/remove', {
+    schema: 'mind.dashboard.floorplan.remove.v1',
+    base_revision: baseRevision,
+  }, signal);
 }
 
 export async function postRoot(device: number, active: boolean, signal?: AbortSignal): Promise<RootCommandResponse> {

@@ -1,4 +1,4 @@
-import type { EventRecord, EventsResponse, GttEntry, GttSnapshot, HealthDevice, HealthResponse, HealthRoot } from '../lib/api';
+import type { EventRecord, EventsResponse, GttEntry, GttSnapshot, HealthDevice, HealthResponse, HealthRoot, LayoutReadyResponse } from '../lib/api';
 
 export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
   return {
@@ -16,6 +16,7 @@ export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
     mic: 86,
     seq: 42,
     observer: 'dc4b0a0603f8',
+    observer_rssi_dbm: null,
     path: 'tavrn',
     ...overrides,
   };
@@ -24,7 +25,7 @@ export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
 export function eventsResponse(events: EventsResponse['events'] = [], gap = false): EventsResponse {
   const current = events.length === 0 ? 0 : events[events.length - 1].cursor;
   return {
-    schema: 'mind.api.v1',
+    schema: 'mind.api.v2',
     gap,
     oldest_cursor: events.length === 0 ? 1 : events[0].cursor,
     current_cursor: current,
@@ -105,6 +106,18 @@ export function healthResponse(devices: HealthDevice[] = [healthDevice(0)]): Hea
     oldest_cursor: 1,
     current_cursor: current,
     devices,
+  };
+}
+
+export function layoutReady(overrides: Partial<LayoutReadyResponse> = {}): LayoutReadyResponse {
+  return {
+    schema: 'mind.dashboard.layout.v1',
+    status: 'ready',
+    error: null,
+    revision: 0,
+    floorplan: null,
+    positions: [],
+    ...overrides,
   };
 }
 

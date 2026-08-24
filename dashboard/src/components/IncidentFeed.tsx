@@ -8,18 +8,24 @@ interface IncidentFeedProps {
   error?: string;
 }
 
+function eventErrorMessage(error: string): string {
+  return /(?:\/api\/root|root(?:\b|_))/i.test(error)
+    ? 'The event feed is temporarily unavailable.'
+    : error;
+}
+
 export function IncidentFeed({ events, conflictCount, loading, error }: IncidentFeedProps) {
   return (
     <section className="panel feed-panel" aria-labelledby="event-feed-heading">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Globally deduplicated by wearable and packet</p>
+          <p className="eyebrow">Recent incidents</p>
           <h2 id="event-feed-heading">Event feed</h2>
         </div>
         <span className="count">{events.length} logical events</span>
       </div>
       {conflictCount > 0 && <p className="notice warning" role="alert">{conflictCount} conflicting payload report{conflictCount === 1 ? '' : 's'} detected this session.</p>}
-      {error && <p className="notice error" role="alert">Event request failed: {error} Retrying while preserving the feed.</p>}
+      {error && <p className="notice error" role="alert">Event request failed: {eventErrorMessage(error)} Retrying while preserving the feed.</p>}
       {events.length === 0 ? (
         <p className="empty">{loading ? 'Loading event records…' : 'No logical events in this bridge session.'}</p>
       ) : (
@@ -45,8 +51,8 @@ export function IncidentFeed({ events, conflictCount, loading, error }: Incident
                   <h4>Observer evidence ({logical.evidence.length}{logical.evidenceSaturated ? '+' : ''})</h4>
                   <ul className="evidence-list">
                     {logical.evidence.map((evidence) => (
-                      <li key={`${evidence.root}:${evidence.observer}:${evidence.path}:${evidence.device}`}>
-                        Device {evidence.device} · root <code>{evidence.root}</code> · observer <code>{evidence.observer}</code> · {evidence.path} path
+                      <li key={`${evidence.root}:${evidence.observer}:${evidence.path}:${evidence.device}:${evidence.observerRssiDbm ?? 'unavailable'}`}>
+                        Observer <code>{evidence.observer}</code> · {evidence.observerRssiDbm === null ? 'RSSI unavailable' : `${evidence.observerRssiDbm} dBm`} · {evidence.path} path
                       </li>
                     ))}
                   </ul>

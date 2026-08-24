@@ -1,5 +1,4 @@
 import '../test/runtime';
-import type { ComponentProps } from 'react';
 import { cleanup, render, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,108 +7,72 @@ import { healthDevice, rootStatus } from '../test/fixtures';
 
 afterEach(cleanup);
 
-function panel(overrides: Partial<ComponentProps<typeof RootControlPanel>> = {}) {
-  return (
-    <RootControlPanel
-      devices={[healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]}
-      healthEpoch={0}
-      currentEpoch={0}
-      healthCurrentCursor={1}
-      rootRecords={{}}
-      commandRecords={{}}
-      pendingRoot={{}}
-      announcement=""
-      onSetRoot={() => undefined}
-      {...overrides}
-    />
-  );
+function panel(overrides: Partial<Parameters<typeof RootControlPanel>[0]> = {}) {
+  return <RootControlPanel
+    devices={[healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]}
+    healthEpoch={0}
+    currentEpoch={0}
+    healthCurrentCursor={1}
+    rootRecords={{}}
+    pendingRoot={{}}
+    rootErrors={{}}
+    announcement=""
+    onSetRoot={() => undefined}
+    {...overrides}
+  />;
 }
 
-describe('root device controls', () => {
-  it('uses one checked switch per known node and sends only its opposite root state', async () => {
+describe('Gateway control', () => {
+  it('uses one Gateway switch and sends only device zero', async () => {
     const onSetRoot = vi.fn();
     const user = userEvent.setup();
     const { rerender } = render(panel({ onSetRoot }));
-    const leafSwitch = within(document.body).getByRole('switch', { name: 'Turn root on for Node 1' });
-    expect(leafSwitch.getAttribute('aria-checked')).toBe('false');
-    await user.click(leafSwitch);
+    const off = within(document.body).getByRole('switch', { name: 'Turn Gateway on' });
+    expect(off.getAttribute('aria-checked')).toBe('false');
+    expect(within(document.body).getByRole('status', { name: 'Gateway command status' }).textContent).toBe('Gateway is off.');
+    await user.click(off);
     expect(onSetRoot).toHaveBeenCalledWith(0, true);
 
     rerender(panel({ onSetRoot, devices: [healthDevice(0, { root: rootStatus({ role: 'root' }) })] }));
-    const rootSwitch = within(document.body).getByRole('switch', { name: 'Turn root off for Node 1' });
-    expect(rootSwitch.getAttribute('aria-checked')).toBe('true');
-    await user.click(rootSwitch);
-    expect(onSetRoot).toHaveBeenLastCalledWith(0, false);
+    expect(within(document.body).getByRole('switch', { name: 'Turn Gateway off' }).getAttribute('aria-checked')).toBe('true');
+    expect(within(document.body).getByRole('status', { name: 'Gateway command status' }).textContent).toBe('Gateway is on.');
   });
 
-  it('keeps unknown, disconnected, and pending switches disabled with truthful state', () => {
+  it('truthfully disables unknown, disconnected, pending, and error states', () => {
+    const { rerender } = render(panel({ devices: [healthDevice(0, { root: null })] }));
+    const ui = within(document.body);
+    expect(ui.getByRole('checkbox', { name: 'Gateway status unknown' })).toHaveProperty('disabled', true);
+    expect(ui.getByText('Unknown')).not.toBeNull();
+
+    rerender(panel({ devices: [healthDevice(0, { connected: false, root: rootStatus() })] }));
+    expect(ui.getByRole('checkbox', { name: 'Gateway status unknown' })).toHaveProperty('disabled', true);
+    expect(ui.getByText('Disconnected')).not.toBeNull();
+
+    rerender(panel({ pendingRoot: { 0: { desired: true, requestId: 1, baselineCursor: 1, baselineEpoch: 0, phase: 'confirming' } } }));
+    expect(ui.getByRole('switch', { name: 'Turn Gateway on' })).toHaveProperty('disabled', true);
+    expect(ui.getAllByText('Confirming')).toHaveLength(2);
+
+    rerender(panel({ rootErrors: { 0: 'Serial command rejected.' } }));
+    expect(ui.getByText('Error')).not.toBeNull();
+    expect(ui.getByText('Serial command rejected.')).not.toBeNull();
+  });
+
+  it('does not use retained health or internal ROOT errors as Gateway authority', () => {
     render(panel({
-      devices: [
-        healthDevice(0, { root: null }),
-        healthDevice(1, { connected: false, root: rootStatus({ node: 2, role: 'root' }) }),
-        healthDevice(2, { root: rootStatus({ node: 3, role: 'leaf' }) }),
-      ],
-      pendingRoot: {
-        2: { desired: true, requestId: 7, baselineCursor: 4, baselineEpoch: 0, phase: 'confirming' },
-      },
+      healthAuthoritative: false,
+      rootErrors: { 0: 'Root command failed: disconnected.' },
     }));
     const ui = within(document.body);
-    const unknown = ui.getByRole('checkbox', { name: 'Root role unknown for Device 0' });
-    expect(unknown.getAttribute('aria-checked')).toBe('mixed');
-    expect(unknown).toHaveProperty('disabled', true);
-    expect(ui.getByText(/awaiting bridge status/i)).not.toBeNull();
-    expect(ui.getByRole('switch', { name: 'Turn root off for Node 2' })).toHaveProperty('disabled', true);
-    expect(ui.getByRole('switch', { name: 'Turn root on for Node 3' })).toHaveProperty('disabled', true);
-    expect(ui.getByText(/Requested ROOT ON; awaiting bridge confirmation/i)).not.toBeNull();
+    expect(ui.getByRole('checkbox', { name: 'Gateway status unknown' })).toHaveProperty('disabled', true);
+    expect(ui.getByText('Refreshing')).not.toBeNull();
+    expect(ui.getByText('Gateway command could not be completed. Retry Gateway.')).not.toBeNull();
+    expect(document.body.textContent).not.toMatch(/root command/i);
   });
 
-  it('treats a current null health root as a tombstone until a newer stream root arrives', () => {
-    const preReconnectRoot = { device: 0, ...rootStatus({ role: 'root', cursor: 5 }) };
-    const { rerender } = render(panel({
-      devices: [healthDevice(0, { root: null })],
-      healthCurrentCursor: 5,
-      rootRecords: { 0: preReconnectRoot },
-    }));
+  it('sanitizes ROOT protocol wording from Gateway health errors', () => {
+    render(panel({ healthError: 'mind_root_v1 decode failed' }));
     const ui = within(document.body);
-    const unknown = ui.getByRole('checkbox', { name: 'Root role unknown for Device 0' });
-    expect(unknown).toHaveProperty('disabled', true);
-    expect(ui.queryByRole('switch', { name: 'Turn root off for Node 1' })).toBeNull();
-
-    rerender(panel({
-      devices: [healthDevice(0, { root: null })],
-      healthCurrentCursor: 5,
-      rootRecords: { 0: { ...preReconnectRoot, cursor: 6 } },
-    }));
-    expect(ui.getByRole('switch', { name: 'Turn root off for Node 1' })).toHaveProperty('disabled', false);
-  });
-
-  it('deduplicates serial aliases and compares root-specific cursors only in the current epoch', () => {
-    const root = { device: 0, ...rootStatus({ role: 'root' }), cursor: 5 };
-    const { rerender } = render(panel({
-      devices: [
-        healthDevice(0, { root: rootStatus({ role: 'leaf', cursor: 4 }) }),
-        healthDevice(1, { owner_device: 0, root: rootStatus({ role: 'leaf', cursor: 4 }) }),
-      ],
-        rootRecords: { 0: root },
-    }));
-    const ui = within(document.body);
-    expect(ui.getAllByRole('rowheader')).toHaveLength(1);
-    expect(ui.getByRole('switch', { name: 'Turn root off for Node 1' })).not.toBeNull();
-
-    rerender(panel({
-      devices: [healthDevice(0, { root: rootStatus({ role: 'leaf', cursor: 6 }) })],
-      healthEpoch: 0,
-      currentEpoch: 0,
-      rootRecords: { 0: root },
-    }));
-    expect(ui.getByRole('switch', { name: 'Turn root on for Node 1' })).not.toBeNull();
-
-    rerender(panel({
-      devices: [healthDevice(0, { root: rootStatus({ role: 'root', cursor: 99 }) })],
-      healthEpoch: 0,
-      currentEpoch: 1,
-      rootRecords: { 0: { device: 0, ...rootStatus({ role: 'leaf' }), cursor: 1 } },
-    }));
-    expect(ui.getByRole('switch', { name: 'Turn root on for Node 1' })).not.toBeNull();
+    expect(ui.getByRole('alert').textContent).toContain('Gateway health is unavailable. Retrying.');
+    expect(ui.getByRole('alert').textContent).not.toMatch(/root/i);
   });
 });

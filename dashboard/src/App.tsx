@@ -1,12 +1,11 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { fetchEvents, fetchHealth, postRoot } from './lib/api';
 import { Header } from './components/Header';
+import { FloorplanPanel } from './components/FloorplanPanel';
 import { IncidentFeed } from './components/IncidentFeed';
 import { RootControlPanel } from './components/RootControlPanel';
-import { TopologyPanel } from './components/TopologyPanel';
-import { WearablePanel } from './components/WearablePanel';
-import { bridgeStatus, initialState, reducer } from './state/store';
-import { rootRequestBaseline } from './state/devices';
+import { bridgeStatus, initialState, reducer, STALE_AFTER_MS } from './state/store';
+import { gatewayDevice, rootRequestBaseline } from './state/devices';
 
 export const POLL_INTERVAL_MS = 4_000;
 export const ROOT_REQUEST_TIMEOUT_MS = 5_000;
@@ -29,6 +28,27 @@ interface AppProps {
 
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown bridge error.';
+}
+
+function gatewayCommandError(_error: unknown): string {
+  return 'Gateway command could not be completed. Retry Gateway.';
+}
+
+function currentHealthIsAuthoritative(
+  phase: 'loading' | 'ready' | 'error',
+  healthEpoch: number | null,
+  currentEpoch: number,
+  lastSuccessAt: number | undefined,
+  now: number,
+  healthCurrentCursor: number | null,
+  eventCursor: number,
+): boolean {
+  return phase === 'ready'
+    && healthEpoch === currentEpoch
+    && lastSuccessAt !== undefined
+    && now - lastSuccessAt < STALE_AFTER_MS
+    && healthCurrentCursor !== null
+    && healthCurrentCursor >= eventCursor;
 }
 
 export default function App({
@@ -118,8 +138,19 @@ export default function App({
     rootRequests.current.clear();
   }, []);
 
+  const healthAuthoritative = currentHealthIsAuthoritative(
+    state.healthRequest.phase,
+    state.healthEpoch,
+    state.epoch,
+    state.healthRequest.lastSuccessAt,
+    now,
+    state.health?.current_cursor ?? null,
+    state.eventCursor,
+  );
+
   const requestRoot = async (device: number, active: boolean) => {
-    if (rootRequests.current.has(device)) return;
+    const gateway = gatewayDevice(state.health?.devices ?? []);
+    if (device !== 0 || !healthAuthoritative || !gateway?.connected || rootRequests.current.has(0)) return;
     const requestId = ++rootRequestId.current;
     const controller = new AbortController();
     const request: ActiveRootRequest = {
@@ -131,27 +162,27 @@ export default function App({
       confirmationTimedOut: false,
     };
     request.httpTimer = window.setTimeout(() => {
-      if (rootRequests.current.get(device)?.id !== requestId) return;
+      if (rootRequests.current.get(0)?.id !== requestId) return;
       request.httpTimedOut = true;
       controller.abort();
-      dispatch({ type: 'rootFailed', device, requestId, message: 'Request timed out; retry this device.' });
+      dispatch({ type: 'rootFailed', device: 0, requestId, message: 'Request timed out; retry Gateway.' });
     }, rootRequestTimeoutMs);
     request.confirmationTimer = window.setTimeout(() => {
-      if (rootRequests.current.get(device)?.id !== requestId) return;
+      if (rootRequests.current.get(0)?.id !== requestId) return;
       request.confirmationTimedOut = true;
       controller.abort();
-      dispatch({ type: 'rootConfirmationTimedOut', device, requestId });
+      dispatch({ type: 'rootConfirmationTimedOut', device: 0, requestId });
     }, rootConfirmationTimeoutMs);
-    rootRequests.current.set(device, request);
-    const healthDevice = state.health?.devices.find((candidate) => candidate.device === device);
+    rootRequests.current.set(0, request);
+    const healthDevice = state.health?.devices.find((candidate) => candidate.device === 0);
     dispatch({
       type: 'rootPending',
-      device,
+      device: 0,
       active,
       requestId,
       baselineCursor: rootRequestBaseline(
         state.eventCursor,
-        device,
+        0,
         healthDevice,
         state.healthEpoch,
         state.epoch,
@@ -161,19 +192,19 @@ export default function App({
       baselineEpoch: state.epoch,
     });
     try {
-      const response = await postRoot(device, active, controller.signal);
-      if (rootRequests.current.get(device)?.id !== requestId) return;
+      const response = await postRoot(0, active, controller.signal);
+      if (rootRequests.current.get(0)?.id !== requestId) return;
       window.clearTimeout(request.httpTimer);
-      dispatch({ type: 'rootAccepted', device: response.device, command: response.command, requestId });
+      dispatch({ type: 'rootAccepted', device: 0, command: response.command, requestId });
     } catch (error) {
-      if (request.httpTimedOut || request.confirmationTimedOut || rootRequests.current.get(device)?.id !== requestId) return;
+      if (request.httpTimedOut || request.confirmationTimedOut || rootRequests.current.get(0)?.id !== requestId) return;
       window.clearTimeout(request.httpTimer);
       window.clearTimeout(request.confirmationTimer);
       dispatch({
         type: 'rootFailed',
-        device,
+        device: 0,
         requestId,
-        message: messageFor(error),
+        message: gatewayCommandError(error),
       });
     }
   };
@@ -199,21 +230,22 @@ export default function App({
             currentEpoch={state.epoch}
             healthCurrentCursor={state.health?.current_cursor ?? null}
             rootRecords={state.rootRecords}
-            commandRecords={state.commandRecords}
             pendingRoot={state.pendingRoot}
+            rootErrors={state.rootErrors}
             announcement={state.announcement}
             healthError={state.healthRequest.error}
+            healthAuthoritative={healthAuthoritative}
             onSetRoot={requestRoot}
           />
-          <TopologyPanel
+          <FloorplanPanel
             devices={devices}
             healthEpoch={state.healthEpoch}
             currentEpoch={state.epoch}
             healthCurrentCursor={state.health?.current_cursor ?? null}
             rootRecords={state.rootRecords}
             now={now}
+            healthAuthoritative={healthAuthoritative}
           />
-          <WearablePanel wearables={state.wearables} now={now} />
         </div>
         <IncidentFeed
           events={events}
