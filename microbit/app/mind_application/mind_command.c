@@ -50,6 +50,9 @@ int mind_command_parser_feed(mind_command_parser_t *parser, uint8_t byte,
     } else if (line_equals(parser->line, parser->length, "ROOT STATUS")) {
         attempt.command = MIND_COMMAND_STATUS;
         attempt.status = MIND_COMMAND_ACCEPTED;
+    } else if (line_equals(parser->line, parser->length, "GTT")) {
+        attempt.command = MIND_COMMAND_GTT;
+        attempt.status = MIND_COMMAND_ACCEPTED;
     } else {
         attempt.command = MIND_COMMAND_INVALID;
         attempt.status = MIND_COMMAND_MALFORMED;
@@ -151,6 +154,8 @@ const char *mind_command_kind_name(mind_command_kind_t command)
         return "off";
     case MIND_COMMAND_STATUS:
         return "status";
+    case MIND_COMMAND_GTT:
+        return "gtt";
     default:
         return "invalid";
     }

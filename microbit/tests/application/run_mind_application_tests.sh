@@ -64,6 +64,13 @@ COMMON_FLAGS=(
 "${BUILD_DIR}/test_mind_log_formatter"
 
 "${CC_BIN}" "${COMMON_FLAGS[@]}" \
+    "${MICROBIT_ROOT}/tests/application/test_mind_gtt_response.c" \
+    "${MICROBIT_ROOT}/app/mind_application/mind_gtt_response.c" \
+    "${MICROBIT_ROOT}/app/mind_application/mind_log.c" \
+    -o "${BUILD_DIR}/test_mind_gtt_response"
+"${BUILD_DIR}/test_mind_gtt_response"
+
+"${CC_BIN}" "${COMMON_FLAGS[@]}" \
     "${MICROBIT_ROOT}/tests/application/test_mind_phase5_provenance.c" \
     -o "${BUILD_DIR}/test_mind_phase5_provenance"
 "${BUILD_DIR}/test_mind_phase5_provenance"

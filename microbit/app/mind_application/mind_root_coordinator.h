@@ -40,6 +40,12 @@ typedef mind_root_resolver_status_t (*mind_root_coordinator_incoming_resolve_fn)
 typedef int (*mind_root_coordinator_command_peek_fn)(
     void *context, mind_command_attempt_t *attempt_out);
 typedef int (*mind_root_coordinator_command_consume_fn)(void *context);
+/* GTT owns one binding-provided UI snapshot request.  A claim is provisional
+ * until its command record commits, so structural log failure can roll it
+ * back without consuming the copied mailbox command. */
+typedef int (*mind_root_coordinator_gtt_claim_fn)(void *context);
+typedef void (*mind_root_coordinator_gtt_commit_fn)(void *context);
+typedef void (*mind_root_coordinator_gtt_cancel_fn)(void *context);
 typedef int (*mind_root_coordinator_final_peek_fn)(
     void *context, mind_root_inbox_entry_t *entry_out);
 typedef int (*mind_root_coordinator_final_consume_fn)(void *context);
@@ -73,6 +79,9 @@ typedef struct mind_root_coordinator_operations {
     mind_root_coordinator_incoming_resolve_fn resolve_incoming;
     mind_root_coordinator_command_peek_fn command_peek;
     mind_root_coordinator_command_consume_fn command_consume;
+    mind_root_coordinator_gtt_claim_fn gtt_claim;
+    mind_root_coordinator_gtt_commit_fn gtt_commit;
+    mind_root_coordinator_gtt_cancel_fn gtt_cancel;
     mind_root_coordinator_final_peek_fn final_peek;
     mind_root_coordinator_final_consume_fn final_consume;
     mind_root_coordinator_final_pin_observer_fn final_pin_observer;

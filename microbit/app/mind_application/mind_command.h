@@ -13,6 +13,7 @@ typedef enum mind_command_kind {
     MIND_COMMAND_ON = 0,
     MIND_COMMAND_OFF,
     MIND_COMMAND_STATUS,
+    MIND_COMMAND_GTT,
     MIND_COMMAND_INVALID,
 } mind_command_kind_t;
 

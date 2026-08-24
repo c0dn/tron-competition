@@ -97,7 +97,9 @@ static int operations_valid(const mind_root_coordinator_operations_t *operations
     return operations != NULL && operations->snapshot != NULL &&
         operations->sid8_ready != NULL && operations->resolve_outgoing != NULL &&
         operations->resolve_incoming != NULL && operations->command_peek != NULL &&
-        operations->command_consume != NULL && operations->final_peek != NULL &&
+        operations->command_consume != NULL && operations->gtt_claim != NULL &&
+        operations->gtt_commit != NULL && operations->gtt_cancel != NULL &&
+        operations->final_peek != NULL &&
         operations->final_consume != NULL && operations->final_pin_observer != NULL &&
         operations->ingress_take != NULL &&
         operations->final_publish_local != NULL &&
@@ -150,6 +152,7 @@ static void process_commands(mind_root_coordinator_t *coordinator,
         mind_log_record_t records[2];
         uint8_t needs_root = attempt.command == MIND_COMMAND_ON ||
             attempt.command == MIND_COMMAND_OFF || attempt.command == MIND_COMMAND_STATUS;
+        uint8_t gtt_claimed = 0u;
 
         /* A busy logger leaves the copied command at its mailbox head.  No
          * local role/UI transition occurs until all required records reserve. */
@@ -159,7 +162,13 @@ static void process_commands(mind_root_coordinator_t *coordinator,
             return;
         }
         if (attempt.status == MIND_COMMAND_ACCEPTED) {
-            if ((attempt.command == MIND_COMMAND_ON &&
+            if (attempt.command == MIND_COMMAND_GTT) {
+                if (coordinator->operations.gtt_claim(coordinator->operations.context)) {
+                    gtt_claimed = 1u;
+                } else {
+                    attempt.status = MIND_COMMAND_BUSY;
+                }
+            } else if ((attempt.command == MIND_COMMAND_ON &&
                  mind_root_plane_local_active(&coordinator->plane) != 0u) ||
                 (attempt.command == MIND_COMMAND_OFF &&
                  mind_root_plane_local_active(&coordinator->plane) == 0u)) {
@@ -184,12 +193,18 @@ static void process_commands(mind_root_coordinator_t *coordinator,
             make_root_record(coordinator, now_ms, &records[1]);
         }
         if (!coordinator->operations.log_commit(coordinator->operations.context,
-                                                &reservation, records)) {
+                                                 &reservation, records)) {
             /* The fixed log queue guarantees a reserved tail commits.  Retain
              * the command if a binding reports structural failure. */
             coordinator->operations.log_cancel(coordinator->operations.context,
-                                               &reservation);
+                                                &reservation);
+            if (gtt_claimed != 0u) {
+                coordinator->operations.gtt_cancel(coordinator->operations.context);
+            }
             return;
+        }
+        if (gtt_claimed != 0u) {
+            coordinator->operations.gtt_commit(coordinator->operations.context);
         }
         (void)coordinator->operations.command_consume(coordinator->operations.context);
     }

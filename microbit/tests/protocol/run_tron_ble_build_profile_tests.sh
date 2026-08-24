@@ -1500,7 +1500,7 @@ require_selected_source_count "$routed_full_production_manifest" \
 require_selected_source_count "$routed_full_production_manifest" \
     'app/mind_application/mind_application_ingress.c' 1
 for source in mind_event_forwarder.c mind_topology_adapter.c mind_root_plane.c mind_root_coordinator.c mind_root_inbox.c \
-              mind_command.c mind_log.c mind_log_formatter.c mind_uart.c mind_audio.c mind_ui.c; do
+              mind_command.c mind_log.c mind_log_formatter.c mind_gtt_response.c mind_uart.c mind_audio.c mind_ui.c; do
     require_selected_source_count "$routed_full_production_manifest" \
         "app/mind_application/${source}" 1
 done
@@ -1546,6 +1546,7 @@ require_exact_selected_sources "$routed_full_production_manifest" \
     'app/mind_application/mind_command.c' \
     'app/mind_application/mind_log.c' \
     'app/mind_application/mind_log_formatter.c' \
+    'app/mind_application/mind_gtt_response.c' \
     'app/mind_application/mind_uart.c' \
     'app/mind_application/mind_audio.c' \
     'app/mind_application/mind_ui.c' \

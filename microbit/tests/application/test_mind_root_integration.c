@@ -52,12 +52,18 @@ typedef struct fake_binding {
     uint32_t incoming_resolve_calls;
     uint32_t incoming_resolve_now_ms;
     uint32_t ui_calls;
+    uint32_t gtt_claim_calls;
+    uint32_t gtt_commit_calls;
+    uint32_t gtt_cancel_calls;
     uint8_t sid8_ready;
     uint8_t incoming_identity_by_sid8;
     uint8_t outgoing_identity_statuses;
     uint8_t snapshot_ok;
     uint8_t ui_local_active;
     uint8_t ui_active_roots;
+    uint8_t gtt_available;
+    uint8_t gtt_claimed;
+    uint8_t log_commit_fails;
 } fake_binding_t;
 
 static void check(int condition, const char *message)
@@ -152,6 +158,33 @@ static int fake_command_consume(void *context)
     return mind_uart_command_consume(&((fake_binding_t *)context)->uart);
 }
 
+static int fake_gtt_claim(void *context)
+{
+    fake_binding_t *binding = context;
+
+    binding->gtt_claim_calls++;
+    if (binding->gtt_available == 0u || binding->gtt_claimed != 0u) {
+        return 0;
+    }
+    binding->gtt_claimed = 1u;
+    return 1;
+}
+
+static void fake_gtt_commit(void *context)
+{
+    fake_binding_t *binding = context;
+
+    binding->gtt_commit_calls++;
+}
+
+static void fake_gtt_cancel(void *context)
+{
+    fake_binding_t *binding = context;
+
+    binding->gtt_cancel_calls++;
+    binding->gtt_claimed = 0u;
+}
+
 static int fake_final_peek(void *context, mind_root_inbox_entry_t *entry_out)
 {
     return mind_root_inbox_peek(&((fake_binding_t *)context)->inbox, entry_out);
@@ -192,7 +225,12 @@ static int fake_log_reserve(void *context, uint8_t count,
 static int fake_log_commit(void *context, mind_log_reservation_t *reservation,
                            const mind_log_record_t *records)
 {
-    return mind_log_queue_commit(&((fake_binding_t *)context)->logs, reservation, records);
+    fake_binding_t *binding = context;
+
+    if (binding->log_commit_fails != 0u) {
+        return 0;
+    }
+    return mind_log_queue_commit(&binding->logs, reservation, records);
 }
 
 static void fake_log_cancel(void *context, mind_log_reservation_t *reservation)
@@ -231,6 +269,7 @@ static void setup(mind_root_coordinator_t *coordinator, fake_binding_t *binding,
     memset(binding, 0, sizeof(*binding));
     binding->snapshot_ok = 1u;
     binding->sid8_ready = 1u;
+    binding->gtt_available = 1u;
     binding->outgoing_status = MIND_ROOT_RESOLVER_UNIQUE;
     binding->incoming_status = MIND_ROOT_RESOLVER_UNIQUE;
     binding->submit_status = MIND_ROOT_COORDINATOR_SUBMIT_ACCEPTED;
@@ -252,6 +291,9 @@ static void setup(mind_root_coordinator_t *coordinator, fake_binding_t *binding,
     operations.resolve_incoming = fake_resolve_incoming;
     operations.command_peek = fake_command_peek;
     operations.command_consume = fake_command_consume;
+    operations.gtt_claim = fake_gtt_claim;
+    operations.gtt_commit = fake_gtt_commit;
+    operations.gtt_cancel = fake_gtt_cancel;
     operations.final_peek = fake_final_peek;
     operations.final_consume = fake_final_consume;
     operations.final_pin_observer = fake_final_pin_observer;
@@ -1325,6 +1367,79 @@ static void test_arbiter_ack_before_urgent_report(void)
           "heartbeat report owns the token only after ACK, urgent, and ROOT_STATE work");
 }
 
+static void test_gtt_command_transaction(void)
+{
+    mind_root_coordinator_t coordinator;
+    fake_binding_t binding;
+    mind_root_coordinator_request_t request;
+    mind_log_record_t record;
+    mind_log_reservation_t reservation;
+    mind_log_record_t records[MIND_LOG_CAPACITY];
+    mind_application_root_state_t before;
+    mind_application_root_state_t after;
+    int transaction;
+
+    setup(&coordinator, &binding, 0u);
+    before = mind_root_plane_local_state(&coordinator.plane);
+    transaction = enqueue_command(&binding, MIND_COMMAND_GTT, MIND_COMMAND_ACCEPTED) &&
+        !mind_root_coordinator_prepare(&coordinator, 1u, &request) &&
+        binding.gtt_claim_calls == 1u && binding.gtt_commit_calls == 1u &&
+        binding.gtt_cancel_calls == 0u && binding.gtt_claimed != 0u &&
+        mind_log_queue_take(&binding.logs, &record) &&
+        record.kind == MIND_LOG_COMMAND &&
+        record.detail.command.command == MIND_COMMAND_GTT &&
+        record.detail.command.status == MIND_COMMAND_ACCEPTED &&
+        !mind_log_queue_take(&binding.logs, &record);
+    after = mind_root_plane_local_state(&coordinator.plane);
+    check(transaction && memcmp(&before, &after, sizeof(before)) == 0,
+          "accepted GTT claims after one log reservation without root state or root record");
+
+    setup(&coordinator, &binding, 0u);
+    binding.gtt_available = 0u;
+    before = mind_root_plane_local_state(&coordinator.plane);
+    transaction = enqueue_command(&binding, MIND_COMMAND_GTT, MIND_COMMAND_ACCEPTED) &&
+        !mind_root_coordinator_prepare(&coordinator, 2u, &request) &&
+        binding.gtt_claim_calls == 1u && binding.gtt_commit_calls == 0u &&
+        binding.gtt_cancel_calls == 0u &&
+        mind_log_queue_take(&binding.logs, &record) &&
+        record.kind == MIND_LOG_COMMAND &&
+        record.detail.command.command == MIND_COMMAND_GTT &&
+        record.detail.command.status == MIND_COMMAND_BUSY &&
+        !mind_log_queue_take(&binding.logs, &record);
+    after = mind_root_plane_local_state(&coordinator.plane);
+    check(transaction && memcmp(&before, &after, sizeof(before)) == 0,
+          "busy GTT logs one busy command without local root mutation or root record");
+
+    setup(&coordinator, &binding, 0u);
+    memset(records, 0, sizeof(records));
+    check(mind_log_queue_reserve(&binding.logs, MIND_LOG_CAPACITY, &reservation) &&
+              mind_log_queue_commit(&binding.logs, &reservation, records) &&
+              enqueue_command(&binding, MIND_COMMAND_GTT, MIND_COMMAND_ACCEPTED) &&
+              !mind_root_coordinator_prepare(&coordinator, 3u, &request) &&
+              binding.gtt_claim_calls == 0u && binding.gtt_commit_calls == 0u &&
+              binding.gtt_cancel_calls == 0u &&
+              mind_uart_command_peek(&binding.uart, &(mind_command_attempt_t){ 0 }),
+          "logger-full GTT leaves the mailbox command intact without claiming the UI slot");
+
+    setup(&coordinator, &binding, 0u);
+    binding.log_commit_fails = 1u;
+    check(enqueue_command(&binding, MIND_COMMAND_GTT, MIND_COMMAND_ACCEPTED) &&
+              !mind_root_coordinator_prepare(&coordinator, 4u, &request) &&
+              binding.gtt_claim_calls == 1u && binding.gtt_commit_calls == 0u &&
+              binding.gtt_cancel_calls == 1u && binding.gtt_claimed == 0u &&
+              mind_uart_command_peek(&binding.uart, &(mind_command_attempt_t){ 0 }) &&
+              !mind_log_queue_take(&binding.logs, &record),
+          "structural GTT log failure rolls back its claim and retains the mailbox command");
+    binding.log_commit_fails = 0u;
+    check(!mind_root_coordinator_prepare(&coordinator, 5u, &request) &&
+              binding.gtt_claim_calls == 2u && binding.gtt_commit_calls == 1u &&
+              binding.gtt_cancel_calls == 1u &&
+              mind_log_queue_take(&binding.logs, &record) &&
+              record.detail.command.command == MIND_COMMAND_GTT &&
+              record.detail.command.status == MIND_COMMAND_ACCEPTED,
+          "rolled-back GTT retries as the retained accepted mailbox command");
+}
+
 int main(void)
 {
     test_uart_immediate_off_lifecycle();
@@ -1342,6 +1457,7 @@ int main(void)
     test_event_final_logger_retention_and_observers();
     test_remote_off_and_departure_cancel_matching_event_targets();
     test_arbiter_ack_before_urgent_report();
+    test_gtt_command_transaction();
     if (failures != 0u) {
         printf("mind_root_integration failures=%u\n", failures);
         return 1;

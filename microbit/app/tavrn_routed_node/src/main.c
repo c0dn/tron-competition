@@ -23,6 +23,7 @@
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
 #include "mind_application_ingress.h"
+#include "mind_gtt_response.h"
 #include "mind_log.h"
 #include "mind_log_formatter.h"
 #include "mind_phase5_provenance.h"
@@ -243,6 +244,12 @@ typedef struct routed_benchmark_logger_storage {
 #endif
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN && !TRON_BUILD_BENCHMARK_MODE
+typedef enum routed_full_snapshot_owner {
+    ROUTED_FULL_SNAPSHOT_OWNER_NONE = 0,
+    ROUTED_FULL_SNAPSHOT_OWNER_INTERNAL,
+    ROUTED_FULL_SNAPSHOT_OWNER_UI,
+} routed_full_snapshot_owner_t;
+
 /* The logger never needs its summary and copied GTT snapshot at once. */
 typedef union routed_full_logger_storage {
     routed_snapshot_t summary;
@@ -336,6 +343,7 @@ static uint32_t routed_local_broadcast_generation_seen;
 static uint8_t routed_gtt_snapshot_request_pending;
 static uint8_t routed_gtt_snapshot_ready;
 static uint8_t routed_full_logger_summary_active;
+static routed_full_snapshot_owner_t routed_gtt_snapshot_owner;
 static routed_expiry_sweep_queue_t routed_expiry_sweep_queue;
 static routed_expiry_sweep_record_t routed_logged_expiry_sweep;
 #endif
@@ -372,6 +380,9 @@ static mind_root_coordinator_request_t routed_mind_pending_request;
 static aodv_status_t routed_mind_last_submit_status;
 static uint8_t routed_cycle_fault_logged;
 static volatile uint8_t routed_logger_progress_wake_armed;
+#if !TRON_BUILD_BENCHMARK_MODE
+static mind_gtt_response_t routed_mind_gtt_response;
+#endif
 /* This is ingress-only application evidence.  It is populated by the sole
  * mesh owner and becomes immutable before the lower-priority logger observes
  * its valid bit. */
@@ -750,6 +761,10 @@ static int delivery_pop(routed_delivery_t *delivery)
 #endif
 
 #if TRON_BUILD_ROUTED_FULL_TAVRN && TRON_BUILD_ENABLE_WEARABLE_INGRESS
+#if !TRON_BUILD_BENCHMARK_MODE
+static void routed_full_snapshot_request(routed_full_snapshot_owner_t owner);
+#endif
+
 static mind_root_resolver_status_t mind_root_resolver_status(
     tavrn_esc_context_status_t status)
 {
@@ -830,6 +845,43 @@ static int routed_mind_command_consume(void *context)
 {
     (void)context;
     return mind_uart_command_consume(&routed_mind_uart);
+}
+
+static int routed_mind_gtt_claim(void *context)
+{
+    int claimed = 0;
+
+    (void)context;
+#if !TRON_BUILD_BENCHMARK_MODE
+    if (queue_guard_begin()) {
+        claimed = mind_gtt_response_claim(&routed_mind_gtt_response);
+        queue_guard_end();
+    }
+#endif
+    return claimed;
+}
+
+static void routed_mind_gtt_commit(void *context)
+{
+    (void)context;
+#if !TRON_BUILD_BENCHMARK_MODE
+    if (queue_guard_begin()) {
+        mind_gtt_response_commit(&routed_mind_gtt_response);
+        queue_guard_end();
+        routed_full_snapshot_request(ROUTED_FULL_SNAPSHOT_OWNER_UI);
+    }
+#endif
+}
+
+static void routed_mind_gtt_cancel(void *context)
+{
+    (void)context;
+#if !TRON_BUILD_BENCHMARK_MODE
+    if (queue_guard_begin()) {
+        mind_gtt_response_cancel(&routed_mind_gtt_response);
+        queue_guard_end();
+    }
+#endif
 }
 
 static int routed_mind_final_peek(void *context, mind_root_inbox_entry_t *entry_out)
@@ -2532,16 +2584,33 @@ static tavrn_maintenance_status_t routed_observe_local_broadcast(void)
 #endif
 
 #if !TRON_BUILD_BENCHMARK_MODE
-static void routed_full_snapshot_request(void)
+static void routed_full_snapshot_request(routed_full_snapshot_owner_t owner)
 {
+    if (owner != ROUTED_FULL_SNAPSHOT_OWNER_INTERNAL &&
+        owner != ROUTED_FULL_SNAPSHOT_OWNER_UI) {
+        return;
+    }
     if (!queue_guard_begin()) {
         return;
     }
-    if (routed_gtt_snapshot_request_pending != 0u ||
-        routed_gtt_snapshot_ready != 0u) {
+    if (owner == ROUTED_FULL_SNAPSHOT_OWNER_UI) {
+        /* A pending UI request waits behind an already-owned internal copy;
+         * service starts it only after that copy has been logged and released. */
+        if (routed_gtt_snapshot_request_pending == 0u &&
+            routed_gtt_snapshot_ready == 0u) {
+            routed_gtt_snapshot_request_pending = 1u;
+            routed_gtt_snapshot_owner = ROUTED_FULL_SNAPSHOT_OWNER_UI;
+        }
+    } else if (routed_gtt_snapshot_request_pending != 0u ||
+               routed_gtt_snapshot_ready != 0u
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+               || mind_gtt_response_is_busy(&routed_mind_gtt_response)
+#endif
+               ) {
         routed_gtt_snapshot_request_dropped++;
     } else {
         routed_gtt_snapshot_request_pending = 1u;
+        routed_gtt_snapshot_owner = ROUTED_FULL_SNAPSHOT_OWNER_INTERNAL;
     }
     queue_guard_end();
 }
@@ -2549,28 +2618,52 @@ static void routed_full_snapshot_request(void)
 static void routed_full_snapshot_service(void)
 {
     routed_full_telemetry_status_t status;
+    routed_full_snapshot_owner_t owner = ROUTED_FULL_SNAPSHOT_OWNER_NONE;
     uint8_t requested = 0u;
 
     if (queue_guard_begin()) {
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+        if (routed_gtt_snapshot_request_pending == 0u &&
+            routed_gtt_snapshot_ready == 0u &&
+            routed_mind_gtt_response.state == MIND_GTT_RESPONSE_PENDING) {
+            routed_gtt_snapshot_request_pending = 1u;
+            routed_gtt_snapshot_owner = ROUTED_FULL_SNAPSHOT_OWNER_UI;
+        }
+#endif
         requested = routed_gtt_snapshot_request_pending != 0u &&
                     routed_full_logger_summary_active == 0u;
+        owner = routed_gtt_snapshot_owner;
         queue_guard_end();
     }
     if (requested == 0u) {
         return;
     }
     if (queue_guard_begin()) {
-        if (routed_full_logger_summary_active != 0u) {
+        if (routed_full_logger_summary_active != 0u ||
+            routed_gtt_snapshot_request_pending == 0u ||
+            owner == ROUTED_FULL_SNAPSHOT_OWNER_NONE) {
             queue_guard_end();
             return;
         }
         status = routed_full_telemetry_snapshot_gtt(
             &routed_gtt, now_ms(), &routed_full_logger_storage.gtt_snapshot);
         routed_gtt_snapshot_request_pending = 0u;
+        routed_gtt_snapshot_owner = ROUTED_FULL_SNAPSHOT_OWNER_NONE;
         if (status == ROUTED_FULL_TELEMETRY_OK) {
-            routed_gtt_snapshot_ready = 1u;
+            if (owner == ROUTED_FULL_SNAPSHOT_OWNER_UI) {
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                mind_gtt_response_snapshot_ready(&routed_mind_gtt_response);
+#endif
+            } else {
+                routed_gtt_snapshot_ready = 1u;
+            }
         } else {
             routed_gtt_snapshot_failed++;
+            if (owner == ROUTED_FULL_SNAPSHOT_OWNER_UI) {
+#if TRON_BUILD_ENABLE_WEARABLE_INGRESS
+                mind_gtt_response_snapshot_failed(&routed_mind_gtt_response);
+#endif
+            }
         }
         queue_guard_end();
     }
@@ -3741,6 +3834,25 @@ static void log_mind_record(const mind_log_record_t *record)
     mind_log_emit(record, routed_mind_log_sink, NULL);
 }
 
+#if !TRON_BUILD_BENCHMARK_MODE
+static int routed_mind_gtt_emit_next(void)
+{
+    char line[MIND_GTT_RESPONSE_LINE_BYTES];
+    int emitted = 0;
+
+    if (queue_guard_begin()) {
+        emitted = mind_gtt_response_format_next(
+            &routed_mind_gtt_response, &routed_full_logger_storage.gtt_snapshot,
+            line, sizeof(line));
+        queue_guard_end();
+    }
+    if (emitted) {
+        routed_mind_log_sink(NULL, line);
+    }
+    return emitted;
+}
+#endif
+
 /* This logger-only formatter accepts no caller aggregate.  The first valid
  * snapshot remains immutable after mind_phase5_provenance_mark_logged(), so a
  * failed phase-5 record produces bounded evidence exactly once. */
@@ -3975,7 +4087,12 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
                 !mind_log_record_is_heartbeat(&routed_mind_logged_record)) {
                 log_mind_record(&routed_mind_logged_record);
             }
-        } else
+        }
+#if !TRON_BUILD_BENCHMARK_MODE
+        else if (routed_mind_gtt_emit_next()) {
+        }
+#endif
+        else
 #endif
         if (routed_diagnostic_pop()) {
             if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
@@ -4046,7 +4163,7 @@ LOCAL void routed_logger_task(INT stacd, void *exinf)
             if (ROUTED_VERBOSE_RUNTIME_TELEMETRY != 0) {
                 log_summary(now);
 #if TRON_BUILD_ROUTED_FULL_TAVRN
-                routed_full_snapshot_request();
+                routed_full_snapshot_request(ROUTED_FULL_SNAPSHOT_OWNER_INTERNAL);
 #endif
             }
             next_summary_at = now + tron_timer_config.stats_ms;
@@ -4371,6 +4488,9 @@ EXPORT INT usermain(void)
         mind_uart_init_state(&routed_mind_uart);
         mind_log_queue_init(&routed_mind_log_queue);
         mind_ui_init_state(&routed_mind_ui, TRON_BUILD_APP_NODE_NUMBER);
+#if !TRON_BUILD_BENCHMARK_MODE
+        mind_gtt_response_init(&routed_mind_gtt_response);
+#endif
         memset(&operations, 0, sizeof(operations));
         operations.snapshot = routed_mind_snapshot;
         operations.sid8_ready = routed_mind_sid8_ready;
@@ -4378,6 +4498,9 @@ EXPORT INT usermain(void)
         operations.resolve_incoming = routed_mind_resolve_incoming;
         operations.command_peek = routed_mind_command_peek;
         operations.command_consume = routed_mind_command_consume;
+        operations.gtt_claim = routed_mind_gtt_claim;
+        operations.gtt_commit = routed_mind_gtt_commit;
+        operations.gtt_cancel = routed_mind_gtt_cancel;
         operations.final_peek = routed_mind_final_peek;
         operations.final_consume = routed_mind_final_consume;
         operations.final_pin_observer = routed_mind_final_pin_observer;

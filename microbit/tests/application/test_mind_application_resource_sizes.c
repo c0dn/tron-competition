@@ -11,6 +11,7 @@
 #include "aodv_core.h"
 #include "mind_application_ingress.h"
 #include "mind_event_forwarder.h"
+#include "mind_gtt_response.h"
 #include "mind_log.h"
 #include "mind_phase5_provenance.h"
 #include "mind_root_coordinator.h"
@@ -70,6 +71,7 @@ MIND_RESOURCE_SIZE(command_parser, mind_command_parser_t);
 MIND_RESOURCE_SIZE(command_mailbox, mind_command_mailbox_t);
 MIND_RESOURCE_SIZE(uart, mind_uart_t);
 MIND_RESOURCE_SIZE(phase5_provenance, mind_phase5_provenance_snapshot_t);
+MIND_RESOURCE_SIZE(gtt_response, mind_gtt_response_t);
 
 MIND_RESOURCE_SIZE(audio, mind_audio_t);
 MIND_RESOURCE_SIZE(ui, mind_ui_t);

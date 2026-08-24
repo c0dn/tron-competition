@@ -746,6 +746,7 @@ if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
         "app/mind_application/mind_command.c"
          "app/mind_application/mind_log.c"
          "app/mind_application/mind_log_formatter.c"
+         "app/mind_application/mind_gtt_response.c"
         "app/mind_application/mind_uart.c"
         "app/mind_application/mind_audio.c"
         "app/mind_application/mind_ui.c")
@@ -760,6 +761,7 @@ if(TRON_ENABLE_WEARABLE_INGRESS STREQUAL "ON")
         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_command.c"
          "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_log.c"
          "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_log_formatter.c"
+         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_gtt_response.c"
         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_uart.c"
         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_audio.c"
         "${TRON_BLE_APP_SOURCE_DIR}/mind_application/mind_ui.c")

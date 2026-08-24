@@ -67,6 +67,7 @@ MIND_APPLICATION_SOURCES = frozenset({
     "app/mind_application/mind_command.c",
     "app/mind_application/mind_log.c",
     "app/mind_application/mind_log_formatter.c",
+    "app/mind_application/mind_gtt_response.c",
     "app/mind_application/mind_uart.c",
     "app/mind_application/mind_audio.c",
     "app/mind_application/mind_ui.c",
@@ -97,6 +98,7 @@ MIND_APPLICATION_PRODUCTION_COMPONENTS = {
     "routed_mind_pending_request": "root_coordinator_request",
     "routed_mind_last_submit_status": "aodv_status",
     "routed_mind_phase5_first_invalid": "phase5_provenance",
+    "routed_mind_gtt_response": "gtt_response",
     "routed_logger_dispatch_epoch": "logger_dispatch_epoch",
     "routed_logger_progress_wake_armed": "logger_progress_wake_armed",
     "routed_cycle_fault_logged": "cycle_fault_logged",
@@ -3088,7 +3090,7 @@ def verify_d2_paired_acceptance(off_manifest_path: Path, off_seal: Path,
     on_generated = {source for source in on_sources if source.startswith("generated/")}
     off_checked = set(off_sources) - off_generated
     on_checked = set(on_sources) - on_generated
-    if len(D2_APPLICATION_SOURCE_ADDITIONS) != 14 or \
+    if len(D2_APPLICATION_SOURCE_ADDITIONS) != 15 or \
             on_checked - off_checked != D2_APPLICATION_SOURCE_ADDITIONS or off_checked - on_checked:
         raise CheckFailure("provenance", "D2 pairing has invalid source additions or removals")
     if off_generated != on_generated:

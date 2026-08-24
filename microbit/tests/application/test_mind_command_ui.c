@@ -78,6 +78,15 @@ static void test_commands(void)
     check(feed_line(&parser, "ROOT STATUS\n", &attempt) &&
           attempt.command == MIND_COMMAND_STATUS,
           "ROOT STATUS parses");
+    check(feed_line(&parser, "GTT\r", &attempt) &&
+          attempt.command == MIND_COMMAND_GTT &&
+          attempt.status == MIND_COMMAND_ACCEPTED &&
+          strcmp(mind_command_kind_name(attempt.command), "gtt") == 0,
+          "exact uppercase GTT parses with its production command name");
+    check(feed_line(&parser, "gtt\n", &attempt) &&
+          attempt.command == MIND_COMMAND_INVALID &&
+          attempt.status == MIND_COMMAND_MALFORMED,
+          "GTT parser rejects non-exact lowercase input");
     check(feed_line(&parser, "ROOT MAYBE\r", &attempt) &&
           attempt.command == MIND_COMMAND_INVALID &&
           attempt.status == MIND_COMMAND_MALFORMED,
