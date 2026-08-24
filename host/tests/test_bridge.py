@@ -31,6 +31,37 @@ ROOT = (
 COMMAND = b"mind_command_v1 now=12 local=8081545678c0 command=on status=accepted\n"
 
 
+def gtt_begin(query: int = 100, local: str = "8081545678c0", entries: int = 1, nondeparted: int = 1) -> bytes:
+    return f"mind_gtt_begin_v1 query={query} local={local} entries={entries} nondeparted={nondeparted}\n".encode()
+
+
+def gtt_entry(
+    index: int = 0,
+    *,
+    query: int = 100,
+    adva: str = "0102545678c0",
+    last: int = 90,
+    soft: int = 110,
+    hard: int = 120,
+    departed_deadline: int = 130,
+    serial: int = 4,
+    serial_state: int = 1,
+    hop: int = 2,
+    hop_state: int = 1,
+    freshness: int = 1,
+    departed: int = 1,
+) -> bytes:
+    return (
+        f"mind_gtt_entry_v1 query={query} index={index} adva={adva} last={last} soft={soft} hard={hard} "
+        f"departed_deadline={departed_deadline} serial={serial} serial_state={serial_state} hop={hop} "
+        f"hop_state={hop_state} freshness={freshness} departed={departed}\n"
+    ).encode()
+
+
+def gtt_end(query: int = 100, local: str = "8081545678c0", entries: int = 1, nondeparted: int = 1) -> bytes:
+    return f"mind_gtt_end_v1 query={query} local={local} entries={entries} nondeparted={nondeparted}\n".encode()
+
+
 def eventually(predicate, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -121,7 +152,51 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(bridge.parse_firmware_line(ROOT.rstrip())["kind"], "root")
         self.assertEqual(bridge.parse_firmware_line(COMMAND.rstrip())["command"], "on")
+        self.assertEqual(
+            bridge.parse_firmware_line(COMMAND.replace(b"command=on", b"command=gtt").rstrip())["command"],
+            "gtt",
+        )
         self.assertEqual(bridge.parse_firmware_line(EVENT.rstrip() + b"\r")["packet"], "a1b2c3")
+
+    def test_exact_gtt_records_and_ranges(self) -> None:
+        self.assertEqual(
+            bridge.parse_firmware_line(gtt_begin(query=0, entries=16, nondeparted=16).rstrip()),
+            {"kind": "gtt_begin", "query": 0, "local": "8081545678c0", "entries": 16, "nondeparted": 16},
+        )
+        entry = bridge.parse_firmware_line(
+            gtt_entry(
+                15,
+                query=0xFFFFFFFF,
+                last=0xFFFFFFFF,
+                soft=0xFFFFFFFF,
+                hard=0xFFFFFFFF,
+                departed_deadline=0xFFFFFFFF,
+                serial=0xFFFF,
+                serial_state=2,
+                hop=0xFF,
+                hop_state=2,
+                freshness=4,
+                departed=2,
+            ).rstrip()
+        )
+        self.assertEqual(entry["kind"], "gtt_entry")
+        self.assertEqual(entry["hop"], 0xFF)
+        self.assertEqual(bridge.parse_firmware_line(gtt_end(query=0, entries=0, nondeparted=0).rstrip())["kind"], "gtt_end")
+        invalid = [
+            gtt_begin(entries=17).rstrip(),
+            gtt_entry(index=16).rstrip(),
+            gtt_entry(serial=65536).rstrip(),
+            gtt_entry(serial_state=3).rstrip(),
+            gtt_entry(hop=256).rstrip(),
+            gtt_entry(hop_state=3).rstrip(),
+            gtt_entry(freshness=5).rstrip(),
+            gtt_entry(departed=4).rstrip(),
+            gtt_entry().replace(b"adva=0102545678c0", b"adva=0102545678C0").rstrip(),
+            gtt_end(nondeparted=17).rstrip(),
+        ]
+        for line in invalid:
+            with self.subTest(line=line), self.assertRaises(bridge.ParseError):
+                bridge.parse_firmware_line(line)
 
     def test_invalid_recognized_lines_and_unrelated_diagnostics(self) -> None:
         invalid = [
@@ -134,6 +209,7 @@ class ParserTests(unittest.TestCase):
             EVENT.replace(b"schema=1", b"schema=01").rstrip(),
             ROOT.replace(b"node=6", b"node=7").rstrip(),
             COMMAND.replace(b"status=accepted", b"status=ok").rstrip(),
+            gtt_entry().replace(b"hop=2", b"hop=02").rstrip(),
             b"mind_event_v1 completely unrelated",
         ]
         for line in invalid:
@@ -177,16 +253,45 @@ class RingTests(unittest.TestCase):
         self.assertEqual(exact["events"][0]["cursor"], 2)
         self.assertEqual(ring.page(257, 100)["events"], [])
 
-    def test_latest_root_health_shape_has_no_cursor_or_device(self) -> None:
+    def test_latest_root_health_shape_keeps_cursor_and_removes_device(self) -> None:
         state = bridge.Bridge(["test"])
         state.devices[0].feed_bytes(ROOT)
         health = state.health()
         root = health["devices"][0]["root"]
-        self.assertEqual(root["kind"], "root")
-        self.assertNotIn("cursor", root)
+        self.assertEqual(
+            root,
+            {
+                "cursor": 1,
+                "kind": "root",
+                "now": 99,
+                "local": "8081545678c0",
+                "node": 6,
+                "role": "root",
+                "roots": 16,
+                "announced": 2,
+                "acked": 1,
+                "rejected": 3,
+                "pending": 4,
+                "rootless_drop": 7,
+            },
+        )
         self.assertNotIn("device", root)
-        self.assertEqual(root["local"], "8081545678c0")
         self.assertEqual(health["devices"][0]["last_record_cursor"], 1)
+
+    def test_root_cursor_tracks_only_root_authority_not_aggregate_events(self) -> None:
+        state = bridge.Bridge(["test"])
+        device = state.devices[0]
+        device.feed_bytes(ROOT)
+        first = state.health()
+        self.assertEqual((first["current_cursor"], first["devices"][0]["root"]["cursor"]), (1, 1))
+
+        device.feed_bytes(EVENT)
+        unrelated = state.health()
+        self.assertEqual((unrelated["current_cursor"], unrelated["devices"][0]["root"]["cursor"]), (2, 1))
+
+        device.feed_bytes(ROOT.replace(b"now=99", b"now=100"))
+        updated = state.health()
+        self.assertEqual((updated["current_cursor"], updated["devices"][0]["root"]["cursor"]), (3, 3))
 
     def test_stable_repeated_serial_indices_at_capacity_and_duplicates(self) -> None:
         self.assertEqual([device.index for device in bridge.Bridge(["one"]).devices], [0])
@@ -197,6 +302,241 @@ class RingTests(unittest.TestCase):
         self.assertEqual(len(state.transports), 15)
         self.assertEqual([(device.index, device.path) for device in state.devices[:3]], [(0, "same"), (1, "same"), (2, "serial-0")])
         self.assertEqual(state.health()["devices"][-1]["device"], 15)
+
+
+class HealthSnapshotTests(unittest.TestCase):
+    def test_health_never_exposes_a_device_cursor_after_its_ring_cursor(self) -> None:
+        state = bridge.Bridge(["test"])
+        transport = state.transports[0]
+        original_cursors = state.ring.cursors
+        cursors_read = threading.Event()
+        release_health = threading.Event()
+        published = threading.Event()
+        results: list[dict[str, object]] = []
+
+        def gated_cursors() -> tuple[int, int]:
+            cursors = original_cursors()
+            cursors_read.set()
+            self.assertTrue(release_health.wait(timeout=1))
+            return cursors
+
+        def publish() -> None:
+            record = bridge.parse_firmware_line(EVENT.rstrip())
+            self.assertIsNotNone(record)
+            state.record_from_transport(transport, record)
+            published.set()
+
+        state.ring.cursors = gated_cursors  # type: ignore[method-assign]
+        reader = threading.Thread(target=lambda: results.append(state.health()))
+        writer = threading.Thread(target=publish)
+        reader.start()
+        self.assertTrue(cursors_read.wait(timeout=1))
+        writer.start()
+        self.assertFalse(published.wait(timeout=0.1))
+        release_health.set()
+        reader.join(timeout=1)
+        writer.join(timeout=1)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(len(results), 1)
+        health = results[0]
+        self.assertTrue(
+            all(device["last_record_cursor"] <= health["current_cursor"] for device in health["devices"]),
+        )
+
+    def test_health_snapshot_boundary_includes_gtt_publication_atomically(self) -> None:
+        state = bridge.Bridge(["test"])
+        transport = state.transports[0]
+        state.devices[0].feed_bytes(gtt_begin() + gtt_entry())
+        end_record = bridge.parse_firmware_line(gtt_end().rstrip())
+        self.assertIsNotNone(end_record)
+        original_cursors = state.ring.cursors
+        cursors_read = threading.Event()
+        release_health = threading.Event()
+        published = threading.Event()
+        results: list[dict[str, object]] = []
+
+        def gated_cursors() -> tuple[int, int]:
+            cursors = original_cursors()
+            cursors_read.set()
+            self.assertTrue(release_health.wait(timeout=1))
+            return cursors
+
+        def publish() -> None:
+            state.record_from_transport(transport, end_record)
+            published.set()
+
+        state.ring.cursors = gated_cursors  # type: ignore[method-assign]
+        reader = threading.Thread(target=lambda: results.append(state.health()))
+        writer = threading.Thread(target=publish)
+        reader.start()
+        self.assertTrue(cursors_read.wait(timeout=1))
+        writer.start()
+        self.assertFalse(published.wait(timeout=0.1))
+        release_health.set()
+        reader.join(timeout=1)
+        writer.join(timeout=1)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(writer.is_alive())
+        self.assertIsNone(results[0]["devices"][0]["gtt"])
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+
+    def test_health_snapshots_each_physical_transport_once_then_projects_aliases(self) -> None:
+        state = bridge.Bridge(["same", "same", "other"])
+        state.devices[0].feed_bytes(ROOT + gtt_begin() + gtt_entry() + gtt_end())
+        calls = {transport: 0 for transport in state.transports}
+        for transport in state.transports:
+            original_snapshot = transport.physical_snapshot
+
+            def counted_snapshot(
+                original_snapshot: object = original_snapshot,
+                transport: bridge.SerialTransport = transport,
+            ) -> dict[str, object]:
+                calls[transport] += 1
+                return original_snapshot()  # type: ignore[operator]
+
+            transport.physical_snapshot = counted_snapshot  # type: ignore[method-assign]
+
+        health = state.health()
+        self.assertEqual(list(calls.values()), [1, 1])
+        first, alias, other = health["devices"]
+        self.assertEqual(
+            [(first["device"], first["path"]), (alias["device"], alias["path"]), (other["device"], other["path"])],
+            [(0, "same"), (1, "same"), (2, "other")],
+        )
+        self.assertEqual((first["owner_device"], alias["owner_device"], other["owner_device"]), (0, 0, 2))
+        self.assertEqual(first["root"], alias["root"])
+        self.assertEqual((first["root"]["cursor"], alias["root"]["cursor"]), (1, 1))
+        self.assertEqual(first["gtt"], alias["gtt"])
+        self.assertEqual(first["gtt"]["generation"], 1)
+        self.assertIsNone(other["root"])
+        self.assertIsNone(other["gtt"])
+
+
+class GTTAssemblyTests(unittest.TestCase):
+    def _state(self) -> bridge.Bridge:
+        return bridge.Bridge(["test"])
+
+    def test_complete_snapshot_is_atomic_normalized_and_excluded_from_event_ring(self) -> None:
+        state = self._state()
+        device = state.devices[0]
+        device.feed_bytes(gtt_begin(entries=3, nondeparted=2))
+        device.feed_bytes(
+            gtt_entry(0, serial_state=0, hop_state=0, freshness=0, departed=0)
+            + EVENT
+            + ROOT
+            + COMMAND.replace(b"command=on", b"command=gtt")
+        )
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+        self.assertEqual([record["kind"] for record in state.ring.page(0, 100)["events"]], ["event", "root", "command"])
+        device.feed_bytes(gtt_entry(1, adva="0102545678c1", serial_state=2, hop_state=2, freshness=4, departed=2))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+        started = int(time.time() * 1000)
+        device.feed_bytes(gtt_entry(2, adva="0102545678c2", serial_state=1, hop_state=1, freshness=3, departed=3) + gtt_end(entries=3, nondeparted=2))
+        snapshot = state.health()["devices"][0]["gtt"]
+        self.assertEqual(snapshot["generation"], 1)
+        self.assertGreaterEqual(snapshot["completed_at_ms"], started)
+        self.assertEqual(
+            {key: snapshot[key] for key in snapshot if key != "completed_at_ms"},
+            {
+                "generation": 1,
+                "query_at_ms": 100,
+                "local": "8081545678c0",
+                "entry_count": 3,
+                "nondeparted_count": 2,
+                "entries": [
+                    {
+                        "index": 0,
+                        "adva": "0102545678c0",
+                        "last": 90,
+                        "soft": 110,
+                        "hard": 120,
+                        "departed_deadline": 130,
+                        "serial": 4,
+                        "serial_state": "not_applicable",
+                        "hop": 2,
+                        "hop_state": "not_applicable",
+                        "freshness": "not_applicable",
+                        "departed": "not_applicable",
+                    },
+                    {
+                        "index": 1,
+                        "adva": "0102545678c1",
+                        "last": 90,
+                        "soft": 110,
+                        "hard": 120,
+                        "departed_deadline": 130,
+                        "serial": 4,
+                        "serial_state": "unknown",
+                        "hop": 2,
+                        "hop_state": "unknown",
+                        "freshness": "departed",
+                        "departed": "true",
+                    },
+                    {
+                        "index": 2,
+                        "adva": "0102545678c2",
+                        "last": 90,
+                        "soft": 110,
+                        "hard": 120,
+                        "departed_deadline": 130,
+                        "serial": 4,
+                        "serial_state": "known",
+                        "hop": 2,
+                        "hop_state": "known",
+                        "freshness": "hard_expired",
+                        "departed": "unknown",
+                    },
+                ],
+            },
+        )
+
+    def test_zero_and_sixteen_entry_snapshots_increment_generation_only_on_completion(self) -> None:
+        state = self._state()
+        device = state.devices[0]
+        device.feed_bytes(gtt_begin(query=10, entries=0, nondeparted=0) + gtt_end(query=10, entries=0, nondeparted=0))
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+        device.feed_bytes(gtt_begin(query=11, entries=16, nondeparted=16))
+        for index in range(16):
+            device.feed_bytes(gtt_entry(index, query=11, adva=f"{index + 1:012x}"))
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+        device.feed_bytes(gtt_end(query=11, entries=16, nondeparted=16))
+        snapshot = state.health()["devices"][0]["gtt"]
+        self.assertEqual((snapshot["generation"], snapshot["entry_count"], snapshot["nondeparted_count"]), (2, 16, 16))
+        self.assertEqual([entry["index"] for entry in snapshot["entries"]], list(range(16)))
+
+    def test_replacement_and_invalid_records_discard_only_partial_assembly(self) -> None:
+        def assert_invalid(lines: bytes) -> None:
+            state = self._state()
+            state.devices[0].feed_bytes(lines)
+            self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        state = self._state()
+        device = state.devices[0]
+        device.feed_bytes(gtt_begin(query=1) + gtt_entry(query=1) + gtt_begin(query=2, entries=0, nondeparted=0) + gtt_end(query=2, entries=0, nondeparted=0))
+        replacement = state.health()["devices"][0]["gtt"]
+        self.assertEqual((replacement["generation"], replacement["query_at_ms"], replacement["entry_count"]), (1, 2, 0))
+
+        assert_invalid(gtt_begin() + b"mind_gtt_entry_v1 malformed\n" + gtt_entry() + gtt_end())
+        assert_invalid(gtt_begin() + gtt_entry() + gtt_entry() + gtt_end())
+        assert_invalid(gtt_begin() + gtt_entry(1) + gtt_entry() + gtt_end())
+        assert_invalid(gtt_begin() + gtt_entry(query=101) + gtt_end())
+        assert_invalid(gtt_begin() + gtt_entry() + gtt_end(query=101))
+        assert_invalid(gtt_begin() + b"mind_gtt_entry_v1 " + b"x" * (bridge.MAX_LINE_BYTES + 1) + b"\n" + gtt_entry() + gtt_end())
+        assert_invalid(gtt_begin() + gtt_end())
+
+    def test_terminal_validation_rejects_cross_field_constraints(self) -> None:
+        cases = [
+            gtt_begin(entries=0, nondeparted=1) + gtt_end(entries=0, nondeparted=1),
+            gtt_begin() + gtt_entry(hop=16) + gtt_end(),
+            gtt_begin(nondeparted=0) + gtt_entry(freshness=1, departed=2) + gtt_end(nondeparted=0),
+            gtt_begin(nondeparted=0) + gtt_entry(freshness=1, departed=1) + gtt_end(nondeparted=0),
+        ]
+        for lines in cases:
+            with self.subTest(lines=lines):
+                state = self._state()
+                state.devices[0].feed_bytes(lines)
+                self.assertIsNone(state.health()["devices"][0]["gtt"])
 
 
 class AliasTransportTests(unittest.TestCase):
@@ -237,6 +577,7 @@ class AliasTransportTests(unittest.TestCase):
                 self.assertEqual(len(state.transports), 1)
                 self.assertTrue(eventually(state.devices[0].is_connected))
                 self.assertEqual(opens, [path])
+                self.assertEqual(read_exact(master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
                 os.write(master, EVENT + ROOT)
                 self.assertTrue(eventually(lambda: state.ring.cursors()[1] == 2))
                 records = state.ring.page(0, 100)["events"]
@@ -247,6 +588,11 @@ class AliasTransportTests(unittest.TestCase):
                 self.assertEqual([entry["reconnects"] for entry in health], [0, 0, 0])
                 self.assertEqual([entry["last_record_cursor"] for entry in health], [2, 2, 2])
                 self.assertEqual([entry["root"] for entry in health], [health[0]["root"]] * 3)
+                self.assertEqual([entry["root"]["cursor"] for entry in health], [2, 2, 2])
+                self.assertEqual([entry["owner_device"] for entry in health], [0, 0, 0])
+                os.write(master, gtt_begin() + gtt_entry() + gtt_end())
+                self.assertTrue(eventually(lambda: state.health()["devices"][0]["gtt"] is not None))
+                self.assertEqual([entry["gtt"] for entry in state.health()["devices"]], [state.health()["devices"][0]["gtt"]] * 3)
                 os.write(master, b"mind_root_v1 bad\n")
                 self.assertTrue(eventually(lambda: state.health()["devices"][0]["parse_errors"] == 1))
                 self.assertEqual([entry["parse_errors"] for entry in state.health()["devices"]], [1, 1, 1])
@@ -257,8 +603,8 @@ class AliasTransportTests(unittest.TestCase):
                 state.devices[1].write_fn = partial_write
                 results: list[str] = []
                 callers = [
-                    threading.Thread(target=lambda: results.append(state.devices[0].submit(True))),
-                    threading.Thread(target=lambda: results.append(state.devices[2].submit(False))),
+                    threading.Thread(target=lambda: results.append(state.devices[0].submit(bridge.ROOT_ON))),
+                    threading.Thread(target=lambda: results.append(state.devices[2].submit(bridge.ROOT_OFF))),
                 ]
                 for caller in callers:
                     caller.start()
@@ -315,6 +661,7 @@ class AliasTransportTests(unittest.TestCase):
                 self.assertIs(state.devices[0].transport, state.devices[1].transport)
                 self.assertTrue(eventually(state.devices[0].is_connected))
                 self.assertEqual(attempts, [first_target])
+                self.assertEqual(read_exact(first_master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
                 reconnect_attempt = len(attempts)
                 os.close(first_master)
                 self.assertTrue(eventually(lambda: not state.devices[0].is_connected()))
@@ -325,6 +672,7 @@ class AliasTransportTests(unittest.TestCase):
 
                 self.assertTrue(eventually(lambda: state.devices[0].is_connected()))
                 self.assertTrue(eventually(lambda: state.health()["devices"][0]["reconnects"] >= 1))
+                self.assertEqual(read_exact(second_master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
                 retry_paths = attempts[reconnect_attempt:]
                 self.assertGreaterEqual(len(retry_paths), 2)
                 self.assertEqual(retry_paths[0], first_target)
@@ -336,7 +684,7 @@ class AliasTransportTests(unittest.TestCase):
                 os.write(second_master, EVENT)
                 self.assertTrue(eventually(lambda: state.ring.cursors()[1] == 1))
                 self.assertEqual(state.ring.page(0, 1)["events"][0]["device"], 0)
-                self.assertEqual(state.devices[1].submit(True), "accepted")
+                self.assertEqual(state.devices[1].submit(bridge.ROOT_ON), "accepted")
                 self.assertEqual(read_exact(second_master, len(b"ROOT ON\r")), b"ROOT ON\r")
                 health = state.health()["devices"]
                 self.assertEqual([entry["reconnects"] for entry in health], [health[0]["reconnects"]] * 2)
@@ -408,6 +756,83 @@ class ReconnectFramingTests(unittest.TestCase):
             transport.stop()
             peer_two.close()
 
+    def test_reconnect_clears_authority_and_writes_status_before_fresh_commands(self) -> None:
+        state, transport, peer_one, peer_two = self._transport_with_replacement_socket()
+        try:
+            self.assertEqual(read_exact(peer_one.fileno(), len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
+            peer_one.sendall(ROOT + gtt_begin() + gtt_entry() + gtt_end() + gtt_begin(query=101))
+            self.assertTrue(
+                eventually(
+                    lambda: transport.snapshot(0, "fake")["root"] is not None
+                    and transport.snapshot(0, "fake")["gtt"] is not None
+                )
+            )
+            self.assertEqual(transport.snapshot(0, "fake")["root"]["cursor"], 1)
+            peer_one.close()
+            self.assertTrue(eventually(lambda: transport.snapshot(0, "fake")["reconnects"] == 1))
+            restored = transport.snapshot(0, "fake")
+            self.assertTrue(restored["connected"])
+            self.assertIsNone(restored["root"])
+            self.assertIsNone(restored["gtt"])
+            peer_two.sendall(gtt_entry(query=101) + gtt_end(query=101) + EVENT)
+            self.assertTrue(eventually(lambda: state.ring.cursors()[1] == 2))
+            self.assertIsNone(transport.snapshot(0, "fake")["gtt"])
+            self.assertEqual(transport.submit(bridge.GTT), "accepted")
+            self.assertEqual(
+                read_exact(peer_two.fileno(), len(bridge.ROOT_STATUS) + len(bridge.GTT)),
+                bridge.ROOT_STATUS + bridge.GTT,
+            )
+        finally:
+            transport.stop()
+            peer_two.close()
+
+    def test_submit_stale_across_reconnect_is_rejected_before_new_status_generation(self) -> None:
+        _state, transport, peer_one, peer_two = self._transport_with_replacement_socket()
+        admission_lock = threading.Lock()
+        observed = threading.Event()
+        release = threading.Event()
+        observed_count = 0
+        results: list[tuple[bytes, str]] = []
+
+        def pause_admission() -> None:
+            nonlocal observed_count
+            with admission_lock:
+                observed_count += 1
+                if observed_count == 2:
+                    observed.set()
+            self.assertTrue(release.wait(timeout=1))
+
+        try:
+            self.assertEqual(read_exact(peer_one.fileno(), len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
+            transport._before_command_admission = pause_admission
+            callers = [
+                threading.Thread(target=lambda: results.append((bridge.ROOT_ON, transport.submit(bridge.ROOT_ON)))),
+                threading.Thread(target=lambda: results.append((bridge.GTT, transport.submit(bridge.GTT)))),
+            ]
+            for caller in callers:
+                caller.start()
+            self.assertTrue(observed.wait(timeout=1))
+
+            peer_one.close()
+            self.assertTrue(eventually(lambda: transport.snapshot(0, "fake")["reconnects"] == 1))
+            self.assertEqual(read_exact(peer_two.fileno(), len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
+
+            release.set()
+            for caller in callers:
+                caller.join(timeout=1)
+                self.assertFalse(caller.is_alive())
+            self.assertEqual(sorted(results), [(bridge.GTT, "disconnected"), (bridge.ROOT_ON, "disconnected")])
+            self.assertEqual(read_exact(peer_two.fileno(), 1, timeout=0.1), b"")
+
+            transport._before_command_admission = None
+            self.assertEqual(transport.submit(bridge.GTT), "accepted")
+            self.assertEqual(read_exact(peer_two.fileno(), len(bridge.GTT)), bridge.GTT)
+        finally:
+            release.set()
+            transport._before_command_admission = None
+            transport.stop()
+            peer_two.close()
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -445,7 +870,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             json.loads(body),
-            {"schema": "mind.health.v1", "oldest_cursor": 1, "current_cursor": 0, "devices": []},
+            {"schema": "mind.health.v2", "oldest_cursor": 1, "current_cursor": 0, "devices": []},
         )
 
     def test_root_post_error_matrix(self) -> None:
@@ -463,6 +888,28 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual((status, json.loads(body)["error"]), (404, "unknown_device"))
         status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":true}')
         self.assertEqual((status, json.loads(body)["error"]), (503, "disconnected"))
+
+    def test_gtt_post_error_matrix(self) -> None:
+        state = bridge.Bridge(["/does/not/exist"])
+        server = ServerHarness(state, self.assets)
+        self.addCleanup(server.close)
+
+        status, headers, body = server.request("POST", "/api/gtt", b"{", {"Content-Type": "application/json"})
+        self.assertEqual((status, json.loads(body)["error"], headers["Cache-Control"]), (400, "invalid_json", "no-store"))
+        for invalid in (
+            b"{}",
+            b'{"device":true}',
+            b'{"device":0,"active":true}',
+            b'{"device":0,"device":0}',
+        ):
+            with self.subTest(invalid=invalid):
+                status, _, body = server.request("POST", "/api/gtt", invalid)
+                self.assertEqual((status, json.loads(body)["error"]), (400, "invalid_body"))
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":1}')
+        self.assertEqual((status, json.loads(body)["error"]), (404, "unknown_device"))
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}')
+        self.assertEqual((status, json.loads(body)["error"]), (503, "disconnected"))
+        self.assertEqual(server.request("POST", "/api/gtt?unexpected=1", b'{"device":0}')[0], 404)
 
     def test_static_assets_types_missing_and_traversal_are_safe(self) -> None:
         outside = Path(self.temp.name) / "outside.txt"
@@ -542,6 +989,7 @@ class SerialWorkerTests(unittest.TestCase):
         self.state = bridge.Bridge([self.path])
         self.state.start()
         self.assertTrue(eventually(self.state.devices[0].is_connected), "PTY worker did not connect")
+        self.assertEqual(read_exact(self.master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
 
     def tearDown(self) -> None:
         self.state.stop()
@@ -559,19 +1007,27 @@ class SerialWorkerTests(unittest.TestCase):
         responses: list[tuple[int, dict[str, str], bytes]] = []
         response_lock = threading.Lock()
 
-        def post(active: bool) -> None:
-            result = server.request("POST", "/api/root", json.dumps({"device": 0, "active": active}).encode())
+        def post(target: str, payload: dict[str, object]) -> None:
+            result = server.request("POST", target, json.dumps(payload).encode())
             with response_lock:
                 responses.append(result)
 
-        callers = [threading.Thread(target=post, args=(index % 2 == 0,)) for index in range(6)]
+        requests = [
+            ("/api/root", {"device": 0, "active": True}),
+            ("/api/gtt", {"device": 0}),
+            ("/api/root", {"device": 0, "active": False}),
+            ("/api/gtt", {"device": 0}),
+            ("/api/root", {"device": 0, "active": True}),
+            ("/api/gtt", {"device": 0}),
+        ]
+        callers = [threading.Thread(target=post, args=request) for request in requests]
         for caller in callers:
             caller.start()
         for caller in callers:
             caller.join(timeout=3)
         self.assertEqual([status for status, _, _ in responses], [202] * 6)
-        output = read_exact(self.master, 3 * len(b"ROOT ON\r") + 3 * len(b"ROOT OFF\r"))
-        self.assertEqual(len(output), 51)
+        output = read_exact(self.master, 2 * len(bridge.ROOT_ON) + len(bridge.ROOT_OFF) + 3 * len(bridge.GTT))
+        self.assertEqual(len(output), 37)
         remaining = output
         commands = []
         while remaining:
@@ -581,17 +1037,32 @@ class SerialWorkerTests(unittest.TestCase):
             elif remaining.startswith(b"ROOT OFF\r"):
                 commands.append(b"off")
                 remaining = remaining[len(b"ROOT OFF\r") :]
+            elif remaining.startswith(bridge.GTT):
+                commands.append(b"gtt")
+                remaining = remaining[len(bridge.GTT) :]
             else:
                 self.fail(f"interleaved serial bytes: {output!r}")
-        self.assertEqual(sorted(commands), [b"off", b"off", b"off", b"on", b"on", b"on"])
+        self.assertEqual(sorted(commands), [b"gtt", b"gtt", b"gtt", b"off", b"on", b"on"])
         for _, _, body in responses:
             self.assertTrue(json.loads(body)["accepted"])
+        self.assertEqual(sorted(json.loads(body)["command"] for _, _, body in responses), ["gtt", "gtt", "gtt", "off", "on", "on"])
+        self.assertEqual(
+            [json.loads(body) for _, _, body in responses if json.loads(body)["command"] == "gtt"],
+            [{"schema": "mind.command.v1", "accepted": True, "device": 0, "command": "gtt"}] * 3,
+        )
 
     def test_post_reports_write_failure(self) -> None:
         self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
         self.addCleanup(server.close)
         status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":false}')
+        self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
+
+    def test_gtt_post_reports_write_failure(self) -> None:
+        self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
+        server = ServerHarness(self.state, Path(tempfile.gettempdir()))
+        self.addCleanup(server.close)
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}')
         self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
 
     def test_partially_written_stalled_command_has_a_bounded_failure_and_closes_transport(self) -> None:
@@ -607,6 +1078,7 @@ class SerialWorkerTests(unittest.TestCase):
         )
         self.state.start()
         self.assertTrue(eventually(self.state.devices[0].is_connected))
+        self.assertEqual(read_exact(self.master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
         calls = 0
 
         def partial_then_block(fd: int, data: bytes) -> int:

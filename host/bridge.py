@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 API_SCHEMA = "mind.api.v1"
-HEALTH_SCHEMA = "mind.health.v1"
+HEALTH_SCHEMA = "mind.health.v2"
 COMMAND_SCHEMA = "mind.command.v1"
 ERROR_SCHEMA = "mind.error.v1"
 
@@ -38,7 +38,21 @@ HTTP_WORKER_CAPACITY = 16
 INITIAL_RECONNECT_SECONDS = 0.05
 MAX_RECONNECT_SECONDS = 1.0
 
-KNOWN_PREFIXES = (b"mind_event_v1", b"mind_root_v1", b"mind_command_v1")
+KNOWN_PREFIXES = (
+    b"mind_event_v1",
+    b"mind_root_v1",
+    b"mind_command_v1",
+    b"mind_gtt_begin_v1",
+    b"mind_gtt_entry_v1",
+    b"mind_gtt_end_v1",
+)
+GTT_PREFIXES = (b"mind_gtt_begin_v1", b"mind_gtt_entry_v1", b"mind_gtt_end_v1")
+GTT_KINDS = frozenset({"gtt_begin", "gtt_entry", "gtt_end"})
+ROOT_ON = b"ROOT ON\r"
+ROOT_OFF = b"ROOT OFF\r"
+ROOT_STATUS = b"ROOT STATUS\r"
+GTT = b"GTT\r"
+FIXED_COMMANDS = frozenset({ROOT_ON, ROOT_OFF, ROOT_STATUS, GTT})
 DECIMAL = r"(?:0|[1-9][0-9]*)"
 HEX12 = r"[0-9a-f]{12}"
 HEX6 = r"[0-9a-f]{6}"
@@ -59,9 +73,29 @@ ROOT_PATTERN = re.compile(
 )
 COMMAND_PATTERN = re.compile(
     rf"^mind_command_v1 now=(?P<now>{DECIMAL}) local=(?P<local>{HEX12}) "
-    r"command=(?P<command>on|off|status|invalid) "
+    r"command=(?P<command>on|off|status|gtt|invalid) "
     r"status=(?P<status>accepted|duplicate|busy|malformed|overflow|rejected)$"
 )
+GTT_BEGIN_PATTERN = re.compile(
+    rf"^mind_gtt_begin_v1 query=(?P<query>{DECIMAL}) local=(?P<local>{HEX12}) "
+    rf"entries=(?P<entries>{DECIMAL}) nondeparted=(?P<nondeparted>{DECIMAL})$"
+)
+GTT_ENTRY_PATTERN = re.compile(
+    rf"^mind_gtt_entry_v1 query=(?P<query>{DECIMAL}) index=(?P<index>{DECIMAL}) "
+    rf"adva=(?P<adva>{HEX12}) last=(?P<last>{DECIMAL}) soft=(?P<soft>{DECIMAL}) "
+    rf"hard=(?P<hard>{DECIMAL}) departed_deadline=(?P<departed_deadline>{DECIMAL}) "
+    rf"serial=(?P<serial>{DECIMAL}) serial_state=(?P<serial_state>{DECIMAL}) "
+    rf"hop=(?P<hop>{DECIMAL}) hop_state=(?P<hop_state>{DECIMAL}) "
+    rf"freshness=(?P<freshness>{DECIMAL}) departed=(?P<departed>{DECIMAL})$"
+)
+GTT_END_PATTERN = re.compile(
+    rf"^mind_gtt_end_v1 query=(?P<query>{DECIMAL}) local=(?P<local>{HEX12}) "
+    rf"entries=(?P<entries>{DECIMAL}) nondeparted=(?P<nondeparted>{DECIMAL})$"
+)
+
+VALUE_STATES = ("not_applicable", "known", "unknown")
+FRESHNESS_STATES = ("not_applicable", "active", "soft_stale", "hard_expired", "departed")
+DEPARTED_STATES = ("not_applicable", "false", "true", "unknown")
 
 
 @dataclass(frozen=True)
@@ -160,9 +194,72 @@ def parse_firmware_line(raw_line: bytes) -> Optional[dict[str, Any]]:
             "status": fields["status"],
         }
 
+    begin_match = GTT_BEGIN_PATTERN.fullmatch(line)
+    if begin_match is not None:
+        fields = begin_match.groupdict()
+        return {
+            "kind": "gtt_begin",
+            "query": _number(fields, "query", 0xFFFFFFFF),
+            "local": fields["local"],
+            "entries": _number(fields, "entries", 16),
+            "nondeparted": _number(fields, "nondeparted", 16),
+        }
+
+    entry_match = GTT_ENTRY_PATTERN.fullmatch(line)
+    if entry_match is not None:
+        fields = entry_match.groupdict()
+        return {
+            "kind": "gtt_entry",
+            "query": _number(fields, "query", 0xFFFFFFFF),
+            "index": _number(fields, "index", 15),
+            "adva": fields["adva"],
+            "last": _number(fields, "last", 0xFFFFFFFF),
+            "soft": _number(fields, "soft", 0xFFFFFFFF),
+            "hard": _number(fields, "hard", 0xFFFFFFFF),
+            "departed_deadline": _number(fields, "departed_deadline", 0xFFFFFFFF),
+            "serial": _number(fields, "serial", 0xFFFF),
+            "serial_state": _number(fields, "serial_state", 2),
+            "hop": _number(fields, "hop", 0xFF),
+            "hop_state": _number(fields, "hop_state", 2),
+            "freshness": _number(fields, "freshness", 4),
+            "departed": _number(fields, "departed", 3),
+        }
+
+    end_match = GTT_END_PATTERN.fullmatch(line)
+    if end_match is not None:
+        fields = end_match.groupdict()
+        return {
+            "kind": "gtt_end",
+            "query": _number(fields, "query", 0xFFFFFFFF),
+            "local": fields["local"],
+            "entries": _number(fields, "entries", 16),
+            "nondeparted": _number(fields, "nondeparted", 16),
+        }
+
     if recognized:
         raise ParseError("MIND line has invalid grammar")
     return None
+
+
+def _is_gtt_line(raw_line: bytes) -> bool:
+    return raw_line.startswith(GTT_PREFIXES)
+
+
+def _normalized_gtt_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "index": entry["index"],
+        "adva": entry["adva"],
+        "last": entry["last"],
+        "soft": entry["soft"],
+        "hard": entry["hard"],
+        "departed_deadline": entry["departed_deadline"],
+        "serial": entry["serial"],
+        "serial_state": VALUE_STATES[entry["serial_state"]],
+        "hop": entry["hop"],
+        "hop_state": VALUE_STATES[entry["hop_state"]],
+        "freshness": FRESHNESS_STATES[entry["freshness"]],
+        "departed": DEPARTED_STATES[entry["departed"]],
+    }
 
 
 class CursorRing:
@@ -235,10 +332,20 @@ def configure_serial_115200(fd: int) -> None:
 
 @dataclass
 class CommandRequest:
-    active: bool
+    payload: bytes
+    connection_generation: int
     done: threading.Event
     deadline: float
     result: Optional[str] = None
+
+
+@dataclass
+class PartialGTT:
+    query: int
+    local: str
+    entry_count: int
+    nondeparted_count: int
+    entries: list[dict[str, Any]]
 
 
 class SerialTransport:
@@ -275,11 +382,15 @@ class SerialTransport:
         self._started = False
         self._state_lock = threading.RLock()
         self._connected = False
+        self._connection_generation = 0
         self._parse_errors = 0
         self._overlong_lines = 0
         self._reconnects = 0
         self._last_record_cursor = 0
         self._latest_root: Optional[dict[str, Any]] = None
+        self._latest_gtt: Optional[dict[str, Any]] = None
+        self._partial_gtt: Optional[PartialGTT] = None
+        self._gtt_generation = 0
         self._line = bytearray()
         self._discarding_overlong = False
         self._fd: Optional[int] = None
@@ -290,6 +401,9 @@ class SerialTransport:
         self._ever_connected = False
         self._backoff = INITIAL_RECONNECT_SECONDS
         self._next_connect = 0.0
+        # Test-only synchronization point after initial connection observation.
+        # Admission always revalidates the captured generation after this hook.
+        self._before_command_admission: Optional[Callable[[], None]] = None
 
     def add_reopen_path(self, path: str) -> None:
         """Retain one original CLI spelling as an ordered reconnect candidate."""
@@ -313,25 +427,38 @@ class SerialTransport:
         if started and self._thread.is_alive():
             self._thread.join(timeout=self.timing.worker_join_timeout)
 
-    def submit(self, active: bool) -> str:
-        with self._state_lock:
-            if not self._connected or self._stop.is_set():
-                return "disconnected"
+    def submit(self, payload: bytes) -> str:
+        if payload not in FIXED_COMMANDS:
+            return "write_failed"
         with self._lifecycle_lock:
             if self._started and not self._thread.is_alive():
                 return "write_failed"
         now = time.monotonic()
-        request = CommandRequest(
-            active=active,
-            done=threading.Event(),
-            deadline=now + self.timing.command_deadline,
-        )
-        try:
-            self._commands.put_nowait(request)
-        except queue.Full:
-            # The frozen HTTP vocabulary has no queue-full error. A request not
-            # accepted by the bounded writer is reported as an unsuccessful write.
-            return "write_failed"
+        with self._state_lock:
+            if not self._connected or self._stop.is_set():
+                return "disconnected"
+            generation = self._connection_generation
+        if self._before_command_admission is not None:
+            self._before_command_admission()
+        with self._state_lock:
+            if (
+                not self._connected
+                or self._stop.is_set()
+                or generation != self._connection_generation
+            ):
+                return "disconnected"
+            request = CommandRequest(
+                payload=payload,
+                connection_generation=generation,
+                done=threading.Event(),
+                deadline=now + self.timing.command_deadline,
+            )
+            try:
+                self._commands.put_nowait(request)
+            except queue.Full:
+                # The frozen HTTP vocabulary has no queue-full error. A request not
+                # accepted by the bounded writer is reported as an unsuccessful write.
+                return "write_failed"
         request.done.wait(self.timing.command_deadline + self.timing.submit_wait_slack)
         return request.result or "write_failed"
 
@@ -339,18 +466,25 @@ class SerialTransport:
         with self._state_lock:
             return self._connected
 
-    def snapshot(self, index: int, path: str) -> dict[str, Any]:
+    def physical_snapshot(self) -> dict[str, Any]:
+        """Return the transport-owned health fields under its state lock."""
+
         with self._state_lock:
             return {
-                "device": index,
-                "path": path,
                 "connected": self._connected,
                 "parse_errors": self._parse_errors,
                 "overlong_lines": self._overlong_lines,
                 "reconnects": self._reconnects,
                 "last_record_cursor": self._last_record_cursor,
                 "root": self._latest_root.copy() if self._latest_root is not None else None,
+                "gtt": self._gtt_snapshot(),
+                "owner_device": self.owner_index,
             }
+
+    def snapshot(self, index: int, path: str) -> dict[str, Any]:
+        """Return one legacy alias projection for direct transport callers."""
+
+        return _project_device_snapshot(index, path, self.physical_snapshot())
 
     def feed_bytes(self, data: bytes) -> None:
         """Consume a serial chunk. Exposed for deterministic parser tests."""
@@ -368,6 +502,8 @@ class SerialTransport:
                 except ParseError:
                     with self._state_lock:
                         self._parse_errors += 1
+                    if _is_gtt_line(line):
+                        self._invalidate_gtt()
                     continue
                 if record is not None:
                     self.bridge.record_from_transport(self, record)
@@ -375,10 +511,13 @@ class SerialTransport:
             if self._discarding_overlong:
                 continue
             if len(self._line) >= MAX_LINE_BYTES:
+                overlong_gtt = _is_gtt_line(bytes(self._line))
                 self._line.clear()
                 self._discarding_overlong = True
                 with self._state_lock:
                     self._overlong_lines += 1
+                if overlong_gtt:
+                    self._invalidate_gtt()
                 continue
             self._line.append(byte)
 
@@ -389,12 +528,91 @@ class SerialTransport:
                 self._latest_root = {
                     key: value
                     for key, value in committed.items()
-                    if key not in {"cursor", "device"}
+                    if key != "device"
                 }
 
-    def _set_connected(self, value: bool) -> None:
+    def _gtt_snapshot(self) -> Optional[dict[str, Any]]:
+        if self._latest_gtt is None:
+            return None
+        return {**self._latest_gtt, "entries": [entry.copy() for entry in self._latest_gtt["entries"]]}
+
+    def _invalidate_gtt(self) -> None:
         with self._state_lock:
-            self._connected = value
+            self._partial_gtt = None
+
+    def _record_gtt(self, record: dict[str, Any]) -> None:
+        with self._state_lock:
+            kind = record["kind"]
+            if kind == "gtt_begin":
+                self._partial_gtt = PartialGTT(
+                    query=record["query"],
+                    local=record["local"],
+                    entry_count=record["entries"],
+                    nondeparted_count=record["nondeparted"],
+                    entries=[],
+                )
+                return
+
+            partial = self._partial_gtt
+            if partial is None:
+                return
+            if kind == "gtt_entry":
+                if (
+                    record["query"] != partial.query
+                    or record["index"] != len(partial.entries)
+                    or len(partial.entries) >= partial.entry_count
+                    or any(entry["adva"] == record["adva"] for entry in partial.entries)
+                ):
+                    self._partial_gtt = None
+                    return
+                partial.entries.append(record)
+                return
+
+            if kind != "gtt_end":
+                self._partial_gtt = None
+                return
+            if (
+                record["query"] != partial.query
+                or record["local"] != partial.local
+                or record["entries"] != partial.entry_count
+                or record["nondeparted"] != partial.nondeparted_count
+                or len(partial.entries) != partial.entry_count
+                or not self._valid_gtt(partial)
+            ):
+                self._partial_gtt = None
+                return
+            self._gtt_generation += 1
+            self._latest_gtt = {
+                "generation": self._gtt_generation,
+                "completed_at_ms": int(time.time() * 1000),
+                "query_at_ms": partial.query,
+                "local": partial.local,
+                "entry_count": partial.entry_count,
+                "nondeparted_count": partial.nondeparted_count,
+                "entries": [_normalized_gtt_entry(entry) for entry in partial.entries],
+            }
+            self._partial_gtt = None
+
+    @staticmethod
+    def _valid_gtt(partial: PartialGTT) -> bool:
+        if not (0 <= partial.entry_count <= 16 and 0 <= partial.nondeparted_count <= partial.entry_count):
+            return False
+        if sum(entry["departed"] != 2 for entry in partial.entries) != partial.nondeparted_count:
+            return False
+        return all(
+            0 <= entry["last"] <= 0xFFFFFFFF
+            and 0 <= entry["soft"] <= 0xFFFFFFFF
+            and 0 <= entry["hard"] <= 0xFFFFFFFF
+            and 0 <= entry["departed_deadline"] <= 0xFFFFFFFF
+            and 0 <= entry["serial"] <= 0xFFFF
+            and 0 <= entry["serial_state"] <= 2
+            and 0 <= entry["hop"] <= 15
+            and 0 <= entry["hop_state"] <= 2
+            and 0 <= entry["freshness"] <= 4
+            and 0 <= entry["departed"] <= 3
+            and ((entry["departed"] == 2) == (entry["freshness"] == 4))
+            for entry in partial.entries
+        )
 
     def _attempt_connect(self) -> None:
         for reopen_path in self._reopen_paths:
@@ -410,25 +628,53 @@ class SerialTransport:
                     pass
                 continue
             self._fd = fd
-            if self._ever_connected:
-                with self._state_lock:
+            with self._state_lock:
+                if self._ever_connected:
                     self._reconnects += 1
-            self._ever_connected = True
+                self._ever_connected = True
+                self._connection_generation += 1
+                generation = self._connection_generation
+                status_request = CommandRequest(
+                    payload=ROOT_STATUS,
+                    connection_generation=generation,
+                    done=threading.Event(),
+                    deadline=time.monotonic() + self.timing.command_deadline,
+                )
+                try:
+                    # This precedes exposing the generation as connected, so no
+                    # external command can be admitted ahead of ROOT STATUS.
+                    self._commands.put_nowait(status_request)
+                except queue.Full:
+                    self._connection_generation += 1
+                    status_queue_full = True
+                else:
+                    self._connected = True
+                    status_queue_full = False
             self._backoff = INITIAL_RECONNECT_SECONDS
-            self._set_connected(True)
+            if status_queue_full:
+                self._close_fd()
+                self._next_connect = time.monotonic() + self._backoff
+                self._backoff = min(self._backoff * 2, MAX_RECONNECT_SECONDS)
+                return
             return
         self._next_connect = time.monotonic() + self._backoff
         self._backoff = min(self._backoff * 2, MAX_RECONNECT_SECONDS)
 
     def _close_fd(self) -> None:
         fd, self._fd = self._fd, None
+        with self._state_lock:
+            if fd is not None or self._connected:
+                self._connection_generation += 1
+            self._connected = False
+            self._latest_root = None
+            self._latest_gtt = None
+            self._partial_gtt = None
+        self._reset_framer()
         if fd is not None:
             try:
                 os.close(fd)
             except OSError:
                 pass
-        self._reset_framer()
-        self._set_connected(False)
 
     def _reset_framer(self) -> None:
         self._line.clear()
@@ -466,12 +712,19 @@ class SerialTransport:
             request = self._commands.get_nowait()
         except queue.Empty:
             return
+        with self._state_lock:
+            current_generation = self._connection_generation
+            connected = self._connected
+        if request.connection_generation != current_generation or not connected:
+            request.result = "disconnected"
+            request.done.set()
+            return
         if request.deadline <= time.monotonic():
             request.result = "write_failed"
             request.done.set()
             return
         self._active = request
-        self._active_bytes = b"ROOT ON\r" if request.active else b"ROOT OFF\r"
+        self._active_bytes = request.payload
         self._active_offset = 0
         self._next_write_attempt = 0.0
 
@@ -563,8 +816,8 @@ class SerialDevice:
     def write_fn(self, value: Callable[[int, bytes], int]) -> None:
         self.transport.write_fn = value
 
-    def submit(self, active: bool) -> str:
-        return self.transport.submit(active)
+    def submit(self, payload: bytes) -> str:
+        return self.transport.submit(payload)
 
     def is_connected(self) -> bool:
         return self.transport.is_connected()
@@ -574,6 +827,20 @@ class SerialDevice:
 
     def feed_bytes(self, data: bytes) -> None:
         self.transport.feed_bytes(data)
+
+
+def _project_device_snapshot(index: int, path: str, physical: dict[str, Any]) -> dict[str, Any]:
+    """Copy one physical snapshot into a stable CLI alias row."""
+
+    root = physical["root"]
+    gtt = physical["gtt"]
+    return {
+        "device": index,
+        "path": path,
+        **physical,
+        "root": root.copy() if root is not None else None,
+        "gtt": ({**gtt, "entries": [entry.copy() for entry in gtt["entries"]]} if gtt is not None else None),
+    }
 
 
 class Bridge:
@@ -588,6 +855,10 @@ class Bridge:
     ) -> None:
         self.timing = timing
         self.ring = CursorRing()
+        # Lock order is bridge snapshot -> ring -> transport state.  Transport
+        # lifecycle paths never acquire this lock while holding state, so health
+        # snapshots cannot deadlock with reconnect or disconnect handling.
+        self._snapshot_lock = threading.RLock()
         self.transports: list[SerialTransport] = []
         by_grouping_identity: dict[str, SerialTransport] = {}
         self.devices: list[SerialDevice] = []
@@ -611,22 +882,38 @@ class Bridge:
             transport.stop()
 
     def record_from_transport(self, transport: SerialTransport, record: dict[str, Any]) -> None:
-        committed = self.ring.append({"device": transport.owner_index, **record})
-        transport._note_record(committed)
+        with self._snapshot_lock:
+            if record["kind"] in GTT_KINDS:
+                transport._record_gtt(record)
+                return
+            committed = self.ring.append({"device": transport.owner_index, **record})
+            transport._note_record(committed)
 
     def health(self) -> dict[str, Any]:
-        oldest, current = self.ring.cursors()
+        with self._snapshot_lock:
+            oldest, current = self.ring.cursors()
+            physical_snapshots = {transport: transport.physical_snapshot() for transport in self.transports}
+            devices = [
+                _project_device_snapshot(device.index, device.path, physical_snapshots[device.transport])
+                for device in self.devices
+            ]
         return {
             "schema": HEALTH_SCHEMA,
             "oldest_cursor": oldest,
             "current_cursor": current,
-            "devices": [device.snapshot() for device in self.devices],
+            "devices": devices,
         }
 
     def root_command(self, device_index: int, active: bool) -> tuple[bool, str]:
-        if device_index >= len(self.devices):
+        if device_index < 0 or device_index >= len(self.devices):
             return False, "unknown_device"
-        result = self.devices[device_index].submit(active)
+        result = self.devices[device_index].submit(ROOT_ON if active else ROOT_OFF)
+        return result == "accepted", result
+
+    def gtt_command(self, device_index: int) -> tuple[bool, str]:
+        if device_index < 0 or device_index >= len(self.devices):
+            return False, "unknown_device"
+        result = self.devices[device_index].submit(GTT)
         return result == "accepted", result
 
 
@@ -769,15 +1056,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
-        if parsed.path != "/api/root" or parsed.query:
+        if parsed.query or parsed.path not in {"/api/root", "/api/gtt"}:
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
             return
-        body = self._json_body()
+        gtt = parsed.path == "/api/gtt"
+        body = self._json_body(gtt=gtt)
         if isinstance(body, str):
             self._send_error(400, body)
             return
-        device, active = body
-        accepted, result = self.bridge_server.bridge.root_command(device, active)
+        device = body["device"]
+        if gtt:
+            accepted, result = self.bridge_server.bridge.gtt_command(device)
+        else:
+            accepted, result = self.bridge_server.bridge.root_command(device, body["active"])
         if accepted:
             self._send_json(
                 202,
@@ -785,7 +1076,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     "schema": COMMAND_SCHEMA,
                     "accepted": True,
                     "device": device,
-                    "command": "on" if active else "off",
+                    "command": "gtt" if gtt else ("on" if body["active"] else "off"),
                 },
             )
             return
@@ -816,7 +1107,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return None
         return after, limit
 
-    def _json_body(self) -> tuple[int, bool] | str:
+    def _json_body(self, *, gtt: bool) -> dict[str, Any] | str:
         lengths = self.headers.get_all("Content-Length") or []
         if len(lengths) != 1 or not re.fullmatch(DECIMAL, lengths[0]):
             return self._invalid_body()
@@ -835,15 +1126,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return "invalid_body"
         except (UnicodeDecodeError, json.JSONDecodeError):
             return "invalid_json"
+        required = {"device"} if gtt else {"device", "active"}
         if (
             type(parsed) is not dict
-            or set(parsed) != {"device", "active"}
+            or set(parsed) != required
             or type(parsed["device"]) is not int
             or parsed["device"] < 0
-            or type(parsed["active"]) is not bool
+            or (not gtt and type(parsed["active"]) is not bool)
         ):
             return "invalid_body"
-        return parsed["device"], parsed["active"]
+        return parsed
 
     def _invalid_body(self) -> str:
         self._close_after_response = True
