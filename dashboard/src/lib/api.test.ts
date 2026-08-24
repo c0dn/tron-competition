@@ -7,9 +7,10 @@ import {
   decodeEventsResponse,
   decodeHealthResponse,
   fetchEvents,
+  postGtt,
   postRoot,
 } from './api';
-import { eventRecord, eventsResponse, healthResponse, jsonResponse } from '../test/fixtures';
+import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, rootStatus } from '../test/fixtures';
 import { restoreFetch, stubFetch } from '../test/runtime';
 
 afterEach(restoreFetch);
@@ -60,7 +61,7 @@ describe('frozen bridge API decoders', () => {
     expect(() => decodeEventsResponse(eventsResponse([eventRecord({ event: 0, confidence: 0, mic: 1 })]), 0)).toThrow(DecodeError);
     expect(() => decodeHealthResponse(healthResponse([{
       ...healthResponse().devices[0],
-      root: { kind: 'root', now: 1, local: '1842de524add', node: 7, role: 'root', roots: 1, announced: 0, acked: 0, rejected: 0, pending: 0, rootless_drop: 0 },
+      root: { cursor: 1, kind: 'root', now: 1, local: '1842de524add', node: 7, role: 'root', roots: 1, announced: 0, acked: 0, rejected: 0, pending: 0, rootless_drop: 0 },
     }]))).toThrow(DecodeError);
 
     const oversized = Array.from({ length: 101 }, (_, index) => eventRecord({ cursor: index + 1 }));
@@ -70,6 +71,53 @@ describe('frozen bridge API decoders', () => {
     expect(() => decodeEventsResponse({ ...eventsResponse([eventRecord({ cursor: 2 })], false), oldest_cursor: 2, current_cursor: 2 }, 0)).toThrow(DecodeError);
     expect(decodeEventsResponse({ schema: 'mind.api.v1', gap: false, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toMatchObject({ current_cursor: 4 });
     expect(() => decodeEventsResponse({ schema: 'mind.api.v1', gap: true, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
+  });
+
+  it('accepts only exact health v2 GTT snapshots, normalized states, and physical owner references', () => {
+    const snapshot = gttSnapshot({
+      generation: 2,
+      entries: [
+        gttEntry({ index: 0, adva: '0102545678c0', serial_state: 'not_applicable', hop_state: 'not_applicable', freshness: 'not_applicable', departed: 'not_applicable' }),
+        gttEntry({ index: 1, adva: '0102545678c1', serial_state: 'unknown', hop_state: 'unknown', freshness: 'hard_expired', departed: 'unknown' }),
+        gttEntry({ index: 2, adva: '0102545678c2', freshness: 'departed', departed: 'true' }),
+      ],
+    });
+    const response = healthResponse([
+      healthDevice(0, { gtt: snapshot }),
+      healthDevice(1, { owner_device: 0, gtt: snapshot }),
+    ]);
+    expect(decodeHealthResponse(response)).toMatchObject({ schema: 'mind.health.v2', devices: [{ owner_device: 0 }, { owner_device: 0 }] });
+
+    const entry = snapshot.entries[0];
+    expect(() => decodeHealthResponse({ ...response, schema: 'mind.health.v1' })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], owner_device: 4 }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, extra: true } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, hop: 16 }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, index: 2 }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [entry, { ...snapshot.entries[1], adva: entry.adva }, snapshot.entries[2]] } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, nondeparted_count: 0 } }, response.devices[1]] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...response, devices: [{ ...response.devices[0], gtt: { ...snapshot, entries: [{ ...entry, freshness: 'departed', departed: 'false' }, ...snapshot.entries.slice(1)] } }, response.devices[1]] })).toThrow(DecodeError);
+  });
+
+  it('requires and retains the root-specific health cursor independently of aggregate ring movement', () => {
+    const response = {
+      ...healthResponse([healthDevice(0, { root: rootStatus({ cursor: 7, role: 'root' }) })]),
+      current_cursor: 100,
+    };
+    expect(decodeHealthResponse(response).devices[0].root).toMatchObject({ cursor: 7, role: 'root' });
+    expect(() => decodeHealthResponse({
+      ...response,
+      devices: [{ ...response.devices[0], root: { ...response.devices[0].root, cursor: 0 } }],
+    })).toThrow(DecodeError);
+    const { cursor: _cursor, ...withoutCursor } = response.devices[0].root ?? {};
+    expect(() => decodeHealthResponse({
+      ...response,
+      devices: [{ ...response.devices[0], root: withoutCursor }],
+    })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({
+      ...response,
+      current_cursor: 6,
+    })).toThrow(DecodeError);
   });
 
   it('surfaces HTTP API errors and rejects a malformed successful response before state can consume it', async () => {
@@ -117,5 +165,18 @@ describe('frozen bridge API decoders', () => {
 
     await expect(postRoot(3, true)).rejects.toBeInstanceOf(ApiError);
     await expect(postRoot(3, true)).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('sends exact GTT bodies and rejects a non-GTT or mismatched accepted echo', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 3, command: 'gtt' }))
+      .mockResolvedValueOnce(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 4, command: 'gtt' }))
+      .mockResolvedValueOnce(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 3, command: 'on' }));
+    stubFetch(fetchMock);
+
+    await expect(postGtt(3)).resolves.toMatchObject({ device: 3, command: 'gtt' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/gtt', expect.objectContaining({ method: 'POST', body: '{"device":3}' }));
+    await expect(postGtt(3)).rejects.toBeInstanceOf(ApiError);
+    await expect(postGtt(3)).rejects.toBeInstanceOf(DecodeError);
   });
 });

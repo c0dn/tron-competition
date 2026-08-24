@@ -1,7 +1,10 @@
 export type EventPath = 'local' | 'tavrn';
 export type RootRole = 'leaf' | 'root';
-export type CommandName = 'on' | 'off' | 'status' | 'invalid';
+export type CommandName = 'on' | 'off' | 'status' | 'gtt' | 'invalid';
 export type CommandStatus = 'accepted' | 'duplicate' | 'busy' | 'malformed' | 'overflow' | 'rejected';
+export type GttValueState = 'not_applicable' | 'known' | 'unknown';
+export type GttFreshness = 'not_applicable' | 'active' | 'soft_stale' | 'hard_expired' | 'departed';
+export type GttDeparted = 'not_applicable' | 'false' | 'true' | 'unknown';
 
 export interface EventRecord {
   cursor: number;
@@ -35,6 +38,7 @@ export interface RootStatus {
 }
 
 export interface HealthRoot extends RootStatus {
+  cursor: number;
   kind: 'root';
 }
 
@@ -73,13 +77,40 @@ export interface HealthDevice {
   reconnects: number;
   last_record_cursor: number;
   root: HealthRoot | null;
+  gtt: GttSnapshot | null;
+  owner_device: number;
 }
 
 export interface HealthResponse {
-  schema: 'mind.health.v1';
+  schema: 'mind.health.v2';
   oldest_cursor: number;
   current_cursor: number;
   devices: HealthDevice[];
+}
+
+export interface GttEntry {
+  index: number;
+  adva: string;
+  last: number;
+  soft: number;
+  hard: number;
+  departed_deadline: number;
+  serial: number;
+  serial_state: GttValueState;
+  hop: number;
+  hop_state: GttValueState;
+  freshness: GttFreshness;
+  departed: GttDeparted;
+}
+
+export interface GttSnapshot {
+  generation: number;
+  completed_at_ms: number;
+  query_at_ms: number;
+  local: string;
+  entry_count: number;
+  nondeparted_count: number;
+  entries: GttEntry[];
 }
 
 export interface RootCommandResponse {
@@ -87,6 +118,13 @@ export interface RootCommandResponse {
   accepted: true;
   device: number;
   command: 'on' | 'off';
+}
+
+export interface GttCommandResponse {
+  schema: 'mind.command.v1';
+  accepted: true;
+  device: number;
+  command: 'gtt';
 }
 
 interface ErrorResponse {
@@ -212,8 +250,9 @@ function eventRecord(value: unknown): EventRecord {
 
 function healthRoot(value: unknown, context: string): HealthRoot {
   const input = object(value, context);
-  exactKeys(input, ['kind', 'now', 'local', 'node', 'role', 'roots', 'announced', 'acked', 'rejected', 'pending', 'rootless_drop'], context);
+  exactKeys(input, ['cursor', 'kind', 'now', 'local', 'node', 'role', 'roots', 'announced', 'acked', 'rejected', 'pending', 'rootless_drop'], context);
   return {
+    cursor: integer(input.cursor, `${context}.cursor`, 1),
     kind: enumValue(input.kind, ['root'], `${context}.kind`),
     ...rootStatus({
       now: input.now,
@@ -262,7 +301,7 @@ function commandRecord(value: unknown): CommandRecord {
     device: integer(input.device, 'command.device'),
     now: integer(input.now, 'command.now', 0, 0xffffffff),
     local: hex(input.local, 12, 'command.local'),
-    command: enumValue(input.command, ['on', 'off', 'status', 'invalid'], 'command.command'),
+    command: enumValue(input.command, ['on', 'off', 'status', 'gtt', 'invalid'], 'command.command'),
     status: enumValue(input.status, ['accepted', 'duplicate', 'busy', 'malformed', 'overflow', 'rejected'], 'command.status'),
   };
 }
@@ -341,14 +380,67 @@ export function decodeEventsResponse(value: unknown, requestedAfter = 0): Events
   };
 }
 
+function gttEntry(value: unknown, context: string): GttEntry {
+  const input = object(value, context);
+  exactKeys(input, ['index', 'adva', 'last', 'soft', 'hard', 'departed_deadline', 'serial', 'serial_state', 'hop', 'hop_state', 'freshness', 'departed'], context);
+  return {
+    index: integer(input.index, `${context}.index`, 0, 15),
+    adva: hex(input.adva, 12, `${context}.adva`),
+    last: integer(input.last, `${context}.last`, 0, 0xffffffff),
+    soft: integer(input.soft, `${context}.soft`, 0, 0xffffffff),
+    hard: integer(input.hard, `${context}.hard`, 0, 0xffffffff),
+    departed_deadline: integer(input.departed_deadline, `${context}.departed_deadline`, 0, 0xffffffff),
+    serial: integer(input.serial, `${context}.serial`, 0, 0xffff),
+    serial_state: enumValue(input.serial_state, ['not_applicable', 'known', 'unknown'], `${context}.serial_state`),
+    hop: integer(input.hop, `${context}.hop`, 0, 15),
+    hop_state: enumValue(input.hop_state, ['not_applicable', 'known', 'unknown'], `${context}.hop_state`),
+    freshness: enumValue(input.freshness, ['not_applicable', 'active', 'soft_stale', 'hard_expired', 'departed'], `${context}.freshness`),
+    departed: enumValue(input.departed, ['not_applicable', 'false', 'true', 'unknown'], `${context}.departed`),
+  };
+}
+
+function gttSnapshot(value: unknown, context: string): GttSnapshot {
+  const input = object(value, context);
+  exactKeys(input, ['generation', 'completed_at_ms', 'query_at_ms', 'local', 'entry_count', 'nondeparted_count', 'entries'], context);
+  if (!Array.isArray(input.entries)) throw new DecodeError(`${context}.entries must be an array.`);
+  const entries = input.entries.map((entry, index) => gttEntry(entry, `${context}.entries[${index}]`));
+  const snapshot: GttSnapshot = {
+    generation: integer(input.generation, `${context}.generation`, 1),
+    completed_at_ms: integer(input.completed_at_ms, `${context}.completed_at_ms`),
+    query_at_ms: integer(input.query_at_ms, `${context}.query_at_ms`, 0, 0xffffffff),
+    local: hex(input.local, 12, `${context}.local`),
+    entry_count: integer(input.entry_count, `${context}.entry_count`, 0, 16),
+    nondeparted_count: integer(input.nondeparted_count, `${context}.nondeparted_count`, 0, 16),
+    entries,
+  };
+  if (snapshot.entries.length !== snapshot.entry_count || snapshot.nondeparted_count > snapshot.entry_count) {
+    throw new DecodeError(`${context} entry counts are inconsistent.`);
+  }
+  for (let index = 1; index < entries.length; index += 1) {
+    if (entries[index - 1].index >= entries[index].index) {
+      throw new DecodeError(`${context}.entries must have strictly increasing indices.`);
+    }
+  }
+  if (new Set(entries.map((entry) => entry.adva)).size !== entries.length) {
+    throw new DecodeError(`${context}.entries must have unique AdvAs.`);
+  }
+  if (entries.some((entry) => (entry.freshness === 'departed') !== (entry.departed === 'true'))) {
+    throw new DecodeError(`${context}.entries departed state is inconsistent with freshness.`);
+  }
+  if (entries.filter((entry) => entry.departed !== 'true').length !== snapshot.nondeparted_count) {
+    throw new DecodeError(`${context}.nondeparted_count is inconsistent with entries.`);
+  }
+  return snapshot;
+}
+
 export function decodeHealthResponse(value: unknown): HealthResponse {
   const input = object(value, 'health response');
   exactKeys(input, ['schema', 'oldest_cursor', 'current_cursor', 'devices'], 'health response');
-  if (input.schema !== 'mind.health.v1') throw new DecodeError('health response.schema is invalid.');
+  if (input.schema !== 'mind.health.v2') throw new DecodeError('health response.schema is invalid.');
   if (!Array.isArray(input.devices)) throw new DecodeError('health response.devices must be an array.');
   const devices = input.devices.map((value, index): HealthDevice => {
     const device = object(value, `health device ${index}`);
-    exactKeys(device, ['device', 'path', 'connected', 'parse_errors', 'overlong_lines', 'reconnects', 'last_record_cursor', 'root'], `health device ${index}`);
+    exactKeys(device, ['device', 'path', 'connected', 'parse_errors', 'overlong_lines', 'reconnects', 'last_record_cursor', 'root', 'gtt', 'owner_device'], `health device ${index}`);
     return {
       device: integer(device.device, `health device ${index}.device`),
       path: string(device.path, `health device ${index}.path`),
@@ -358,17 +450,28 @@ export function decodeHealthResponse(value: unknown): HealthResponse {
       reconnects: integer(device.reconnects, `health device ${index}.reconnects`),
       last_record_cursor: integer(device.last_record_cursor, `health device ${index}.last_record_cursor`),
       root: device.root === null ? null : healthRoot(device.root, `health device ${index}.root`),
+      gtt: device.gtt === null ? null : gttSnapshot(device.gtt, `health device ${index}.gtt`),
+      owner_device: integer(device.owner_device, `health device ${index}.owner_device`),
     };
   });
   const deviceIds = new Set(devices.map((device) => device.device));
   if (deviceIds.size !== devices.length) throw new DecodeError('health response contains duplicate device indices.');
+  if (devices.some((device) => !deviceIds.has(device.owner_device))) {
+    throw new DecodeError('health response contains an unknown owner device reference.');
+  }
+  if (devices.some((device) => devices.find((owner) => owner.device === device.owner_device)?.owner_device !== device.owner_device)) {
+    throw new DecodeError('health response owner device references must identify physical owners.');
+  }
   const oldest = integer(input.oldest_cursor, 'health response.oldest_cursor');
   const current = integer(input.current_cursor, 'health response.current_cursor');
   validateRingCursors(oldest, current, 'health response');
   if (devices.some((device) => device.last_record_cursor > current)) {
     throw new DecodeError('health response device cursor exceeds the ring cursor.');
   }
-  return { schema: 'mind.health.v1', oldest_cursor: oldest, current_cursor: current, devices };
+  if (devices.some((device) => device.root !== null && device.root.cursor > current)) {
+    throw new DecodeError('health response root cursor exceeds the ring cursor.');
+  }
+  return { schema: 'mind.health.v2', oldest_cursor: oldest, current_cursor: current, devices };
 }
 
 function decodeErrorResponse(value: unknown): ErrorResponse | null {
@@ -397,6 +500,20 @@ export function decodeRootCommandResponse(value: unknown): RootCommandResponse {
     accepted: true,
     device: integer(input.device, 'root command response.device'),
     command: enumValue(input.command, ['on', 'off'], 'root command response.command'),
+  };
+}
+
+export function decodeGttCommandResponse(value: unknown): GttCommandResponse {
+  const input = object(value, 'gtt command response');
+  exactKeys(input, ['schema', 'accepted', 'device', 'command'], 'gtt command response');
+  if (input.schema !== 'mind.command.v1' || input.accepted !== true) {
+    throw new DecodeError('gtt command response is invalid.');
+  }
+  return {
+    schema: 'mind.command.v1',
+    accepted: true,
+    device: integer(input.device, 'gtt command response.device'),
+    command: enumValue(input.command, ['gtt'], 'gtt command response.command'),
   };
 }
 
@@ -442,6 +559,25 @@ export async function postRoot(device: number, active: boolean, signal?: AbortSi
   const expectedCommand = active ? 'on' : 'off';
   if (command.device !== device || command.command !== expectedCommand) {
     throw new ApiError('Root command response did not echo the requested device and command.', response.status);
+  }
+  return command;
+}
+
+export async function postGtt(device: number, signal?: AbortSignal): Promise<GttCommandResponse> {
+  const response = await fetch('/api/gtt', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ device }),
+  });
+  const body = await responseJson(response);
+  if (response.status !== 202) {
+    const error = decodeErrorResponse(body);
+    throw new ApiError(error ? `GTT command failed: ${error.error}.` : `GTT command failed (${response.status}).`, response.status);
+  }
+  const command = decodeGttCommandResponse(body);
+  if (command.device !== device || command.command !== 'gtt') {
+    throw new ApiError('GTT command response did not echo the requested device and command.', response.status);
   }
   return command;
 }

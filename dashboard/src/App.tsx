@@ -3,15 +3,28 @@ import { fetchEvents, fetchHealth, postRoot } from './lib/api';
 import { Header } from './components/Header';
 import { IncidentFeed } from './components/IncidentFeed';
 import { RootControlPanel } from './components/RootControlPanel';
+import { TopologyPanel } from './components/TopologyPanel';
 import { WearablePanel } from './components/WearablePanel';
 import { bridgeStatus, initialState, reducer } from './state/store';
+import { rootRequestBaseline } from './state/devices';
 
 export const POLL_INTERVAL_MS = 4_000;
 export const ROOT_REQUEST_TIMEOUT_MS = 5_000;
+export const ROOT_CONFIRMATION_TIMEOUT_MS = 10_000;
+
+interface ActiveRootRequest {
+  id: number;
+  controller: AbortController;
+  httpTimer: number;
+  confirmationTimer: number;
+  httpTimedOut: boolean;
+  confirmationTimedOut: boolean;
+}
 
 interface AppProps {
   pollIntervalMs?: number;
   rootRequestTimeoutMs?: number;
+  rootConfirmationTimeoutMs?: number;
 }
 
 function messageFor(error: unknown): string {
@@ -21,11 +34,14 @@ function messageFor(error: unknown): string {
 export default function App({
   pollIntervalMs = POLL_INTERVAL_MS,
   rootRequestTimeoutMs = ROOT_REQUEST_TIMEOUT_MS,
+  rootConfirmationTimeoutMs = ROOT_CONFIRMATION_TIMEOUT_MS,
 }: AppProps) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [now, setNow] = useState(() => Date.now());
   const eventCursor = useRef(0);
   const eventEpoch = useRef(0);
+  const rootRequestId = useRef(0);
+  const rootRequests = useRef(new Map<number, ActiveRootRequest>());
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -82,25 +98,83 @@ export default function App({
     };
   }, [pollIntervalMs]);
 
+  useEffect(() => {
+    for (const [device, request] of rootRequests.current) {
+      const pending = state.pendingRoot[device];
+      if (pending?.requestId === request.id) continue;
+      window.clearTimeout(request.httpTimer);
+      window.clearTimeout(request.confirmationTimer);
+      request.controller.abort();
+      rootRequests.current.delete(device);
+    }
+  }, [state.pendingRoot]);
+
+  useEffect(() => () => {
+    for (const request of rootRequests.current.values()) {
+      window.clearTimeout(request.httpTimer);
+      window.clearTimeout(request.confirmationTimer);
+      request.controller.abort();
+    }
+    rootRequests.current.clear();
+  }, []);
+
   const requestRoot = async (device: number, active: boolean) => {
-    dispatch({ type: 'rootPending', device, active });
+    if (rootRequests.current.has(device)) return;
+    const requestId = ++rootRequestId.current;
     const controller = new AbortController();
-    let timedOut = false;
-    const timeout = window.setTimeout(() => {
-      timedOut = true;
+    const request: ActiveRootRequest = {
+      id: requestId,
+      controller,
+      httpTimer: 0,
+      confirmationTimer: 0,
+      httpTimedOut: false,
+      confirmationTimedOut: false,
+    };
+    request.httpTimer = window.setTimeout(() => {
+      if (rootRequests.current.get(device)?.id !== requestId) return;
+      request.httpTimedOut = true;
       controller.abort();
+      dispatch({ type: 'rootFailed', device, requestId, message: 'Request timed out; retry this device.' });
     }, rootRequestTimeoutMs);
+    request.confirmationTimer = window.setTimeout(() => {
+      if (rootRequests.current.get(device)?.id !== requestId) return;
+      request.confirmationTimedOut = true;
+      controller.abort();
+      dispatch({ type: 'rootConfirmationTimedOut', device, requestId });
+    }, rootConfirmationTimeoutMs);
+    rootRequests.current.set(device, request);
+    const healthDevice = state.health?.devices.find((candidate) => candidate.device === device);
+    dispatch({
+      type: 'rootPending',
+      device,
+      active,
+      requestId,
+      baselineCursor: rootRequestBaseline(
+        state.eventCursor,
+        device,
+        healthDevice,
+        state.healthEpoch,
+        state.epoch,
+        state.health?.current_cursor ?? null,
+        state.rootRecords,
+      ),
+      baselineEpoch: state.epoch,
+    });
     try {
       const response = await postRoot(device, active, controller.signal);
-      dispatch({ type: 'rootAccepted', device: response.device, command: response.command });
+      if (rootRequests.current.get(device)?.id !== requestId) return;
+      window.clearTimeout(request.httpTimer);
+      dispatch({ type: 'rootAccepted', device: response.device, command: response.command, requestId });
     } catch (error) {
+      if (request.httpTimedOut || request.confirmationTimedOut || rootRequests.current.get(device)?.id !== requestId) return;
+      window.clearTimeout(request.httpTimer);
+      window.clearTimeout(request.confirmationTimer);
       dispatch({
         type: 'rootFailed',
         device,
-        message: timedOut ? 'Request timed out; retry this device.' : messageFor(error),
+        requestId,
+        message: messageFor(error),
       });
-    } finally {
-      window.clearTimeout(timeout);
     }
   };
 
@@ -121,15 +195,23 @@ export default function App({
           )}
           <RootControlPanel
             devices={devices}
-            healthCurrentCursor={state.health?.current_cursor}
             healthEpoch={state.healthEpoch}
             currentEpoch={state.epoch}
+            healthCurrentCursor={state.health?.current_cursor ?? null}
             rootRecords={state.rootRecords}
             commandRecords={state.commandRecords}
             pendingRoot={state.pendingRoot}
             announcement={state.announcement}
             healthError={state.healthRequest.error}
             onSetRoot={requestRoot}
+          />
+          <TopologyPanel
+            devices={devices}
+            healthEpoch={state.healthEpoch}
+            currentEpoch={state.epoch}
+            healthCurrentCursor={state.health?.current_cursor ?? null}
+            rootRecords={state.rootRecords}
+            now={now}
           />
           <WearablePanel wearables={state.wearables} now={now} />
         </div>

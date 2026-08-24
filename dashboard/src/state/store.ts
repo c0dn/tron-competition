@@ -43,6 +43,14 @@ export interface LatestWearable {
   epoch: number;
 }
 
+export interface PendingRootRequest {
+  desired: boolean;
+  requestId: number;
+  baselineCursor: number;
+  baselineEpoch: number;
+  phase: 'writing' | 'confirming';
+}
+
 export interface DashboardState {
   epoch: number;
   eventCursor: number;
@@ -57,7 +65,7 @@ export interface DashboardState {
   wearables: Record<number, LatestWearable>;
   rootRecords: Record<number, RootRecord>;
   commandRecords: Record<number, CommandRecord>;
-  pendingRoot: Record<number, boolean>;
+  pendingRoot: Record<number, PendingRootRequest | undefined>;
   announcement: string;
   conflictCount: number;
   gapCount: number;
@@ -90,9 +98,10 @@ export type Action =
   | { type: 'epochReset' }
   | { type: 'healthReceived'; health: HealthResponse; receivedAt: number; epoch: number }
   | { type: 'requestFailed'; source: 'events' | 'health'; message: string }
-  | { type: 'rootPending'; device: number; active: boolean }
-  | { type: 'rootAccepted'; device: number; command: 'on' | 'off' }
-  | { type: 'rootFailed'; device: number; message: string };
+  | { type: 'rootPending'; device: number; active: boolean; requestId: number; baselineCursor: number; baselineEpoch: number }
+  | { type: 'rootAccepted'; device: number; command: 'on' | 'off'; requestId: number }
+  | { type: 'rootFailed'; device: number; requestId: number; message: string }
+  | { type: 'rootConfirmationTimedOut'; device: number; requestId: number };
 
 function logicalKey(event: EventRecord): string {
   return `${event.wearable}:${event.packet}`;
@@ -160,6 +169,100 @@ function updateWearable(
   return { ...wearables, [event.wearable]: { record: event, receivedAt, epoch } };
 }
 
+function clearPendingRoot(
+  pendingRoot: DashboardState['pendingRoot'],
+  device: number,
+  requestId: number,
+): DashboardState['pendingRoot'] {
+  const pending = pendingRoot[device];
+  if (!pending || pending.requestId !== requestId) return pendingRoot;
+  const next = { ...pendingRoot };
+  delete next[device];
+  return next;
+}
+
+interface PendingRootResolution {
+  pendingRoot: DashboardState['pendingRoot'];
+  announcement?: string;
+}
+
+function resolvePendingRoot(
+  pendingRoot: DashboardState['pendingRoot'],
+  device: number,
+  active: boolean,
+  cursor: number,
+  epoch: number,
+  source: 'an authoritative root record' | 'the authoritative health snapshot',
+): PendingRootResolution {
+  const pending = pendingRoot[device];
+  if (!pending
+    || pending.baselineEpoch !== epoch
+    || cursor <= pending.baselineCursor) {
+    return { pendingRoot };
+  }
+  const desired = pending.desired ? 'ON' : 'OFF';
+  const reported = active ? 'ON' : 'OFF';
+  return {
+    pendingRoot: clearPendingRoot(pendingRoot, device, pending.requestId),
+    announcement: active === pending.desired
+      ? `Device ${device} confirmed ROOT ${reported} from ${source}.`
+      : `Device ${device} reported ROOT ${reported} from ${source}; requested ROOT ${desired} did not match.`,
+  };
+}
+
+function rootResolvesPending(
+  pendingRoot: DashboardState['pendingRoot'],
+  record: RootRecord,
+  epoch: number,
+): PendingRootResolution {
+  return resolvePendingRoot(
+    pendingRoot,
+    record.device,
+    record.role === 'root',
+    record.cursor,
+    epoch,
+    'an authoritative root record',
+  );
+}
+
+function commandRejectsPending(
+  pendingRoot: DashboardState['pendingRoot'],
+  record: CommandRecord,
+  epoch: number,
+): DashboardState['pendingRoot'] {
+  const pending = pendingRoot[record.device];
+  const expectedCommand = pending?.desired ? 'on' : 'off';
+  const terminalFailure = record.status === 'busy' || record.status === 'rejected' || record.status === 'malformed' || record.status === 'overflow';
+  if (!pending
+    || pending.baselineEpoch !== epoch
+    || record.cursor <= pending.baselineCursor
+    || record.command !== expectedCommand
+    || !terminalFailure) {
+    return pendingRoot;
+  }
+  return clearPendingRoot(pendingRoot, record.device, pending.requestId);
+}
+
+function healthResolvesPending(state: DashboardState, health: HealthResponse, epoch: number): PendingRootResolution {
+  if (epoch !== state.epoch) return { pendingRoot: state.pendingRoot };
+  let pendingRoot = state.pendingRoot;
+  let announcement: string | undefined;
+  for (const device of health.devices) {
+    if (device.device !== device.owner_device || !device.root) continue;
+    const resolution = resolvePendingRoot(
+      pendingRoot,
+      device.device,
+      device.root.role === 'root',
+      device.root.cursor,
+      epoch,
+      'the authoritative health snapshot',
+    );
+    pendingRoot = resolution.pendingRoot;
+    announcement = resolution.announcement ?? announcement;
+  }
+  return { pendingRoot, announcement };
+}
+
 function applyEvent(
   state: DashboardState,
   event: EventRecord,
@@ -222,6 +325,7 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
           ? { oldest_cursor: action.page.oldest_cursor, current_cursor: action.page.current_cursor }
           : state.lastGap,
       };
+      let rootResolutionAnnouncement: string | undefined;
       const records = [...action.page.events].sort((left, right) => left.cursor - right.cursor);
       for (const record of records) {
         if (next.processedCursors.includes(record.cursor)) continue;
@@ -231,20 +335,35 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
         } else if (record.kind === 'root') {
           const existing = next.rootRecords[record.device];
           if (!existing || existing.cursor < record.cursor) {
-            next = { ...next, rootRecords: { ...next.rootRecords, [record.device]: record } };
+            const resolution = rootResolvesPending(next.pendingRoot, record, action.epoch);
+            rootResolutionAnnouncement = resolution.announcement ?? rootResolutionAnnouncement;
+            next = {
+              ...next,
+              rootRecords: { ...next.rootRecords, [record.device]: record },
+              pendingRoot: resolution.pendingRoot,
+              announcement: resolution.announcement ?? next.announcement,
+            };
           }
         } else {
           const existing = next.commandRecords[record.device];
           if (!existing || existing.cursor < record.cursor) {
+            const pendingRoot = commandRejectsPending(next.pendingRoot, record, action.epoch);
+            const request = next.pendingRoot[record.device];
+            const announcement = record.command === 'gtt'
+              ? next.announcement
+              : request && pendingRoot !== next.pendingRoot
+                ? `Device ${record.device} firmware command ROOT ${record.command.toUpperCase()} failed: ${record.status}.`
+                : `Device ${record.device} reported ROOT ${record.command.toUpperCase()}: ${record.status}.`;
             next = {
               ...next,
               commandRecords: { ...next.commandRecords, [record.device]: record },
-              announcement: `Device ${record.device} reported ROOT ${record.command.toUpperCase()}: ${record.status}.`,
+              pendingRoot,
+              announcement,
             };
           }
         }
       }
-      return next;
+      return rootResolutionAnnouncement ? { ...next, announcement: rootResolutionAnnouncement } : next;
     }
     case 'epochReset':
       return {
@@ -254,16 +373,21 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
         processedCursors: [],
         rootRecords: {},
         commandRecords: {},
+        pendingRoot: {},
         lastGap: null,
-        announcement: 'Bridge cursor restarted; refreshing current records.',
+        announcement: 'Bridge cursor restarted; root confirmations were reset and current records are refreshing.',
       };
-    case 'healthReceived':
+    case 'healthReceived': {
+      const resolution = healthResolvesPending(state, action.health, action.epoch);
       return {
         ...state,
         health: action.health,
         healthEpoch: action.epoch,
         healthRequest: { phase: 'ready', lastSuccessAt: action.receivedAt },
+        pendingRoot: resolution.pendingRoot,
+        announcement: resolution.announcement ?? state.announcement,
       };
+    }
     case 'requestFailed': {
       const request = action.source === 'events' ? state.eventsRequest : state.healthRequest;
       const nextRequest: RequestState = { phase: 'error', lastSuccessAt: request.lastSuccessAt, error: action.message };
@@ -274,21 +398,45 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
     case 'rootPending':
       return {
         ...state,
-        pendingRoot: { ...state.pendingRoot, [action.device]: true },
+        pendingRoot: {
+          ...state.pendingRoot,
+          [action.device]: {
+            desired: action.active,
+            requestId: action.requestId,
+            baselineCursor: action.baselineCursor,
+            baselineEpoch: action.baselineEpoch,
+            phase: 'writing',
+          },
+        },
         announcement: `Sending ROOT ${action.active ? 'ON' : 'OFF'} to Device ${action.device}.`,
       };
-    case 'rootAccepted':
+    case 'rootAccepted': {
+      const pending = state.pendingRoot[action.device];
+      if (!pending || pending.requestId !== action.requestId) return state;
       return {
         ...state,
-        pendingRoot: { ...state.pendingRoot, [action.device]: false },
-        announcement: `Device ${action.device} accepted ROOT ${action.command.toUpperCase()}; waiting for a root record.`,
+        pendingRoot: { ...state.pendingRoot, [action.device]: { ...pending, phase: 'confirming' } },
+        announcement: `Device ${action.device} accepted serial write for ROOT ${action.command.toUpperCase()}; waiting for authoritative confirmation.`,
       };
-    case 'rootFailed':
+    }
+    case 'rootFailed': {
+      const pendingRoot = clearPendingRoot(state.pendingRoot, action.device, action.requestId);
+      if (pendingRoot === state.pendingRoot) return state;
       return {
         ...state,
-        pendingRoot: { ...state.pendingRoot, [action.device]: false },
+        pendingRoot,
         announcement: `Device ${action.device} root command failed: ${action.message}`,
       };
+    }
+    case 'rootConfirmationTimedOut': {
+      const pending = state.pendingRoot[action.device];
+      if (!pending || pending.requestId !== action.requestId) return state;
+      return {
+        ...state,
+        pendingRoot: clearPendingRoot(state.pendingRoot, action.device, action.requestId),
+        announcement: `Device ${action.device} did not publish the requested ROOT ${pending.desired ? 'ON' : 'OFF'} state in time; retry this device.`,
+      };
+    }
   }
 }
 

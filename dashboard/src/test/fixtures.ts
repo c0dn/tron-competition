@@ -1,4 +1,4 @@
-import type { EventRecord, EventsResponse, HealthDevice, HealthResponse, HealthRoot } from '../lib/api';
+import type { EventRecord, EventsResponse, GttEntry, GttSnapshot, HealthDevice, HealthResponse, HealthRoot } from '../lib/api';
 
 export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
   return {
@@ -34,6 +34,7 @@ export function eventsResponse(events: EventsResponse['events'] = [], gap = fals
 
 export function rootStatus(overrides: Partial<HealthRoot> = {}): HealthRoot {
   return {
+    cursor: 1,
     kind: 'root',
     now: 1234,
     local: '1842de524add',
@@ -49,6 +50,38 @@ export function rootStatus(overrides: Partial<HealthRoot> = {}): HealthRoot {
   };
 }
 
+export function gttEntry(overrides: Partial<GttEntry> = {}): GttEntry {
+  return {
+    index: 0,
+    adva: '0102545678c0',
+    last: 90,
+    soft: 110,
+    hard: 120,
+    departed_deadline: 130,
+    serial: 4,
+    serial_state: 'known',
+    hop: 2,
+    hop_state: 'known',
+    freshness: 'active',
+    departed: 'false',
+    ...overrides,
+  };
+}
+
+export function gttSnapshot(overrides: Partial<GttSnapshot> = {}): GttSnapshot {
+  const entries = overrides.entries ?? [gttEntry()];
+  return {
+    generation: 1,
+    completed_at_ms: 10_000,
+    query_at_ms: 101,
+    local: '1842de524add',
+    entry_count: entries.length,
+    nondeparted_count: entries.filter((entry) => entry.departed !== 'true').length,
+    entries,
+    ...overrides,
+  };
+}
+
 export function healthDevice(device: number, overrides: Partial<HealthDevice> = {}): HealthDevice {
   return {
     device,
@@ -59,15 +92,18 @@ export function healthDevice(device: number, overrides: Partial<HealthDevice> = 
     reconnects: 0,
     last_record_cursor: 0,
     root: null,
+    gtt: null,
+    owner_device: device,
     ...overrides,
   };
 }
 
 export function healthResponse(devices: HealthDevice[] = [healthDevice(0)]): HealthResponse {
+  const current = Math.max(0, ...devices.map((device) => device.root?.cursor ?? 0));
   return {
-    schema: 'mind.health.v1',
+    schema: 'mind.health.v2',
     oldest_cursor: 1,
-    current_cursor: 0,
+    current_cursor: current,
     devices,
   };
 }

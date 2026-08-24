@@ -148,9 +148,9 @@ describe('dashboard event store', () => {
     expect(state.healthEpoch).toBe(0);
     state = reducer(state, { type: 'requestFailed', source: 'health', message: 'bridge unavailable' });
     state = receive([{
-      cursor: 1,
       device: 0,
       ...rootStatus({ role: 'root' }),
+      cursor: 1,
     }], 2_000, 1)(state);
     expect(state.rootRecords[0].role).toBe('root');
     state = reducer(state, {
@@ -161,6 +161,132 @@ describe('dashboard event store', () => {
     });
     expect(state.healthEpoch).toBe(1);
     expect(state.health?.devices[0].root?.role).toBe('leaf');
+  });
+
+  it('keeps a 202 root command pending until a newer authoritative root record or health cursor confirms the desired state', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 5, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'rootAccepted', device: 0, command: 'on', requestId: 1 });
+    expect(state.pendingRoot[0]).toMatchObject({ desired: true, phase: 'confirming' });
+    state = receive([{ device: 0, ...rootStatus({ role: 'root' }), cursor: 5 }])(state);
+    expect(state.pendingRoot[0]).toBeDefined();
+    state = receive([{ device: 0, ...rootStatus({ role: 'root' }), cursor: 6 }])(state);
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 confirmed ROOT ON from an authoritative root record.');
+
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 6, baselineEpoch: 0,
+    });
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: { ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf', cursor: 7 }) })]), oldest_cursor: 1, current_cursor: 7 },
+      receivedAt: 7_000,
+      epoch: 0,
+    });
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 confirmed ROOT OFF from the authoritative health snapshot.');
+  });
+
+  it('clears a post-baseline authoritative role mismatch immediately and replaces waiting copy with the mismatch', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 5, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'rootAccepted', device: 0, command: 'on', requestId: 1 });
+    state = receive([{ device: 0, ...rootStatus({ role: 'leaf' }), cursor: 6 }])(state);
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 reported ROOT OFF from an authoritative root record; requested ROOT ON did not match.');
+
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 6, baselineEpoch: 0,
+    });
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: { ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 7 }) })]), oldest_cursor: 1, current_cursor: 7 },
+      receivedAt: 7_000,
+      epoch: 0,
+    });
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 reported ROOT ON from the authoritative health snapshot; requested ROOT OFF did not match.');
+  });
+
+  it('treats matching post-baseline busy and rejection statuses as terminal firmware failures and ignores stale actions', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 2, baselineCursor: 5, baselineEpoch: 0,
+    });
+    state = receive([{
+      cursor: 6, kind: 'command', device: 0, now: 1, local: '1842de524add', command: 'on', status: 'busy',
+    }])(state);
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 firmware command ROOT ON failed: busy.');
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: true, requestId: 3, baselineCursor: 6, baselineEpoch: 0,
+    });
+    state = receive([{
+      cursor: 7, kind: 'command', device: 0, now: 2, local: '1842de524add', command: 'on', status: 'rejected',
+    }])(state);
+    expect(state.pendingRoot[0]).toBeUndefined();
+
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: false, requestId: 4, baselineCursor: 7, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'rootFailed', device: 0, requestId: 3, message: 'stale failure' });
+    state = reducer(state, { type: 'rootConfirmationTimedOut', device: 0, requestId: 3 });
+    expect(state.pendingRoot[0]).toMatchObject({ requestId: 4, desired: false });
+  });
+
+  it('records GTT command evidence without overwriting root-control status copy', () => {
+    const state = receive([{
+      cursor: 1, kind: 'command', device: 0, now: 1, local: '1842de524add', command: 'gtt', status: 'accepted',
+    }])({ ...initialState, announcement: 'Root controls are ready.' });
+
+    expect(state.commandRecords[0]).toMatchObject({ command: 'gtt', status: 'accepted' });
+    expect(state.announcement).toBe('Root controls are ready.');
+  });
+
+  it('resets epoch-bound root confirmation state and does not let an old timeout clear a new request', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 4, baselineEpoch: 0,
+    });
+    state = reducer(state, { type: 'epochReset' });
+    expect(state.pendingRoot).toEqual({});
+    state = reducer(state, {
+      type: 'rootPending', device: 0, active: false, requestId: 2, baselineCursor: 0, baselineEpoch: 1,
+    });
+    state = reducer(state, { type: 'rootConfirmationTimedOut', device: 0, requestId: 1 });
+    expect(state.pendingRoot[0]).toMatchObject({ requestId: 2, desired: false });
+    state = reducer(state, { type: 'rootConfirmationTimedOut', device: 0, requestId: 2 });
+    expect(state.pendingRoot[0]).toBeUndefined();
+  });
+
+  it('does not resolve root pending from unrelated aggregate cursor movement, but accepts a newer root-specific health cursor', () => {
+    let state = reducer(initialState, {
+      type: 'rootPending', device: 0, active: true, requestId: 1, baselineCursor: 5, baselineEpoch: 0,
+    });
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: {
+        ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 5 }) })]),
+        oldest_cursor: 1,
+        current_cursor: 100,
+      },
+      receivedAt: 1_000,
+      epoch: 0,
+    });
+    expect(state.pendingRoot[0]).toBeDefined();
+
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: {
+        ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 6 }) })]),
+        oldest_cursor: 1,
+        current_cursor: 100,
+      },
+      receivedAt: 2_000,
+      epoch: 0,
+    });
+    expect(state.pendingRoot[0]).toBeUndefined();
+    expect(state.announcement).toBe('Device 0 confirmed ROOT ON from the authoritative health snapshot.');
   });
 
   it('shows loading, offline, stale, and reconnecting bridge states without discarding data', () => {

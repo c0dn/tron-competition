@@ -1,35 +1,29 @@
 import type { CommandRecord, HealthDevice, RootRecord } from '../lib/api';
+import { authoritativeRootFor, nodeIdentity, physicalDevices } from '../state/devices';
+import type { PendingRootRequest } from '../state/store';
 
 interface RootControlPanelProps {
   devices: HealthDevice[];
-  healthCurrentCursor?: number;
   healthEpoch: number | null;
   currentEpoch: number;
+  healthCurrentCursor: number | null;
   rootRecords: Record<number, RootRecord>;
   commandRecords: Record<number, CommandRecord>;
-  pendingRoot: Record<number, boolean>;
+  pendingRoot: Record<number, PendingRootRequest | undefined>;
   announcement: string;
   healthError?: string;
   onSetRoot: (device: number, active: boolean) => void;
 }
 
-function rootFor(
-  device: HealthDevice,
-  healthCurrentCursor: number | undefined,
-  healthEpoch: number | null,
-  currentEpoch: number,
-  recent?: RootRecord,
-) {
-  if (healthEpoch !== currentEpoch) return recent;
-  if (!recent || (healthCurrentCursor !== undefined && healthCurrentCursor >= recent.cursor)) return device.root;
-  return recent;
+function commandLabel(command: CommandRecord): string {
+  return `Last firmware command: ${command.command.toUpperCase()} (${command.status})`;
 }
 
 export function RootControlPanel({
   devices,
-  healthCurrentCursor,
   healthEpoch,
   currentEpoch,
+  healthCurrentCursor,
   rootRecords,
   commandRecords,
   pendingRoot,
@@ -37,66 +31,90 @@ export function RootControlPanel({
   healthError,
   onSetRoot,
 }: RootControlPanelProps) {
+  const owners = physicalDevices(devices);
   return (
-    <section className="panel" aria-labelledby="bridge-controls-heading">
+    <section className="panel root-panel" aria-labelledby="bridge-controls-heading">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Bridge and serial health</p>
-          <h2 id="bridge-controls-heading">Root controls</h2>
+          <h2 id="bridge-controls-heading">Root devices</h2>
         </div>
         <p className="command-status" role="status" aria-live="polite" aria-label="Root command status">
-          {announcement || 'Choose a device to request its runtime root role.'}
+          {announcement || 'Runtime role is confirmed by the bridge after each serial command.'}
         </p>
       </div>
       {healthError && <p className="notice error" role="alert">Health request failed: {healthError} Retrying while preserving the last known devices.</p>}
-      {devices.length === 0 ? (
+      {owners.length === 0 ? (
         <p className="empty">No configured serial devices. Start the bridge with one or more serial paths.</p>
       ) : (
         <div className="table-wrap">
           <table className="device-table">
-            <caption>Configured serial devices and runtime root requests</caption>
+            <caption>Connected physical nodes and their authoritative runtime roles</caption>
             <thead>
               <tr>
-                <th scope="col">Device</th>
-                <th scope="col">Serial health</th>
-                <th scope="col">Latest root state</th>
-                <th scope="col">Controls</th>
+                <th scope="col">Node</th>
+                <th scope="col">Serial</th>
+                <th scope="col">Runtime</th>
+                <th scope="col">Root control</th>
               </tr>
             </thead>
             <tbody>
-              {devices.map((device) => {
-                const root = rootFor(device, healthCurrentCursor, healthEpoch, currentEpoch, rootRecords[device.device]);
+              {owners.map((device) => {
+                const root = authoritativeRootFor(device, healthEpoch, currentEpoch, healthCurrentCursor, rootRecords[device.device]);
+                const identity = nodeIdentity(device, root);
+                const active = root?.role === 'root';
+                const pending = pendingRoot[device.device];
+                const unknown = root === null;
+                const disabled = !device.connected || pending !== undefined || unknown;
+                const switchLabel = unknown
+                  ? `Root role unknown for Device ${device.device}`
+                  : `${active ? 'Turn root off' : 'Turn root on'} for ${identity.primary}`;
                 const command = commandRecords[device.device];
-                const pending = pendingRoot[device.device] === true;
+                const rootCommand = command?.command === 'gtt' ? undefined : command;
+                const serialIssues = device.reconnects + device.parse_errors + device.overlong_lines;
                 return (
                   <tr key={device.device}>
                     <th scope="row">
-                      <strong>Device {device.device}</strong>
-                      <code>{device.path}</code>
+                      <strong>{identity.primary}</strong>
+                      <span>{identity.secondary}</span>
                     </th>
-                    <td data-label="Serial health">
-                      <strong>{device.connected ? 'Serial connected' : 'Serial offline'}</strong>
-                      <span>Reconnects {device.reconnects}; parse errors {device.parse_errors}; overlong lines {device.overlong_lines}</span>
+                    <td data-label="Serial">
+                      <strong>{device.connected ? 'Connected' : 'Offline'}</strong>
+                      {serialIssues > 0 && <span>{device.reconnects} reconnects · {device.parse_errors} parse errors · {device.overlong_lines} overlong</span>}
                     </td>
-                    <td data-label="Latest root state">
-                      {root ? (
-                        <>
-                          <strong>{root.role === 'root' ? 'Runtime root' : 'Leaf'}</strong>
-                          <span>Node {root.node}; {root.roots} active roots; pending {root.pending}</span>
-                        </>
-                      ) : (
-                        <span>No root record yet</span>
-                      )}
-                      {command && <small>Last UART command: {command.command} ({command.status})</small>}
+                    <td data-label="Runtime">
+                      <span className={`status-chip ${!device.connected ? 'danger' : pending ? 'warning' : unknown ? 'muted' : active ? 'good' : 'info'}`}>
+                        {!device.connected ? 'Serial offline' : pending ? `ROOT ${pending.desired ? 'ON' : 'OFF'} pending` : unknown ? 'Role unknown' : active ? 'Runtime root' : 'Runtime leaf'}
+                      </span>
+                      <span>{root ? `${root.roots} active root${root.roots === 1 ? '' : 's'} · ${root.pending} pending` : 'Awaiting ROOT STATUS'}</span>
+                      {rootCommand && <small>{commandLabel(rootCommand)}</small>}
                     </td>
-                    <td data-label="Root controls">
-                      <div className="root-actions" aria-label={`Root controls for Device ${device.device}`}>
-                        <button type="button" aria-label={`Request ROOT ON for Device ${device.device}`} disabled={pending} onClick={() => onSetRoot(device.device, true)}>
-                          {pending ? 'Sending request…' : 'Root ON'}
+                    <td data-label="Root control">
+                      <div className="root-switch-row">
+                        <button
+                          type="button"
+                          role={unknown ? 'checkbox' : 'switch'}
+                          aria-checked={unknown ? 'mixed' : active}
+                          aria-label={switchLabel}
+                          aria-describedby={`root-detail-${device.device}`}
+                          disabled={disabled}
+                          className={`root-switch${active ? ' checked' : ''}${unknown ? ' unknown' : ''}`}
+                          onClick={() => {
+                            if (root) onSetRoot(device.device, !active);
+                          }}
+                        >
+                          <span aria-hidden="true" className="switch-track"><span className="switch-thumb" /></span>
+                          <span>{unknown ? 'Role unknown' : active ? 'Root on' : 'Root off'}</span>
                         </button>
-                        <button type="button" aria-label={`Request ROOT OFF for Device ${device.device}`} className="secondary" disabled={pending} onClick={() => onSetRoot(device.device, false)}>
-                          Root OFF
-                        </button>
+                        <span id={`root-detail-${device.device}`} className="root-switch-detail">
+                          {pending
+                            ? `Requested ROOT ${pending.desired ? 'ON' : 'OFF'}; ${pending.phase === 'writing' ? 'writing serial command' : 'awaiting bridge confirmation'}.`
+                            : unknown
+                              ? 'Disabled while awaiting bridge status.'
+                              : device.connected
+                                ? `Click to request ROOT ${active ? 'OFF' : 'ON'}.`
+                                : 'Reconnect the serial device before changing its role.'}
+                        </span>
                       </div>
                     </td>
                   </tr>
