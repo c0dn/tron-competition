@@ -31,6 +31,17 @@ uv tool install pyocd grabserial
 
 Also required: `arm-none-eabi-gcc`, `cmake`, `ninja`.
 
+## Local dashboard bridge security
+
+The host bridge binds only to `127.0.0.1`. It serves its dashboard and APIs
+only when the request `Host` is `localhost:<actual-port>` or
+`127.0.0.1:<actual-port>`; other Host values, including a different port, are
+rejected. Mutation endpoints require one `application/json` Content-Type
+(optionally `charset=utf-8`). Browser requests must provide the matching
+`http` Origin and may only declare `Sec-Fetch-Site: same-origin` or `none`.
+The bridge sends no CORS permissions. Local CLI clients remain supported when
+they send JSON with no Origin or fetch-metadata headers.
+
 ## Build & flash (micro:bit)
 
 ```bash

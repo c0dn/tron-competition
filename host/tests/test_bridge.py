@@ -128,6 +128,37 @@ class ServerHarness:
         connection.close()
         return result
 
+    def raw_request(
+        self,
+        method: str,
+        target: str,
+        headers: list[tuple[str, str]],
+        body: bytes = b"",
+    ) -> tuple[int, dict[str, str], bytes]:
+        request = (
+            f"{method} {target} HTTP/1.1\r\n".encode("ascii")
+            + b"".join(f"{name}: {value}\r\n".encode("ascii") for name, value in headers)
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        connection = socket.create_connection(("127.0.0.1", self.port), timeout=3)
+        try:
+            connection.sendall(request)
+            response = receive_until_eof(connection, timeout=3)
+        finally:
+            connection.close()
+        response_headers, separator, response_body = response.partition(b"\r\n\r\n")
+        if not separator:
+            raise AssertionError(f"malformed HTTP response: {response!r}")
+        lines = response_headers.split(b"\r\n")
+        status = int(lines[0].split()[1])
+        parsed_headers = {
+            name.decode("ascii"): value.lstrip().decode("ascii")
+            for line in lines[1:]
+            for name, value in [line.split(b":", 1)]
+        }
+        return status, parsed_headers, response_body
+
 
 class ParserTests(unittest.TestCase):
     def test_exact_event_root_and_command_records(self) -> None:
@@ -882,11 +913,11 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual((status, json.loads(body)["error"], headers["Cache-Control"]), (400, "invalid_json", "no-store"))
         for invalid in (b"{}", b'{"device":true,"active":true}', b'{"device":0,"active":true,"extra":1}', b'{"device":0,"device":0,"active":true}'):
             with self.subTest(invalid=invalid):
-                status, _, body = server.request("POST", "/api/root", invalid)
+                status, _, body = server.request("POST", "/api/root", invalid, {"Content-Type": "application/json"})
                 self.assertEqual((status, json.loads(body)["error"]), (400, "invalid_body"))
-        status, _, body = server.request("POST", "/api/root", b'{"device":1,"active":true}')
+        status, _, body = server.request("POST", "/api/root", b'{"device":1,"active":true}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (404, "unknown_device"))
-        status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":true}')
+        status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":true}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "disconnected"))
 
     def test_gtt_post_error_matrix(self) -> None:
@@ -903,13 +934,110 @@ class HTTPTests(unittest.TestCase):
             b'{"device":0,"device":0}',
         ):
             with self.subTest(invalid=invalid):
-                status, _, body = server.request("POST", "/api/gtt", invalid)
+                status, _, body = server.request("POST", "/api/gtt", invalid, {"Content-Type": "application/json"})
                 self.assertEqual((status, json.loads(body)["error"]), (400, "invalid_body"))
-        status, _, body = server.request("POST", "/api/gtt", b'{"device":1}')
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":1}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (404, "unknown_device"))
-        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}')
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "disconnected"))
-        self.assertEqual(server.request("POST", "/api/gtt?unexpected=1", b'{"device":0}')[0], 404)
+        self.assertEqual(
+            server.request("POST", "/api/gtt?unexpected=1", b'{"device":0}', {"Content-Type": "application/json"})[0],
+            404,
+        )
+
+    def test_host_validation_rejects_rebinding_malformed_missing_and_wrong_port(self) -> None:
+        server = ServerHarness(bridge.Bridge([]), self.assets)
+        self.addCleanup(server.close)
+        wrong_port = 1 if server.port != 1 else 2
+        requests = (
+            ("missing", "GET", "/", [], b""),
+            ("missing_port", "GET", "/api/health", [("Host", "localhost")], b""),
+            ("malformed", "GET", "/api/health", [("Host", "localhost:not-a-port")], b""),
+            ("rebound", "GET", "/api/events", [("Host", f"attacker.example:{server.port}")], b""),
+            ("wrong_port", "GET", "/api/health", [("Host", f"localhost:{wrong_port}")], b""),
+            (
+                "duplicate",
+                "POST",
+                "/api/root",
+                [
+                    ("Host", f"localhost:{server.port}"),
+                    ("Host", f"127.0.0.1:{server.port}"),
+                    ("Content-Type", "application/json"),
+                    ("Content-Length", "26"),
+                ],
+                b'{"device":0,"active":true}',
+            ),
+        )
+        for name, method, target, headers, body in requests:
+            with self.subTest(name=name):
+                status, _, response = server.raw_request(method, target, headers, body)
+                self.assertEqual((status, json.loads(response)["error"]), (400, "invalid_host"))
+
+        status, _, body = server.raw_request("GET", "/", [("Host", f"localhost:{server.port}")])
+        self.assertEqual((status, body), (200, b"<h1>MIND</h1>"))
+
+    def test_mutations_require_one_utf8_json_content_type(self) -> None:
+        server = ServerHarness(bridge.Bridge(["/does/not/exist"]), self.assets)
+        self.addCleanup(server.close)
+        payload = b'{"device":0,"active":true}'
+
+        def mutate(content_type_headers: list[tuple[str, str]]) -> tuple[int, dict[str, str], bytes]:
+            return server.raw_request(
+                "POST",
+                "/api/root",
+                [
+                    ("Host", f"127.0.0.1:{server.port}"),
+                    ("Content-Length", str(len(payload))),
+                    *content_type_headers,
+                ],
+                payload,
+            )
+
+        for name, headers in (
+            ("missing", []),
+            ("plain_text", [("Content-Type", "text/plain")]),
+            ("form", [("Content-Type", "application/x-www-form-urlencoded")]),
+            ("non_utf8_charset", [("Content-Type", "application/json; charset=latin-1")]),
+            (
+                "duplicate",
+                [("Content-Type", "application/json"), ("Content-Type", "application/json")],
+            ),
+        ):
+            with self.subTest(name=name):
+                status, _, response = mutate(headers)
+                self.assertEqual((status, json.loads(response)["error"]), (415, "unsupported_media_type"))
+
+        status, _, response = mutate([("Content-Type", "Application/JSON; Charset=UTF-8")])
+        self.assertEqual((status, json.loads(response)["error"]), (503, "disconnected"))
+
+    def test_mutations_reject_cross_origin_null_origin_and_cross_site_metadata(self) -> None:
+        server = ServerHarness(bridge.Bridge(["/does/not/exist"]), self.assets)
+        self.addCleanup(server.close)
+        payload = b'{"device":0}'
+
+        def mutate(browser_headers: list[tuple[str, str]]) -> tuple[int, dict[str, str], bytes]:
+            return server.raw_request(
+                "POST",
+                "/api/gtt",
+                [
+                    ("Host", f"localhost:{server.port}"),
+                    ("Content-Type", "application/json"),
+                    ("Content-Length", str(len(payload))),
+                    *browser_headers,
+                ],
+                payload,
+            )
+
+        for name, headers, error in (
+            ("cross_origin", [("Origin", f"http://127.0.0.1:{server.port}")], "forbidden_origin"),
+            ("null_origin", [("Origin", "null")], "forbidden_origin"),
+            ("duplicate_origin", [("Origin", f"http://localhost:{server.port}"), ("Origin", "null")], "forbidden_origin"),
+            ("cross_site", [("Sec-Fetch-Site", "cross-site")], "forbidden_fetch_site"),
+        ):
+            with self.subTest(name=name):
+                status, response_headers, response = mutate(headers)
+                self.assertEqual((status, json.loads(response)["error"]), (403, error))
+                self.assertNotIn("Access-Control-Allow-Origin", response_headers)
 
     def test_static_assets_types_missing_and_traversal_are_safe(self) -> None:
         outside = Path(self.temp.name) / "outside.txt"
@@ -937,8 +1065,8 @@ class HTTPTests(unittest.TestCase):
         try:
             started = time.monotonic()
             client.sendall(
-                b"POST /api/root HTTP/1.1\r\nHost: localhost\r\n"
-                b"Content-Length: 30\r\nContent-Type: application/json\r\n\r\n"
+                f"POST /api/root HTTP/1.1\r\nHost: localhost:{server.port}\r\n".encode()
+                + b"Content-Length: 30\r\nContent-Type: application/json\r\n\r\n"
                 b'{"device":0'
             )
             response = receive_until_eof(client)
@@ -961,8 +1089,8 @@ class HTTPTests(unittest.TestCase):
             for _ in range(bridge.HTTP_WORKER_CAPACITY):
                 client = socket.create_connection(("127.0.0.1", server.port), timeout=1)
                 client.sendall(
-                    b"POST /api/root HTTP/1.1\r\nHost: localhost\r\n"
-                    b"Content-Length: 30\r\nContent-Type: application/json\r\n\r\n"
+                    f"POST /api/root HTTP/1.1\r\nHost: localhost:{server.port}\r\n".encode()
+                    + b"Content-Length: 30\r\nContent-Type: application/json\r\n\r\n"
                 )
                 clients.append(client)
             self.assertTrue(eventually(lambda: server.server.active_request_count() == bridge.HTTP_WORKER_CAPACITY))
@@ -1008,7 +1136,7 @@ class SerialWorkerTests(unittest.TestCase):
         response_lock = threading.Lock()
 
         def post(target: str, payload: dict[str, object]) -> None:
-            result = server.request("POST", target, json.dumps(payload).encode())
+            result = server.request("POST", target, json.dumps(payload).encode(), {"Content-Type": "application/json"})
             with response_lock:
                 responses.append(result)
 
@@ -1051,18 +1179,56 @@ class SerialWorkerTests(unittest.TestCase):
             [{"schema": "mind.command.v1", "accepted": True, "device": 0, "command": "gtt"}] * 3,
         )
 
+    def test_http_csrf_gate_allows_same_origin_and_originless_local_clients(self) -> None:
+        server = ServerHarness(self.state, Path(tempfile.gettempdir()))
+        self.addCleanup(server.close)
+
+        def rooted_request(host: str, active: bool, fetch_site: str = "same-origin") -> tuple[int, dict[str, str], bytes]:
+            payload = json.dumps({"device": 0, "active": active}, separators=(",", ":")).encode()
+            return server.raw_request(
+                "POST",
+                "/api/root",
+                [
+                    ("Host", f"{host}:{server.port}"),
+                    ("Content-Type", "application/json"),
+                    ("Content-Length", str(len(payload))),
+                    ("Origin", f"http://{host}:{server.port}"),
+                    ("Sec-Fetch-Site", fetch_site),
+                ],
+                payload,
+            )
+
+        localhost_status, _, localhost_body = rooted_request("localhost", True)
+        loopback_status, _, loopback_body = rooted_request("127.0.0.1", False)
+        none_status, _, none_body = rooted_request("localhost", False, "none")
+        automation_status, _, automation_body = server.request(
+            "POST",
+            "/api/root",
+            b'{"device":0,"active":true}',
+            {"Content-Type": "application/json"},
+        )
+
+        self.assertEqual((localhost_status, json.loads(localhost_body)["accepted"]), (202, True))
+        self.assertEqual((loopback_status, json.loads(loopback_body)["accepted"]), (202, True))
+        self.assertEqual((none_status, json.loads(none_body)["accepted"]), (202, True))
+        self.assertEqual((automation_status, json.loads(automation_body)["accepted"]), (202, True))
+        self.assertEqual(
+            read_exact(self.master, len(bridge.ROOT_ON) * 2 + len(bridge.ROOT_OFF) * 2),
+            bridge.ROOT_ON + bridge.ROOT_OFF + bridge.ROOT_OFF + bridge.ROOT_ON,
+        )
+
     def test_post_reports_write_failure(self) -> None:
         self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
         self.addCleanup(server.close)
-        status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":false}')
+        status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":false}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
 
     def test_gtt_post_reports_write_failure(self) -> None:
         self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
         self.addCleanup(server.close)
-        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}')
+        status, _, body = server.request("POST", "/api/gtt", b'{"device":0}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
 
     def test_partially_written_stalled_command_has_a_bounded_failure_and_closes_transport(self) -> None:
@@ -1094,7 +1260,14 @@ class SerialWorkerTests(unittest.TestCase):
         responses: list[tuple[int, dict[str, str], bytes]] = []
 
         def post(active: bool) -> None:
-            responses.append(server.request("POST", "/api/root", json.dumps({"device": 0, "active": active}).encode()))
+            responses.append(
+                server.request(
+                    "POST",
+                    "/api/root",
+                    json.dumps({"device": 0, "active": active}).encode(),
+                    {"Content-Type": "application/json"},
+                )
+            )
 
         started = time.monotonic()
         writers = [threading.Thread(target=post, args=(True,)), threading.Thread(target=post, args=(False,))]

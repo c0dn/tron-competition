@@ -56,6 +56,15 @@ FIXED_COMMANDS = frozenset({ROOT_ON, ROOT_OFF, ROOT_STATUS, GTT})
 DECIMAL = r"(?:0|[1-9][0-9]*)"
 HEX12 = r"[0-9a-f]{12}"
 HEX6 = r"[0-9a-f]{6}"
+HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+LOOPBACK_HOST_PATTERN = re.compile(
+    r"[ \t]*(?P<host>127\.0\.0\.1|localhost):(?P<port>[0-9]{1,5})[ \t]*", re.IGNORECASE
+)
+JSON_CONTENT_TYPE_PATTERN = re.compile(
+    rf"[ \t]*(?P<type>{HTTP_TOKEN})/(?P<subtype>{HTTP_TOKEN})"
+    rf"(?:[ \t]*;[ \t]*(?P<parameter>{HTTP_TOKEN})[ \t]*=[ \t]*(?P<value>{HTTP_TOKEN}))?[ \t]*",
+    re.IGNORECASE,
+)
 
 EVENT_PATTERN = re.compile(
     rf"^mind_event_v1 now=(?P<now>{DECIMAL}) root=(?P<root>{HEX12}) "
@@ -1009,12 +1018,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.request.settimeout(self.bridge_server.timing.http_io_timeout)
         super().setup()
         self._close_after_response = False
+        self._request_host: Optional[str] = None
 
     def handle(self) -> None:
         try:
             super().handle()
         except (OSError, TimeoutError):
             self.close_connection = True
+
+    def parse_request(self) -> bool:
+        self._request_host = None
+        if not super().parse_request():
+            return False
+        self._request_host = self._validated_host()
+        if self._request_host is None:
+            self._close_after_response = True
+            self._send_error(400, "invalid_host")
+            return False
+        return True
 
     def _send(self, status: int, body: bytes, content_type: str, *, api: bool = False) -> None:
         try:
@@ -1059,6 +1080,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if parsed.query or parsed.path not in {"/api/root", "/api/gtt"}:
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
             return
+        request_error = self._mutation_request_error()
+        if request_error is not None:
+            status, error = request_error
+            self._close_after_response = True
+            self._send_error(status, error)
+            return
         gtt = parsed.path == "/api/gtt"
         body = self._json_body(gtt=gtt)
         if isinstance(body, str):
@@ -1086,6 +1113,41 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_error(503, result)
         else:
             self._send_error(503, "write_failed")
+
+    def _validated_host(self) -> Optional[str]:
+        values = self.headers.get_all("Host") or []
+        if len(values) != 1:
+            return None
+        match = LOOPBACK_HOST_PATTERN.fullmatch(values[0])
+        if match is None:
+            return None
+        port = int(match["port"])
+        if port != self.bridge_server.server_address[1]:
+            return None
+        return f"{match['host'].lower()}:{port}"
+
+    def _mutation_request_error(self) -> Optional[tuple[int, str]]:
+        if not self._has_json_content_type():
+            return 415, "unsupported_media_type"
+
+        origins = self.headers.get_all("Origin") or []
+        if origins and (len(origins) != 1 or origins[0] != f"http://{self._request_host}"):
+            return 403, "forbidden_origin"
+
+        fetch_sites = self.headers.get_all("Sec-Fetch-Site") or []
+        if fetch_sites and (len(fetch_sites) != 1 or fetch_sites[0] not in {"same-origin", "none"}):
+            return 403, "forbidden_fetch_site"
+        return None
+
+    def _has_json_content_type(self) -> bool:
+        values = self.headers.get_all("Content-Type") or []
+        if len(values) != 1:
+            return False
+        match = JSON_CONTENT_TYPE_PATTERN.fullmatch(values[0])
+        if match is None or (match["type"].lower(), match["subtype"].lower()) != ("application", "json"):
+            return False
+        parameter = match["parameter"]
+        return parameter is None or (parameter.lower(), match["value"].lower()) == ("charset", "utf-8")
 
     def _event_query(self, query: str) -> Optional[tuple[int, int]]:
         try:
