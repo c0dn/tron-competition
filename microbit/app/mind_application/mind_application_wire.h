@@ -17,6 +17,7 @@
 #define MIND_REPORT 0x02u
 #define ROOT_STATE  0x03u
 #define ROOT_ACK    0x04u
+#define MIND_REPORT_OBSERVED 0x05u
 
 #define MIND_APPLICATION_WIRE_APP_BYTES_MAX 10u
 #define MIND_APPLICATION_REPORT_BYTES       10u
@@ -47,6 +48,8 @@ typedef struct mind_application_wire_record {
 typedef struct mind_application_report {
     uint32_t packet_id24;
     uint8_t schema_payload[MIND_PAYLOAD_SIZE];
+    /* Zero is unavailable; valid observed magnitudes are 1..127. */
+    uint8_t rssi_magnitude_db;
 } mind_application_report_t;
 
 typedef struct mind_application_root_state {
@@ -81,6 +84,7 @@ typedef enum mind_application_wire_result {
     MIND_APPLICATION_WIRE_ERR_ACCEL_SVM,
     MIND_APPLICATION_WIRE_ERR_HEARTBEAT_FIELDS,
     MIND_APPLICATION_WIRE_ERR_REPORT_SEQUENCE,
+    MIND_APPLICATION_WIRE_ERR_RSSI_MAGNITUDE,
     MIND_APPLICATION_WIRE_ERR_ROOT_VERSION,
     MIND_APPLICATION_WIRE_ERR_ROOT_ACTIVE,
     MIND_APPLICATION_WIRE_ERR_ROOT_NONCE,
@@ -98,6 +102,13 @@ mind_application_wire_result_t mind_application_wire_validate(
 mind_application_wire_result_t mind_application_wire_pack_report(
     mind_application_wire_record_t *record_out, uint8_t wearable_source,
     uint32_t packet_id24, const uint8_t schema_payload[MIND_PAYLOAD_SIZE]);
+
+/* Packs one 10-byte observed report after validating the original seven-byte
+ * wearable schema, including its sequence byte, before omitting that byte. */
+mind_application_wire_result_t mind_application_wire_pack_observed_report(
+    mind_application_wire_record_t *record_out, uint8_t wearable_source,
+    uint32_t packet_id24, const uint8_t schema_payload[MIND_PAYLOAD_SIZE],
+    uint8_t rssi_magnitude_db);
 
 mind_application_wire_result_t mind_application_wire_unpack_report(
     const mind_application_wire_record_t *record,

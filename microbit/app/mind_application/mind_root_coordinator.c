@@ -290,7 +290,8 @@ static void process_final_data(mind_root_coordinator_t *coordinator,
                 }
             }
         }
-        if (record.app_kind == MIND_REPORT) {
+        if (record.app_kind == MIND_REPORT ||
+            record.app_kind == MIND_REPORT_OBSERVED) {
             mind_application_report_t report;
             mind_log_reservation_t reservation;
             mind_log_record_t event_record;

@@ -171,8 +171,8 @@ static tavrn_link_data_t report_data(void)
         MIND_EVT_FALL_AND_SHOUT, 73u, 0x1fu, 0x1au, 0x7du, 0x34u };
 
     memset(&data, 0, sizeof(data));
-    if (mind_application_wire_pack_report(&report, 7u, 0xa1b234u, payload) !=
-        MIND_APPLICATION_WIRE_OK) {
+    if (mind_application_wire_pack_observed_report(&report, 7u, 0xa1b234u, payload,
+                                                    41u) != MIND_APPLICATION_WIRE_OK) {
         return data;
     }
     data.origin = peer8(sender_adva).logical_id;
@@ -186,6 +186,23 @@ static tavrn_link_data_t report_data(void)
     memcpy(data.app_bytes, report.app_bytes, sizeof(data.app_bytes));
     data.ownership = TAVRN_DATA_ORIGINATED;
     return data;
+}
+
+static mind_application_wire_result_t unpack_data_report(
+    const tavrn_link_data_t *data, mind_application_report_t *report_out)
+{
+    mind_application_wire_record_t record;
+
+    if (data == NULL || report_out == NULL) {
+        return MIND_APPLICATION_WIRE_ERR_NULL;
+    }
+    memset(&record, 0, sizeof(record));
+    record.app_kind = data->app_kind;
+    record.app_source = data->app_source;
+    record.urgent = data->urgent;
+    record.app_len = data->app_len;
+    memcpy(record.app_bytes, data->app_bytes, sizeof(record.app_bytes));
+    return mind_application_wire_unpack_report(&record, report_out);
 }
 
 static void test_duplicate_data_reaches_inbox_once(void)
@@ -209,6 +226,7 @@ static void test_duplicate_data_reaches_inbox_once(void)
     const ble_mesh_tx_item_t *item;
     mind_root_inbox_t inbox;
     mind_root_inbox_entry_t entry;
+    mind_application_report_t unpacked;
 
     memset(&sender_scheduler, 0, sizeof(sender_scheduler));
     memset(&receiver_scheduler, 0, sizeof(receiver_scheduler));
@@ -268,16 +286,46 @@ static void test_duplicate_data_reaches_inbox_once(void)
           "first DATA reserves/commits final inbox before accepted HACK");
     }
     check(tavrn_router_handle_scheduler_event_ex(&receiver_router, &event, 11u, &trace) ==
-              TAVRN_ROUTER_EVENT_OK && inbox.count == 1u &&
-              queued_hack_count(&receiver_scheduler, TAVRN_HACK_ACCEPTED) == 1u &&
-              queued_hack_count(&receiver_scheduler, TAVRN_HACK_DUPLICATE) == 0u &&
-              mind_root_inbox_peek(&inbox, &entry) && entry.data.data_seq == data.data_seq,
-          "transport duplicate preserves the pending accepted HACK without a second inbox reservation");
+               TAVRN_ROUTER_EVENT_OK && inbox.count == 1u &&
+               queued_hack_count(&receiver_scheduler, TAVRN_HACK_ACCEPTED) == 1u &&
+               queued_hack_count(&receiver_scheduler, TAVRN_HACK_DUPLICATE) == 0u &&
+               mind_root_inbox_peek(&inbox, &entry) && entry.data.data_seq == data.data_seq &&
+               entry.data.app_kind == MIND_REPORT_OBSERVED &&
+               entry.data.app_len == MIND_APPLICATION_REPORT_BYTES &&
+               entry.data.app_bytes[0] == 0x34u && entry.data.app_bytes[1] == 0xb2u &&
+               entry.data.app_bytes[2] == 0xa1u && entry.data.app_bytes[3] == 1u &&
+               entry.data.app_bytes[4] == MIND_EVT_FALL_AND_SHOUT &&
+               entry.data.app_bytes[9] == 41u &&
+               unpack_data_report(&entry.data, &unpacked) == MIND_APPLICATION_WIRE_OK &&
+               unpacked.packet_id24 == 0xa1b234u &&
+               unpacked.schema_payload[6] == 0x34u &&
+               unpacked.rssi_magnitude_db == 41u,
+          "SID8 DATA decode/root inbox preserves the exact observed RSSI record once");
+}
+
+static void test_sid16_rejects_ten_byte_observed_report(void)
+{
+    ble_mesh_scheduler_t scheduler;
+    tavrn_link_v2_t link;
+    tavrn_link_config_t config = link_config(sender_adva);
+    tavrn_link_data_t data = report_data();
+    tavrn_link_event_t output;
+    tavrn_direct_peer_t next_hop = peer(receiver_adva);
+
+    memset(&scheduler, 0, sizeof(scheduler));
+    ble_mesh_scheduler_init(&scheduler, 0u, sender_adva);
+    data.origin = peer(sender_adva).logical_id;
+    data.final_destination = peer(receiver_adva).logical_id;
+    check(tavrn_link_v2_init(&link, &scheduler, &config, 0u) == TAVRN_LINK_INIT_OK &&
+              tavrn_link_v2_send_unicast(&link, &next_hop, &data, 1u, &output) ==
+                  TAVRN_LINK_SEND_INVALID,
+          "SID16 submission rejects the ten-byte observed report before advertising");
 }
 
 int main(void)
 {
     test_duplicate_data_reaches_inbox_once();
+    test_sid16_rejects_ten_byte_observed_report();
     if (failures != 0u) {
         printf("mind_router_inbox_integration failures=%u\n", failures);
         return 1;

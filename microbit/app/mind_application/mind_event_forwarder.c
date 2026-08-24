@@ -125,6 +125,7 @@ int mind_event_forwarder_consume_ingress(
 {
     tavrn_adva_t roots[MIND_APP_ROOT_CAPACITY];
     mind_application_ingress_event_t ingress_event;
+    mind_application_report_t direct_report;
     mind_event_item_t *item;
     uint8_t event_slot;
     uint8_t root_count;
@@ -152,7 +153,18 @@ int mind_event_forwarder_consume_ingress(
         return 0;
     }
     memset(item, 0, sizeof(*item));
-    item->report = ingress_event.report;
+    if (mind_application_wire_unpack_report(&ingress_event.report, &direct_report) !=
+            MIND_APPLICATION_WIRE_OK ||
+        mind_application_wire_pack_observed_report(
+            &item->report, ingress_event.report.app_source,
+            direct_report.packet_id24, direct_report.schema_payload,
+            ingress_event.rssi_magnitude_db) != MIND_APPLICATION_WIRE_OK) {
+        /* Direct ingress admits only a validated MIND_REPORT and radio RSSI is
+         * sampled from its 7-bit hardware register.  Do not publish a legacy
+         * fallback if that invariant is ever broken, because it would silently
+         * discard the sole observer-RSSI evidence. */
+        return 1;
+    }
     item->observed_at_ms = now_ms;
     item->target_count = root_count;
     item->occupied = 1u;

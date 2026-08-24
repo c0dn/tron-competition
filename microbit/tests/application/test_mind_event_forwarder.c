@@ -30,6 +30,7 @@ static void make_direct_event(ble_mesh_sched_event_t *event, uint8_t wearable,
     memset(event, 0, sizeof(*event));
     event->type = BLE_MESH_SCHED_EVENT_RX_ADV;
     event->adv_len = MIND_APPLICATION_INGRESS_FRAME_BYTES;
+    event->rssi_magnitude_db = 41u;
     event->adv_addr[4] = wearable;
     event->adv_addr[5] = 0xc0u;
     adv = event->adv_data;
@@ -153,6 +154,21 @@ static void complete_next_remote(mind_event_forwarder_t *forwarder)
     mind_event_forwarder_submission_complete(forwarder, &submission, 1u);
 }
 
+static int no_event_slots_occupied(const mind_event_forwarder_t *forwarder)
+{
+    uint8_t index;
+
+    if (forwarder == NULL) {
+        return 0;
+    }
+    for (index = 0u; index < MIND_APP_EVENT_CAPACITY; index++) {
+        if (forwarder->events[index].occupied != 0u) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void test_rootless_and_local_delivery(void)
 {
     tavrn_adva_t local = identity(0x80u);
@@ -180,11 +196,111 @@ static void test_rootless_and_local_delivery(void)
           "local-root ingress snapshots one local target");
     mind_event_forwarder_service_local(&forwarder, &inbox, publish_local, 3u);
     check(mind_root_inbox_peek(&inbox, &entry) &&
-              entry.path == MIND_ROOT_INBOX_PATH_LOCAL &&
-              entry.data.app_kind == MIND_REPORT &&
-              entry.observer.bytes[0] == local.bytes[0] &&
-              forwarder.counters.local_published == 1u,
-          "local target publishes through the shared final inbox without self-route");
+               entry.path == MIND_ROOT_INBOX_PATH_LOCAL &&
+               entry.data.app_kind == MIND_REPORT_OBSERVED &&
+               entry.data.app_len == MIND_APPLICATION_REPORT_BYTES &&
+               entry.data.app_bytes[0] == 0x22u && entry.data.app_bytes[1] == 0x22u &&
+               entry.data.app_bytes[2] == 0x22u && entry.data.app_bytes[3] == 1u &&
+               entry.data.app_bytes[4] == MIND_EVT_FALL_AND_SHOUT &&
+               entry.data.app_bytes[9] == 41u &&
+               entry.observer.bytes[0] == local.bytes[0] &&
+               forwarder.counters.local_published == 1u,
+          "local target publishes the exact observed RSSI report without self-route");
+}
+
+static void test_remote_submission_preserves_observed_rssi(void)
+{
+    tavrn_adva_t local = identity(0x80u);
+    mind_root_plane_t plane;
+    mind_event_forwarder_t forwarder;
+    mind_application_ingress_t ingress;
+    mind_root_submission_t submission;
+    mind_application_report_t unpacked;
+
+    mind_root_plane_init(&plane, &local, 1u);
+    mind_event_forwarder_init(&forwarder, &local);
+    mind_application_ingress_init(&ingress, 7u);
+    add_remote_root(&plane, 1u);
+    check(admit(&ingress, 6u, 0x0abcdeu, MIND_EVT_FALL_AND_SHOUT, 1u) &&
+              mind_event_forwarder_consume_ingress(&forwarder, &ingress,
+                                                   take_ingress, &plane, 1u) &&
+              mind_event_forwarder_prepare_submission(&forwarder, 1u, &submission) &&
+              submission.record.app_kind == MIND_REPORT_OBSERVED &&
+              submission.record.app_source == 6u && submission.record.urgent == 1u &&
+              submission.record.app_len == MIND_APPLICATION_REPORT_BYTES &&
+              submission.record.app_bytes[0] == 0xdeu &&
+              submission.record.app_bytes[1] == 0xbcu &&
+              submission.record.app_bytes[2] == 0x0au &&
+              submission.record.app_bytes[3] == MIND_SCHEMA_VERSION &&
+              submission.record.app_bytes[4] == MIND_EVT_FALL_AND_SHOUT &&
+              submission.record.app_bytes[5] == 73u &&
+              submission.record.app_bytes[6] == 0x1fu &&
+              submission.record.app_bytes[7] == 0x1au &&
+              submission.record.app_bytes[8] == 0x7du &&
+              submission.record.app_bytes[9] == 41u &&
+              mind_application_wire_unpack_report(&submission.record, &unpacked) ==
+                  MIND_APPLICATION_WIRE_OK &&
+              unpacked.packet_id24 == 0x0abcdeu &&
+              unpacked.schema_payload[6] == 0xdeu &&
+              unpacked.rssi_magnitude_db == 41u,
+          "remote submission carries the original wearable RSSI in the exact observed record");
+}
+
+static void test_corrupt_ingress_items_fail_closed_and_recover(void)
+{
+    tavrn_adva_t local = identity(0x80u);
+    mind_root_plane_t plane;
+    mind_event_forwarder_t forwarder;
+    mind_application_ingress_t ingress;
+    mind_event_forwarder_counters_t counters_before;
+
+    mind_root_plane_init(&plane, &local, 1u);
+    mind_event_forwarder_init(&forwarder, &local);
+    mind_application_ingress_init(&ingress, 7u);
+    add_remote_root(&plane, 1u);
+    check(admit(&ingress, 1u, 0x110001u, MIND_EVT_FALL_AND_SHOUT, 1u) &&
+              admit(&ingress, 2u, 0x110002u, MIND_EVT_FALL_AND_SHOUT, 2u),
+          "sequence-corruption fixture admits two direct reports before mutation");
+    ingress.queue[ingress.queue_head].report.app_bytes[9] ^= 1u;
+    counters_before = forwarder.counters;
+    check(mind_event_forwarder_consume_ingress(&forwarder, &ingress,
+                                               take_ingress, &plane, 3u) &&
+              ingress.queue_count == 1u && no_event_slots_occupied(&forwarder) &&
+              memcmp(&forwarder.counters, &counters_before,
+                     sizeof(forwarder.counters)) == 0,
+          "post-admission direct sequence corruption consumes only its queue item without event or counter drift");
+    check(mind_event_forwarder_consume_ingress(&forwarder, &ingress,
+                                               take_ingress, &plane, 4u) &&
+              ingress.queue_count == 0u && forwarder.events[0].occupied != 0u &&
+              forwarder.events[0].report.app_kind == MIND_REPORT_OBSERVED &&
+              forwarder.events[0].report.app_bytes[0] == 0x02u &&
+              memcmp(&forwarder.counters, &counters_before,
+                     sizeof(forwarder.counters)) == 0,
+          "following valid direct report recovers after sequence-corruption drop");
+
+    mind_root_plane_init(&plane, &local, 2u);
+    mind_event_forwarder_init(&forwarder, &local);
+    mind_application_ingress_init(&ingress, 7u);
+    add_remote_root(&plane, 1u);
+    check(admit(&ingress, 3u, 0x220001u, MIND_EVT_FALL_AND_SHOUT, 1u) &&
+              admit(&ingress, 4u, 0x220002u, MIND_EVT_FALL_AND_SHOUT, 2u),
+          "RSSI-corruption fixture admits two direct reports before mutation");
+    ingress.queue[ingress.queue_head].rssi_magnitude_db = 128u;
+    counters_before = forwarder.counters;
+    check(mind_event_forwarder_consume_ingress(&forwarder, &ingress,
+                                               take_ingress, &plane, 3u) &&
+              ingress.queue_count == 1u && no_event_slots_occupied(&forwarder) &&
+              memcmp(&forwarder.counters, &counters_before,
+                     sizeof(forwarder.counters)) == 0,
+          "post-admission out-of-range RSSI consumes only its queue item without event or counter drift");
+    check(mind_event_forwarder_consume_ingress(&forwarder, &ingress,
+                                               take_ingress, &plane, 4u) &&
+              ingress.queue_count == 0u && forwarder.events[0].occupied != 0u &&
+              forwarder.events[0].report.app_kind == MIND_REPORT_OBSERVED &&
+              forwarder.events[0].report.app_bytes[0] == 0x02u &&
+              memcmp(&forwarder.counters, &counters_before,
+                     sizeof(forwarder.counters)) == 0,
+          "following valid direct report recovers after out-of-range RSSI drop");
 }
 
 static void test_target_matrix_and_independent_progress(void)
@@ -540,6 +656,8 @@ static void test_round_robin_and_full_retention(void)
 int main(void)
 {
     test_rootless_and_local_delivery();
+    test_remote_submission_preserves_observed_rssi();
+    test_corrupt_ingress_items_fail_closed_and_recover();
     test_target_matrix_and_independent_progress();
     test_busy_resolver_and_cancellation();
     test_event_item_target_cursor_fairness();

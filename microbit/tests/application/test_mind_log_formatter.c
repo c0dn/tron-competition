@@ -90,7 +90,16 @@ static void test_event_lines_and_injected_sink(void)
     record.detail.event.observer = identity(1u);
     check(mind_log_format_record(&record, line, sizeof(line)) &&
               strcmp(line, "mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 path=tavrn\n") == 0,
-          "event formatter emits the exact validated routed record");
+          "legacy or unavailable-RSSI event formatter preserves v1 grammar");
+    record.detail.event.report.rssi_magnitude_db = 37u;
+    check(mind_log_format_record(&record, line, sizeof(line)) &&
+              strcmp(line, "mind_event_v2 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 observer_rssi_dbm=-37 path=tavrn\n") == 0,
+          "valid observer RSSI emits the exact enriched UART v2 grammar");
+    record.detail.event.report.rssi_magnitude_db = 128u;
+    check(mind_log_format_record(&record, line, sizeof(line)) &&
+              strcmp(line, "mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 path=tavrn\n") == 0,
+          "out-of-range observer RSSI cannot create an enriched UART record");
+    record.detail.event.report.rssi_magnitude_db = 0u;
     check(!mind_log_record_is_heartbeat(&record),
           "incident record remains visible to quiet production telemetry");
     memset(&captured, 0, sizeof(captured));

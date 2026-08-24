@@ -63,7 +63,8 @@ static void test_golden_records_and_round_trips(void)
     mind_application_root_ack_t unpacked_ack;
 
     make_report_payload(payload, 0xabcdefu);
-    check(MIND_REPORT == 0x02u && ROOT_STATE == 0x03u && ROOT_ACK == 0x04u,
+    check(MIND_REPORT == 0x02u && ROOT_STATE == 0x03u && ROOT_ACK == 0x04u &&
+          MIND_REPORT_OBSERVED == 0x05u,
           "application kinds have their frozen values");
     check(mind_application_wire_pack_report(&record, 0x2au, 0xabcdefu,
                                             payload) == MIND_APPLICATION_WIRE_OK,
@@ -81,8 +82,9 @@ static void test_golden_records_and_round_trips(void)
           MIND_APPLICATION_WIRE_OK,
           "MIND_REPORT unpacks");
     check(report.packet_id24 == 0xabcdefu &&
-          memcmp(report.schema_payload, payload, MIND_PAYLOAD_SIZE) == 0,
-          "MIND_REPORT round trip preserves packet id and schema bytes");
+          memcmp(report.schema_payload, payload, MIND_PAYLOAD_SIZE) == 0 &&
+          report.rssi_magnitude_db == 0u,
+          "legacy MIND_REPORT round trip preserves bytes with RSSI unavailable");
     record.urgent = 0u;
     check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_ERR_URGENT &&
           mind_application_wire_unpack_report(&record, &report) ==
@@ -140,6 +142,90 @@ static void test_golden_records_and_round_trips(void)
           mind_application_wire_unpack_root_ack(&record, &unpacked_ack) ==
               MIND_APPLICATION_WIRE_ERR_URGENT,
           "ROOT_ACK requires nonurgent generic DATA");
+}
+
+static void test_observed_report_exact_bytes_and_bounds(void)
+{
+    static const uint8_t expected_observed[MIND_APPLICATION_REPORT_BYTES] = {
+        0xefu, 0xcdu, 0xabu, 0x01u, 0x05u, 0x49u, 0x1fu, 0x1au, 0x7du, 0x2au,
+    };
+    uint8_t payload[MIND_PAYLOAD_SIZE];
+    mind_application_wire_record_t record;
+    mind_application_wire_record_t unchanged;
+    mind_application_report_t report;
+    uint8_t length;
+
+    make_report_payload(payload, 0xabcdefu);
+    check(mind_application_wire_pack_observed_report(&record, 0x2au, 0xabcdefu,
+                                                      payload, 42u) ==
+              MIND_APPLICATION_WIRE_OK &&
+              record.app_kind == MIND_REPORT_OBSERVED && record.app_source == 0x2au &&
+              record.urgent == 1u && record.app_len == MIND_APPLICATION_REPORT_BYTES &&
+              memcmp(record.app_bytes, expected_observed, sizeof(expected_observed)) == 0,
+          "observed report packs the exact ten-byte RSSI record");
+    check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_OK &&
+              mind_application_wire_unpack_report(&record, &report) ==
+                  MIND_APPLICATION_WIRE_OK &&
+              report.packet_id24 == 0xabcdefu &&
+              memcmp(report.schema_payload, payload, MIND_PAYLOAD_SIZE) == 0 &&
+              report.rssi_magnitude_db == 42u,
+          "observed unpack reconstructs direct seq and exposes original RSSI");
+
+    for (length = 0u; length <= MIND_APPLICATION_WIRE_APP_BYTES_MAX; length++) {
+        if (length == MIND_APPLICATION_REPORT_BYTES) {
+            continue;
+        }
+        record.app_len = length;
+        check(mind_application_wire_validate(&record) ==
+                  MIND_APPLICATION_WIRE_ERR_LENGTH,
+              "every in-buffer non-observed-report length is rejected");
+    }
+    record.app_len = MIND_APPLICATION_REPORT_BYTES;
+    record.app_len = (uint8_t)(MIND_APPLICATION_WIRE_APP_BYTES_MAX + 1u);
+    check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_ERR_LENGTH,
+          "out-of-buffer observed-report length is rejected");
+    record.app_len = MIND_APPLICATION_REPORT_BYTES;
+    record.app_source = 0u;
+    check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_ERR_SOURCE,
+          "observed report source zero is rejected");
+    record.app_source = 0x2au;
+    record.urgent = 0u;
+    check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_ERR_URGENT,
+          "observed incident report requires urgent generic DATA");
+    record.urgent = 1u;
+    record.app_bytes[9] = 128u;
+    check(mind_application_wire_validate(&record) ==
+              MIND_APPLICATION_WIRE_ERR_RSSI_MAGNITUDE,
+          "observed RSSI magnitude above the seven-bit hardware range is rejected");
+    record.app_bytes[9] = 0u;
+    check(mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_OK &&
+              mind_application_wire_unpack_report(&record, &report) ==
+                  MIND_APPLICATION_WIRE_OK && report.rssi_magnitude_db == 0u,
+          "observed zero RSSI remains explicitly unavailable");
+
+    unchanged = record;
+    payload[6] ^= 1u;
+    check(mind_application_wire_pack_observed_report(&record, 0x2au, 0xabcdefu,
+                                                      payload, 1u) ==
+              MIND_APPLICATION_WIRE_ERR_REPORT_SEQUENCE &&
+              memcmp(&record, &unchanged, sizeof(record)) == 0,
+          "observed packer validates direct sequence before omitting it");
+    payload[6] ^= 1u;
+    check(mind_application_wire_pack_observed_report(&record, 0x2au, 0xabcdefu,
+                                                      payload, 128u) ==
+              MIND_APPLICATION_WIRE_ERR_RSSI_MAGNITUDE &&
+              memcmp(&record, &unchanged, sizeof(record)) == 0,
+          "observed packer rejects out-of-range RSSI without publishing output");
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = MIND_SCHEMA_VERSION;
+    payload[1] = MIND_EVT_HEARTBEAT;
+    payload[6] = 0xefu;
+    check(mind_application_wire_pack_observed_report(&record, 0x2au, 0xabcdefu,
+                                                      payload, 1u) ==
+              MIND_APPLICATION_WIRE_OK && record.urgent == 0u &&
+              mind_application_wire_validate(&record) == MIND_APPLICATION_WIRE_OK,
+          "observed heartbeat derives a nonurgent generic DATA record");
 }
 
 static void test_report_urgent_uses_schema_event_type(void)
@@ -436,8 +522,13 @@ static void test_unknown_kind_and_null_inputs(void)
           MIND_APPLICATION_WIRE_ERR_NULL,
           "report pack requires output");
     check(mind_application_wire_pack_report(&record, 1u, 1u, NULL) ==
-          MIND_APPLICATION_WIRE_ERR_NULL,
+           MIND_APPLICATION_WIRE_ERR_NULL,
           "report pack requires schema bytes");
+    check(mind_application_wire_pack_observed_report(NULL, 1u, 1u, payload, 1u) ==
+              MIND_APPLICATION_WIRE_ERR_NULL &&
+              mind_application_wire_pack_observed_report(&record, 1u, 1u, NULL, 1u) ==
+                  MIND_APPLICATION_WIRE_ERR_NULL,
+          "observed report pack requires output and direct schema bytes");
     check(mind_application_wire_pack_root_state(NULL, &state) ==
           MIND_APPLICATION_WIRE_ERR_NULL,
           "root-state pack requires output");
@@ -450,6 +541,7 @@ int main(void)
 {
     printf("mind_application_wire tests\n\n");
     test_golden_records_and_round_trips();
+    test_observed_report_exact_bytes_and_bounds();
     test_report_urgent_uses_schema_event_type();
     test_report_ranges_and_schema_compatibility();
     test_root_state_malformed_fields();

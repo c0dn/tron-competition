@@ -124,8 +124,11 @@ static int format_event(const mind_log_record_t *record, mind_log_writer_t *writ
     const mind_application_report_t *report = &record->detail.event.report;
     const uint8_t *payload = report->schema_payload;
     uint16_t svm = (uint16_t)payload[3] | ((uint16_t)payload[4] << 8);
+    uint8_t has_observer_rssi = report->rssi_magnitude_db != 0u &&
+        report->rssi_magnitude_db <= 127u;
 
-    put_text(writer, "mind_event_v1 now=");
+    put_text(writer, has_observer_rssi != 0u ? "mind_event_v2 now=" :
+             "mind_event_v1 now=");
     put_u32(writer, record->now_ms);
     put_text(writer, " root=");
     put_adva(writer, &record->local_adva);
@@ -147,6 +150,10 @@ static int format_event(const mind_log_record_t *record, mind_log_writer_t *writ
     put_u32(writer, payload[6]);
     put_text(writer, " observer=");
     put_adva(writer, &record->detail.event.observer);
+    if (has_observer_rssi != 0u) {
+        put_text(writer, " observer_rssi_dbm=-");
+        put_u32(writer, report->rssi_magnitude_db);
+    }
     put_text(writer, " path=");
     put_text(writer, record->detail.event.path_local != 0u ? "local" : "tavrn");
     put_char(writer, '\n');

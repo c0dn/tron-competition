@@ -407,9 +407,10 @@ static int enqueue_report_ingress(fake_binding_t *binding, uint8_t wearable,
     }
     memset(&event, 0, sizeof(event));
     if (mind_application_wire_pack_report(&event.report, wearable, packet_id24,
-                                           payload) != MIND_APPLICATION_WIRE_OK) {
+                                            payload) != MIND_APPLICATION_WIRE_OK) {
         return 0;
     }
+    event.rssi_magnitude_db = 41u;
     binding->ingress.queue[binding->ingress.queue_tail] = event;
     binding->ingress.queue_tail = (uint8_t)((binding->ingress.queue_tail + 1u) %
         MIND_APPLICATION_INGRESS_QUEUE_CAPACITY);
@@ -428,6 +429,22 @@ static int make_report(mind_application_wire_record_t *record, uint8_t wearable,
     };
 
     return mind_application_wire_pack_report(record, wearable, packet_id24, payload) ==
+        MIND_APPLICATION_WIRE_OK;
+}
+
+static int make_observed_report(mind_application_wire_record_t *record,
+                                uint8_t wearable, uint32_t packet_id24,
+                                uint8_t event_type, uint8_t rssi_magnitude_db)
+{
+    uint8_t payload[MIND_PAYLOAD_SIZE] = {
+        MIND_SCHEMA_VERSION, event_type,
+        event_type == MIND_EVT_HEARTBEAT ? 0u : 73u,
+        0x1fu, 0x1au, event_type == MIND_EVT_HEARTBEAT ? 0u : 0x7du,
+        (uint8_t)(packet_id24 & 0xffu)
+    };
+
+    return mind_application_wire_pack_observed_report(
+        record, wearable, packet_id24, payload, rssi_magnitude_db) ==
         MIND_APPLICATION_WIRE_OK;
 }
 
@@ -1125,17 +1142,19 @@ static void test_event_final_logger_retention_and_observers(void)
     uint8_t index;
 
     setup(&coordinator, &binding, 0u);
-    check(make_report(&report, 7u, 0xa1b2c3u, MIND_EVT_FALL_AND_SHOUT) &&
+    check(make_observed_report(&report, 7u, 0xa1b2c3u,
+                               MIND_EVT_FALL_AND_SHOUT, 37u) &&
               enqueue_record_at(&binding, &report, TAVRN_IDENTITY_SID8, 10u) &&
               !mind_root_coordinator_prepare(&coordinator, 10u, &request) &&
               mind_log_queue_take(&binding.logs, &first) && first.kind == MIND_LOG_EVENT &&
-              first.detail.event.wearable == 7u &&
-              first.detail.event.report.packet_id24 == 0xa1b2c3u &&
-              first.detail.event.path_local == 0u &&
+               first.detail.event.wearable == 7u &&
+               first.detail.event.report.packet_id24 == 0xa1b2c3u &&
+               first.detail.event.report.rssi_magnitude_db == 37u &&
+               first.detail.event.path_local == 0u &&
               first.now_ms == 10u && binding.incoming_resolve_now_ms == 10u &&
               memcmp(first.detail.event.observer.bytes, observer_one.bytes,
                      TAVRN_ADVA_LEN) == 0,
-          "validated routed report reserves one logger record with observer evidence");
+          "validated routed observed report reserves one logger record with RSSI evidence");
     packet_id24 = (uint32_t)report.app_bytes[0] |
         ((uint32_t)report.app_bytes[1] << 8) |
         ((uint32_t)report.app_bytes[2] << 16);
@@ -1149,7 +1168,7 @@ static void test_event_final_logger_retention_and_observers(void)
               enqueue_record_at(&binding, &report, TAVRN_IDENTITY_SID8, 55u) &&
               !mind_root_coordinator_prepare(&coordinator, 11u, &request) &&
               binding.inbox.count == 1u && coordinator.counters.final_logger_busy == 1u,
-          "logger full retains committed final MIND_REPORT without releasing it");
+          "logger full retains committed final observed report without releasing it");
     binding.incoming_identity = observer_two;
     while (mind_log_queue_take(&binding.logs, &first)) {
     }
@@ -1211,6 +1230,70 @@ static void test_event_final_logger_retention_and_observers(void)
               first.kind == MIND_LOG_EVENT && first.detail.event.path_local != 0u &&
               first.detail.event.report.packet_id24 == packet_id24,
           "direct-local and routed delivery share the validated report record contract");
+}
+
+static void test_malformed_observed_reports_reject_without_event_log(void)
+{
+    mind_root_coordinator_t coordinator;
+    fake_binding_t binding;
+    mind_root_coordinator_request_t request;
+    mind_application_wire_record_t report;
+    mind_log_record_t logged;
+
+    setup(&coordinator, &binding, 0u);
+    check(make_observed_report(&report, 7u, 0x010203u,
+                               MIND_EVT_FALL_AND_SHOUT, 41u),
+          "malformed-observed schema fixture first packs a valid record");
+    report.app_bytes[3] = (uint8_t)(MIND_SCHEMA_VERSION + 1u);
+    check(enqueue_record_at(&binding, &report, TAVRN_IDENTITY_SID8, 10u) &&
+              !mind_root_coordinator_prepare(&coordinator, 10u, &request) &&
+              binding.inbox.count == 0u && coordinator.counters.final_rejected == 1u &&
+              !mind_log_queue_take(&binding.logs, &logged),
+          "malformed observed schema is consumed as final-rejected without an event or v2 log record");
+
+    check(make_observed_report(&report, 8u, 0x040506u,
+                               MIND_EVT_FALL_AND_SHOUT, 41u),
+          "malformed-observed RSSI fixture first packs a valid record");
+    report.app_bytes[9] = 128u;
+    check(enqueue_record_at(&binding, &report, TAVRN_IDENTITY_SID8, 11u) &&
+              !mind_root_coordinator_prepare(&coordinator, 11u, &request) &&
+              binding.inbox.count == 0u && coordinator.counters.final_rejected == 2u &&
+              !mind_log_queue_take(&binding.logs, &logged),
+          "out-of-range observed RSSI is consumed as final-rejected without an event or v2 log record");
+}
+
+static void test_local_observed_and_legacy_report_logger_paths(void)
+{
+    mind_root_coordinator_t coordinator;
+    fake_binding_t binding;
+    mind_root_coordinator_request_t request;
+    mind_application_wire_record_t legacy;
+    mind_log_record_t record;
+
+    setup(&coordinator, &binding, 0u);
+    check(mind_root_plane_set_local(&coordinator.plane, 1u, 1u) ==
+              MIND_ROOT_APPLY_ACCEPTED &&
+              enqueue_report_ingress(&binding, 7u, 0x010203u,
+                                     MIND_EVT_FALL_AND_SHOUT) &&
+              !mind_root_coordinator_prepare(&coordinator, 10u, &request) &&
+              binding.inbox.count == 1u &&
+              !mind_root_coordinator_prepare(&coordinator, 11u, &request) &&
+              mind_log_queue_take(&binding.logs, &record) &&
+              record.kind == MIND_LOG_EVENT && record.detail.event.path_local != 0u &&
+              record.detail.event.report.packet_id24 == 0x010203u &&
+              record.detail.event.report.schema_payload[6] == 0x03u &&
+              record.detail.event.report.rssi_magnitude_db == 41u,
+          "local ingress publishes one observed record through inbox and logger");
+
+    setup(&coordinator, &binding, 0u);
+    check(make_report(&legacy, 8u, 0x040506u, MIND_EVT_FALL_AND_SHOUT) &&
+              enqueue_record_at(&binding, &legacy, TAVRN_IDENTITY_SID8, 12u) &&
+              !mind_root_coordinator_prepare(&coordinator, 12u, &request) &&
+              mind_log_queue_take(&binding.logs, &record) &&
+              record.kind == MIND_LOG_EVENT && record.detail.event.path_local == 0u &&
+              record.detail.event.report.packet_id24 == 0x040506u &&
+              record.detail.event.report.rssi_magnitude_db == 0u,
+          "legacy routed MIND_REPORT remains accepted with RSSI unavailable");
 }
 
 static const mind_event_target_t *find_event_target(
@@ -1455,6 +1538,8 @@ int main(void)
     test_root_resolution_scans_are_bounded();
     test_final_validation_and_incoming_correlation();
     test_event_final_logger_retention_and_observers();
+    test_malformed_observed_reports_reject_without_event_log();
+    test_local_observed_and_legacy_report_logger_paths();
     test_remote_off_and_departure_cancel_matching_event_targets();
     test_arbiter_ack_before_urgent_report();
     test_gtt_command_transaction();

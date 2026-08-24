@@ -103,7 +103,7 @@
     {
       "id": "phase-contract-firmware",
       "title": "Slice A — observed-RSSI contract, gateway presentation boundary, and G glyph",
-      "status": "in_progress",
+      "status": "completed",
       "steps": [
         {
           "id": "step-a1-firmware-rssi",
@@ -111,7 +111,7 @@
           "target": "mind_application wire, ingress/forwarder/inbox/coordinator/log path and docs/tests",
           "action": "A firmware code-writer adds distinct kind MIND_REPORT_OBSERVED=0x05 with exact 10-byte payload. A dedicated packer first validates the original seven-byte direct schema including seq==packet_id24 low byte, then writes packet_id24, schema version/event/confidence/accel/mic, and original observer RSSI magnitude; unpack reconstructs seq and exposes RSSI separately. Legacy MIND_REPORT remains valid with RSSI unavailable. The exact observed record is the sole RSSI carrier through retained event, local publication, TAVRN SID8 DATA, root inbox, logger, and mind_event_v2; zero-RSSI or legacy records use v1/null normalization.",
           "validation": "Host-native vectors prove exact bytes, kind/length/urgent/source/RSSI bounds, pre-omission seq validation, reconstruction, malformed rejection, and legacy decode. Real TAVRN SID8 encode/decode/root-inbox vectors preserve RSSI; 10-byte SID16 is rejected. Exact UART grammar is `mind_event_v2 now=<u32> root=<hex12> wearable=<u8> packet=<hex6> schema=1 event=<0..5> confidence=<0..100> svm=<0..8000> mic=<0..255> seq=<u8> observer=<hex12> observer_rssi_dbm=<-127..-1> path=<local|tavrn>`; v1 remains unchanged and host API v2 normalizes it to null. MIND/resource/docs suites pass.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-a2-glyph-gateway-copy",
@@ -119,7 +119,7 @@
           "target": "mind_ui 5x5 framebuffer plus dashboard visible copy inventory",
           "action": "In parallel with A1 where file ownership is disjoint, a code-writer replaces only the local-root 5x5 framebuffer with a recognizable G and updates exact row tests. Inventory every visible ROOT string for later GATEWAY replacement, explicitly excluding firmware/UART/API/internal names.",
           "validation": "UI framebuffer tests assert the five G rows, node digits/active-root overlays remain unchanged, audio transition behavior is unchanged, and no internal protocol rename appears in the diff.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-a3-review",
@@ -127,14 +127,14 @@
           "target": "complete Slice A diff",
           "action": "A code-checker reviews wire compatibility, bounded ownership, local versus remote RSSI provenance, logger priority, exact schema framing, mixed legacy behavior, resource impact, and glyph-only UI semantics before Slice B starts.",
           "validation": "No blocker/critical/major findings remain; required corrections are applied by a scoped code-writer and all Slice A checks rerun.",
-          "status": "draft"
+          "status": "completed"
         }
       ]
     },
     {
       "id": "phase-host-persistence",
       "title": "Slice B — one-gateway bridge contract and durable floorplan state",
-      "status": "draft",
+      "status": "in_progress",
       "steps": [
         {
           "id": "step-b1-host-api",
@@ -142,7 +142,7 @@
           "target": "host/bridge.py, host tests, deployment documentation",
           "action": "A host code-writer parses exact mind_event_v1/v2 into mind.api.v2 with required nullable observer_rssi_dbm, rejects final launch before HTTP startup unless exactly one --serial exists, and preserves generic transport internals only for tests. Implement the exact GET /api/layout, PUT /api/layout, POST /api/floorplan/upload, POST /api/floorplan/remove, and GET /api/floorplan/<sha256> contracts from the Markdown. One lock spans CAS read through durable commit/cleanup. Enforce initial/corrupt revision rules, canonical no-op semantics, strict body/base64 limits, one pre-read upload admission, static dimension-parsed PNG/JPEG/WebP, XDG permissions, failure-safe atomic writes, and bounded image response writes.",
           "validation": "Host tests cover v1/v2 event migration, one-gateway CLI/identity, every exact success/conflict/error schema and status, initial revision0, corrupt recovery base0, +1 successful mutations, canonical no-op revision retention, 64KiB layout/256B remove/7MiB upload bodies, strict canonical base64, pre-read upload_busy, XDG absolute/fallback/modes, CAS and every fsync/replace/cleanup failure, image dimensions/pixels/animation/truncation, fixed Content-Length 64KiB image writes/ETag/nosniff, security, and unchanged ROOT/GTT behavior.",
-          "status": "draft"
+          "status": "in_progress"
         },
         {
           "id": "step-b2-review",
@@ -236,92 +236,99 @@
     {
       "severity": "critical",
       "title": "Automatic anchor placement contradicted localization truth",
-      "detail": "Resolved: unseen GTT nodes remain unpositioned in a staging roster; only explicit pointer/keyboard placement creates persisted coordinates or localization eligibility.",
+      "detail": "Resolved in plan: only explicit placement creates anchor coordinates.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Observed-report UART/API contract was incomplete",
-      "detail": "Resolved: exact 10-byte pack/unpack semantics, pre-omission seq validation, exact mind_event_v2 grammar/range/order, v1/null normalization, SID8 E2E, and SID16 rejection are frozen.",
+      "detail": "Resolved in plan with exact wire/UART/API contracts and path vectors.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "One-gateway authority invariants were incomplete",
-      "detail": "Resolved: final CLI requires exactly one serial, commands target physical owner 0, and GTT/root self identity mismatch fails closed.",
+      "detail": "Resolved in plan with one serial/device0 and fail-closed identity.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Layout API and coordinate frame were not exact",
-      "detail": "Resolved: exact routes/schemas/statuses/conflict body, full-replacement unplace policy, image replacement behavior, 16:9/image content frames, CAS lock scope, and corrupt-state semantics are frozen.",
+      "detail": "Resolved in plan with exact routes/schemas/CAS/frame semantics.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Upload and XDG security bounds were incomplete",
-      "detail": "Resolved: encoded/decoded/dimension/pixel/animation/concurrency bounds, structural parsing, chunked nosniff ETag serving, XDG fallback/permissions, and failure-injection requirements are frozen.",
+      "detail": "Resolved in plan with exact upload, image, XDG, and durability bounds.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Localization provider mixed estimation with UI lifecycle",
-      "detail": "Resolved: provider is pure/synchronous with aspect metadata and discriminated results; collecting/GTT/persistence remain in composition.",
+      "detail": "Resolved in plan with pure discriminated provider contract.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "RSSI aggregation and confidence were nondeterministic",
-      "detail": "Resolved: strongest representative, saturating count, canonical tie-break, first-host-receipt window, persisted-position join, geometry epsilon, exact spread, and collecting/insufficient/ballpark vocabulary are frozen.",
+      "detail": "Resolved in plan with exact aggregation, geometry, spread, and vocabulary.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Dedup and localization retention were insufficiently bounded",
-      "detail": "Resolved: explicit feed/logical/tombstone/cursor/evidence/marker capacities, FIFO eviction, replay semantics, saturation, wrap, and churn tests are frozen.",
+      "detail": "Resolved in plan with explicit capacities, FIFO eviction, and saturation.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Map lacked a nonvisual equivalent",
-      "detail": "Resolved: semantic node/estimate tables, coordinates, instructions, actions, announcements, and focus preservation are required.",
+      "detail": "Resolved in plan with semantic node and estimate tables.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Commit, HIL, and final-review order conflicted",
-      "detail": "Resolved: approve/commit plan, reviewed slice commits, clean E1, separately approved hardware+reboot, persistent E2, E3 commit, final checker/fix loop, then one push with no post-checker mutation.",
+      "detail": "Resolved in plan with reviewed slice commits and final no-mutation checker.",
       "source": "plan-checker iteration 1",
       "status": "resolved"
     },
     {
       "severity": "major",
       "title": "Layout error/revision/upload contract remained incomplete",
-      "detail": "Resolved: separate upload/remove routes, exact error union/status map, revision0/corrupt recovery, +1/no-op behavior, per-route body caps, canonical base64, pre-read upload admission, and fixed-length bounded image writes are frozen.",
+      "detail": "Resolved in plan with exact errors, revisions, routes, limits, and base64.",
       "source": "plan-checker iteration 2",
       "status": "resolved"
     },
     {
       "severity": "minor",
       "title": "Normalized geometry/spread metric was ambiguous",
-      "detail": "Resolved: aspect-normalized diagonal distance and normalized doubled-area transform define geometry, spread, tests, and HIL error in [0,1].",
+      "detail": "Resolved in plan with one aspect-normalized metric.",
       "source": "plan-checker iteration 2",
       "status": "resolved"
     },
     {
       "severity": "minor",
       "title": "Saturating counter ceiling was unspecified",
-      "detail": "Resolved: all relevant counters saturate at 0xffffffff and repeated ceiling increments are no-ops with boundary tests.",
+      "detail": "Resolved in plan at 0xffffffff.",
       "source": "plan-checker iteration 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Malformed observed-report fail-closed paths lacked direct tests",
+      "detail": "Resolved in Slice A tests: corrupt seq/RSSI consume without event/counter drift; following valid recovers; coordinator rejects malformed 0x05 without log.",
+      "source": "Slice A code-checker",
       "status": "resolved"
     }
   ],
@@ -329,9 +336,11 @@
     "Reference architecture reviewed at /home/lucas/AndroidStudioProjects/MyApplication. Its useful seam is the IBleTriangulation-style provider boundary and a shared positioned-anchor model. Its admin web does not perform localization; Android owns BLE/AR fusion. Firebase, IndexedDB, Room, ARCore, Kalman filtering, A*, zones, graph adjacency, and Konva are intentionally not imported.",
     "Floorplan arrangement is a required localization input because positioned backbone observers are the anchors. Full graph adjacency is orthogonal: it is deferred, and GTT hop/freshness never becomes a fabricated edge. Stable AdvA IDs and normalized positions allow a future graph schema or Konva editor without changing LocalizationProvider.",
     "Final plan-checker iteration returned EXECUTION-READY with no blocker, critical, or major repository-feasibility findings. Workplan validation reports zero issues. Awaiting explicit user approval before workflow execution.",
-    "User approved execution with “ok go” on 2026-08-24. Slice A begins with disjoint firmware RSSI and glyph lanes; no hardware action is approved yet."
+    "User approved execution with “ok go” on 2026-08-24. Slice A begins with disjoint firmware RSSI and glyph lanes; no hardware action is approved yet.",
+    "Slice A implementation combined successfully. MIND application tests, phase-6 repair green, phase-4 telemetry/scheduler, full BLE build/profile gates, linked FULL+repair+wearable build, and diff hygiene pass. RSSI added no retained fixed-state growth; G glyph is 0x0e,0x10,0x17,0x11,0x0e. Awaiting Slice A adversarial review.",
+    "Slice A adversarial review is clean after one focused test-only correction pass. No production defect remained. Combined checks pass and the slice is ready for its reviewed commit. Slice B host persistence/API is next."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-24T11:43:32.405Z",
-  "updatedAt": "2026-08-24T13:08:43.745Z"
+  "updatedAt": "2026-08-24T13:41:59.172Z"
 }

@@ -10,6 +10,8 @@
 #define MIND_APPLICATION_SCHEMA_OFFSET_SEQUENCE   6u
 
 #define MIND_APPLICATION_REPORT_OFFSET_SCHEMA 3u
+#define MIND_APPLICATION_OBSERVED_OFFSET_SCHEMA 3u
+#define MIND_APPLICATION_OBSERVED_OFFSET_RSSI   9u
 
 #define MIND_APPLICATION_ROOT_OFFSET_VERSION    0u
 #define MIND_APPLICATION_ROOT_OFFSET_ACTIVE     1u
@@ -95,6 +97,23 @@ static mind_application_wire_result_t validate_schema_payload(
     return MIND_APPLICATION_WIRE_OK;
 }
 
+static mind_application_wire_result_t validate_observed_report_bytes(
+    const uint8_t bytes[MIND_APPLICATION_REPORT_BYTES], uint32_t packet_id24)
+{
+    uint8_t schema_payload[MIND_PAYLOAD_SIZE];
+    mind_application_wire_result_t result;
+
+    if (bytes[MIND_APPLICATION_OBSERVED_OFFSET_RSSI] > 127u) {
+        return MIND_APPLICATION_WIRE_ERR_RSSI_MAGNITUDE;
+    }
+    memcpy(schema_payload, &bytes[MIND_APPLICATION_OBSERVED_OFFSET_SCHEMA],
+           MIND_PAYLOAD_SIZE - 1u);
+    schema_payload[MIND_APPLICATION_SCHEMA_OFFSET_SEQUENCE] =
+        (uint8_t)(packet_id24 & 0xffu);
+    result = validate_schema_payload(schema_payload, packet_id24);
+    return result;
+}
+
 static mind_application_wire_result_t validate_root_state_bytes(
     const uint8_t bytes[MIND_APPLICATION_ROOT_STATE_BYTES])
 {
@@ -145,22 +164,28 @@ mind_application_wire_result_t mind_application_wire_validate(
 
     switch (record->app_kind) {
     case MIND_REPORT:
+    case MIND_REPORT_OBSERVED:
         if (!wearable_source_is_valid(record->app_source)) {
             return MIND_APPLICATION_WIRE_ERR_SOURCE;
         }
         if (record->app_len != MIND_APPLICATION_REPORT_BYTES) {
             return MIND_APPLICATION_WIRE_ERR_LENGTH;
         }
-        result = validate_schema_payload(
-            &record->app_bytes[MIND_APPLICATION_REPORT_OFFSET_SCHEMA],
-            get_u24_le(record->app_bytes));
+        if (record->app_kind == MIND_REPORT) {
+            result = validate_schema_payload(
+                &record->app_bytes[MIND_APPLICATION_REPORT_OFFSET_SCHEMA],
+                get_u24_le(record->app_bytes));
+        } else {
+            result = validate_observed_report_bytes(
+                record->app_bytes, get_u24_le(record->app_bytes));
+        }
         if (result != MIND_APPLICATION_WIRE_OK) {
             return result;
         }
         if (record->urgent !=
             (record->app_bytes[MIND_APPLICATION_REPORT_OFFSET_SCHEMA +
                                MIND_APPLICATION_SCHEMA_OFFSET_EVENT_TYPE] !=
-             MIND_EVT_HEARTBEAT ? 1u : 0u)) {
+              MIND_EVT_HEARTBEAT ? 1u : 0u)) {
             return MIND_APPLICATION_WIRE_ERR_URGENT;
         }
         return MIND_APPLICATION_WIRE_OK;
@@ -236,6 +261,47 @@ mind_application_wire_result_t mind_application_wire_pack_report(
     return MIND_APPLICATION_WIRE_OK;
 }
 
+mind_application_wire_result_t mind_application_wire_pack_observed_report(
+    mind_application_wire_record_t *record_out, uint8_t wearable_source,
+    uint32_t packet_id24, const uint8_t schema_payload[MIND_PAYLOAD_SIZE],
+    uint8_t rssi_magnitude_db)
+{
+    mind_application_wire_record_t record;
+    mind_application_wire_result_t result;
+
+    if (record_out == NULL || schema_payload == NULL) {
+        return MIND_APPLICATION_WIRE_ERR_NULL;
+    }
+    if (!wearable_source_is_valid(wearable_source)) {
+        return MIND_APPLICATION_WIRE_ERR_SOURCE;
+    }
+    if (!mind_application_wire_packet_id24_is_valid(packet_id24)) {
+        return MIND_APPLICATION_WIRE_ERR_PACKET_ID24;
+    }
+    if (rssi_magnitude_db > 127u) {
+        return MIND_APPLICATION_WIRE_ERR_RSSI_MAGNITUDE;
+    }
+    /* Validate the complete direct schema before its redundant sequence byte is
+     * omitted from the observed record. */
+    result = validate_schema_payload(schema_payload, packet_id24);
+    if (result != MIND_APPLICATION_WIRE_OK) {
+        return result;
+    }
+
+    memset(&record, 0, sizeof(record));
+    record.app_kind = MIND_REPORT_OBSERVED;
+    record.app_source = wearable_source;
+    record.urgent = schema_payload[MIND_APPLICATION_SCHEMA_OFFSET_EVENT_TYPE] !=
+        MIND_EVT_HEARTBEAT ? 1u : 0u;
+    record.app_len = MIND_APPLICATION_REPORT_BYTES;
+    put_u24_le(record.app_bytes, packet_id24);
+    memcpy(&record.app_bytes[MIND_APPLICATION_OBSERVED_OFFSET_SCHEMA], schema_payload,
+           MIND_PAYLOAD_SIZE - 1u);
+    record.app_bytes[MIND_APPLICATION_OBSERVED_OFFSET_RSSI] = rssi_magnitude_db;
+    *record_out = record;
+    return MIND_APPLICATION_WIRE_OK;
+}
+
 mind_application_wire_result_t mind_application_wire_unpack_report(
     const mind_application_wire_record_t *record,
     mind_application_report_t *report_out)
@@ -249,12 +315,26 @@ mind_application_wire_result_t mind_application_wire_unpack_report(
     if (result != MIND_APPLICATION_WIRE_OK) {
         return result;
     }
-    if (record->app_kind != MIND_REPORT) {
+    if (record->app_kind != MIND_REPORT &&
+        record->app_kind != MIND_REPORT_OBSERVED) {
         return MIND_APPLICATION_WIRE_ERR_UNKNOWN_KIND;
     }
 
     report_out->packet_id24 = get_u24_le(record->app_bytes);
-    memcpy(report_out->schema_payload, &record->app_bytes[3], MIND_PAYLOAD_SIZE);
+    if (record->app_kind == MIND_REPORT) {
+        memcpy(report_out->schema_payload,
+               &record->app_bytes[MIND_APPLICATION_REPORT_OFFSET_SCHEMA],
+               MIND_PAYLOAD_SIZE);
+        report_out->rssi_magnitude_db = 0u;
+    } else {
+        memcpy(report_out->schema_payload,
+               &record->app_bytes[MIND_APPLICATION_OBSERVED_OFFSET_SCHEMA],
+               MIND_PAYLOAD_SIZE - 1u);
+        report_out->schema_payload[MIND_APPLICATION_SCHEMA_OFFSET_SEQUENCE] =
+            (uint8_t)(report_out->packet_id24 & 0xffu);
+        report_out->rssi_magnitude_db =
+            record->app_bytes[MIND_APPLICATION_OBSERVED_OFFSET_RSSI];
+    }
     return MIND_APPLICATION_WIRE_OK;
 }
 

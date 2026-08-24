@@ -168,8 +168,8 @@ static void test_ui_and_audio(void)
     check(ui.audio.phase == 1u && ui.audio.queued_cues != 0u,
           "rapid OFF->ON restarts and queues a genuine root cue");
     mind_ui_render(&ui, 683u, rows);
-    check(memcmp(rows, (uint8_t[]){ 0x0eu, 0x11u, 0x0eu, 0x0au, 0x11u }, 5u) == 0,
-          "local root persistently displays R without leaf overlay");
+    check(memcmp(rows, (uint8_t[]){ 0x0eu, 0x10u, 0x17u, 0x11u, 0x0eu }, 5u) == 0,
+          "local root persistently displays G without leaf overlay");
     check(pwm_writes[0] != 0u && pwm_writes[1] != 0u && pwm_writes[6] != 0u,
           "PWM setup/configuration/stop register sequence is explicit");
 }
