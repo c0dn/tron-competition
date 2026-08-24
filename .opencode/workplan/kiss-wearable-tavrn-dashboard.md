@@ -439,7 +439,13 @@ Hardware execution found three blockers after F1: later UART commands were not p
 3. **Exact phase-5 diagnosis:** in application-owned `main.c`, latch one static first-invalid snapshot with a stable branch enum, validity bits, raw router status, FULL binding/repair statuses, mailbox take/publish status, expiry-sweep enqueue outcome/queue occupancy, and existing link-step/link-event fields. Print it once outside the mesh callback; do not add recurring phase-10 output or a mesh-stack local aggregate. Any new static symbol/formatter must enter target-ABI/ELF component accounting and rerun D2. If evidence identifies inherited expiry telemetry, FULL mailbox, maintenance/repair binding, or raw router behavior, stop and escalate; Layer-7 approval does not authorize changing those semantics.
 4. **Validation order:** seal baseline; focused UART lifecycle and injector wiring tests; default/injector builds and exact default equivalence; source-freeze; affected application/profile/resource/D2 gates; diagnostic hardware classification; then final UID-targeted pyOCD hardware with one injector wearable and exactly three active backbone radios. Retain every acceptance item at lines 420-429, wait for root-state typed ACK readiness before injector reset, and monitor all nodes continuously for at least 180 seconds after root stabilization, covering the previously observed 153-second failure window.
 
-## F2 closure evidence
+## Historical F2 observations — unpreserved, rerun required
+
+The paths below recorded useful observations at the time, but they were stored
+only on tmpfs and were lost after a workstation reboot. They are retained here
+as historical provenance, not as independently auditable acceptance evidence.
+Current hardware acceptance remains open until the same flows are rerun and a
+redacted, checksum-bound bundle is committed under `microbit/hardware-results/`.
 
 - Request-driven quiet logger dispatch removed the deterministic scheduler-yield failure without modifying frozen TAVRN. Quiet production now drains but does not format valid heartbeat MIND records; command, root, incident, and terminal-fault evidence remains visible.
 - Application, scheduler, telemetry, full build/profile+D2, wearable/injector, host, and dashboard gates pass. The final D2 report is `/tmp/opencode/d2-heartbeat-filter.report`; paired artifacts are `/tmp/tron-d2-application-incremental.U7iQ10`.
@@ -468,4 +474,4 @@ The nRF52833 has one radio. Heavy TAVRN/application TX can reduce wearable RX op
 
 ## Handoff
 
-Implementation, competition hardware validation, and the five-node production stress extension are complete. No commit was created. The local bridge/dashboard is stopped while direct six-device serial capture owns the hardware evidence path.
+Software implementation and current host/resource gates are complete. Competition hardware validation and the five-node stress extension are not closed because their cited tmpfs evidence was lost. Rerun rootless, one-root, two-root, withdrawal, injector, fanout, dashboard-dedupe, and sustained fault checks on the current commits; persist logs, manifests, API output, screenshots, hashes, and reproduction instructions before marking Slice F or this workplan completed.

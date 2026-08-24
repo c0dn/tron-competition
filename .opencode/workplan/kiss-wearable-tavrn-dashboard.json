@@ -215,7 +215,7 @@
     {
       "id": "phase-system-validation",
       "title": "Slice F — complete regression and competition hardware proof",
-      "status": "completed",
+      "status": "in_progress",
       "steps": [
         {
           "id": "wave-f1-software-gates",
@@ -229,9 +229,9 @@
           "id": "wave-f2-hardware-proof",
           "title": "Wave F2 — execute competition hardware proof and final handoff",
           "target": "one wearable, at least three backbone nodes, mandatory two concurrent root UART captures",
-          "action": "One execution writer prepares clean artifacts and runs mandatory rootless, one-root and two-root/two-UART hardware flows. Full application-array behavior is proven in software/resources, independent of TAVRN capacity. Hardware fixes stay in F2 and rerun affected gates. One code-checker reviews complete evidence/final diff once.",
-          "validation": "Rootless/one/two hardware, typed application campaigns/UI/fanout/dashboard dedupe and departure pass; application capacity software/resource gates remain green; TAVRN protocol hashes remain unchanged and no terminal TAVRN faults occur; final Wave F2 checker approves.",
-          "status": "completed"
+          "action": "Rerun the mandatory rootless, one-root, and two-root/two-UART hardware flows using current committed firmware and dashboard. Persist redacted logs, manifests, API output, screenshots, checksums, and exact artifact provenance under microbit/hardware-results before marking complete.",
+          "validation": "Persistent repository evidence—not tmpfs paths—proves rootless/one/two hardware, typed campaigns/UI/fanout/dashboard dedupe, withdrawal, and no terminal faults. Checksums and reproduction instructions pass after reboot.",
+          "status": "in_progress"
         },
         {
           "id": "wave-f2a-layer7-diagnosis",
@@ -253,9 +253,9 @@
           "id": "wave-f2c-remediation-validation",
           "title": "Wave F2c — rerun software gates and competition hardware proof",
           "target": "affected firmware gates plus pyOCD UID-targeted hardware topology",
-          "action": "Rerun affected application, wearable, resource, source-freeze, host/dashboard gates, then execute zero/one/two-root, ROOT OFF, deterministic event, and no-terminal-fault hardware checks.",
-          "validation": "All affected software gates pass; three-node hardware captures satisfy every competition acceptance item; F2 blockers are resolved or explicitly escalated without changing frozen TAVRN.",
-          "status": "completed"
+          "action": "Rerun current software gates and the full UID-targeted hardware acceptance after the GTT/dashboard and root-control changes, then persist the evidence bundle. Historical tmpfs observations may guide the run but cannot close acceptance.",
+          "validation": "All current software gates pass; persistent hardware evidence satisfies every competition acceptance item and remains readable/checksummed after reboot.",
+          "status": "in_progress"
         }
       ]
     }
@@ -869,6 +869,13 @@
       "detail": "Resolved without changing frozen TAVRN. Request-driven quiet logger progress removed the deterministic scheduler-yield failure; a 180-second two-root hold and the final 178-second zero/one/two/one/zero sequence produced no cycle_fault or router_fault records.",
       "source": "/tmp/opencode/f2-request-logger-captures/node1-root-sequence.log; /tmp/opencode/f2-request-logger-captures/node2-root-sequence.log; /tmp/opencode/f2-request-logger-captures/node3-root-sequence.log; /tmp/opencode/f3-heartbeat-filter-captures/root-off-sequence.log",
       "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wearable hardware acceptance evidence was lost with tmpfs",
+      "detail": "The workplan previously cited only /tmp captures, builds, API output, and screenshots. Those paths were lost after reboot, so historical observations are not independently auditable and no longer close F2 hardware acceptance. Rerun and persist a checksum-bound bundle under microbit/hardware-results.",
+      "source": "PR-level code review before merge",
+      "status": "open"
     }
   ],
   "notes": [
@@ -945,9 +952,10 @@
     "Known data-terminal hook `INVALID` results before ownership transfer now recover by declining policy and following normal router cleanup for immediate, retained, and custody-transferred paths. Ownership-split, impossible disposition, and corrupted retained-state cases remain terminal.",
     "Remaining reason-11 terminal latches carry compact site subreasons in existing router padding and print as `routed router_fault reason=<n> subreason=<n>`. Fixed state remains unchanged. Phase 3/4/5/6, application, full profile, and paired D2 pass; D2 report `/tmp/opencode/d2-terminal-recovery.report`, artifacts `/tmp/tron-d2-application-incremental.jM8aPg`, replacement builds `/tmp/opencode/f6-terminal-recovery-builds`.",
     "The existing `tron-indefinite-stress` tmux session intentionally continues on the prior faulted firmware to preserve long-run evidence; replacement firmware has not been flashed.",
-    "Superseding prior session note: the old faulted indefinite run stopped cleanly after 18,101.962 seconds and remains archived under `/tmp/opencode/f5-observe-only-stress/indefinite`. All five nodes were flashed with F6 terminal-recovery firmware, node 1 reached roots=1/acked=4, and a clean `tron-indefinite-stress` session started at 2026-08-16T05:01:41.799Z with evidence under `/tmp/opencode/f5-observe-only-stress/indefinite-f6`. Its initial five-node sweep has zero failures and all nodes report announced=4/acked=4."
+    "Superseding prior session note: the old faulted indefinite run stopped cleanly after 18,101.962 seconds and remains archived under `/tmp/opencode/f5-observe-only-stress/indefinite`. All five nodes were flashed with F6 terminal-recovery firmware, node 1 reached roots=1/acked=4, and a clean `tron-indefinite-stress` session started at 2026-08-16T05:01:41.799Z with evidence under `/tmp/opencode/f5-observe-only-stress/indefinite-f6`. Its initial five-node sweep has zero failures and all nodes report announced=4/acked=4.",
+    "After workstation reboot, all historical F2/F3/F5/F6 `/tmp` artifacts and live sessions were absent. Source and committed observer benchmark evidence survived, but wearable root/fanout/dashboard hardware acceptance must be rerun on current code and persisted before this workplan returns to completed."
   ],
-  "status": "completed",
+  "status": "in_progress",
   "createdAt": "2026-08-13T20:28:20.424Z",
-  "updatedAt": "2026-08-16T05:05:08.745Z"
+  "updatedAt": "2026-08-24T06:35:09.973Z"
 }
