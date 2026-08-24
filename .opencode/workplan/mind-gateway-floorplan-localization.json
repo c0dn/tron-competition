@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 2,
+  "id": "mind-gateway-floorplan-localization",
+  "kind": "software-engineering",
+  "title": "MIND gateway floorplan and rough RSSI localization",
+  "goal": "Deliver a deployable one-PC, one-serial-gateway MIND dashboard whose node roster comes from the gateway GTT, whose floorplan and normalized node positions persist on host disk across restart, and whose globally deduplicated wearable incidents receive a bounded rough location estimate from per-observer RX RSSI without changing internal ROOT semantics or claiming precision localization.",
+  "scope": [
+    "Rename user-visible ROOT terminology to GATEWAY while preserving firmware, UART, API, and application ROOT semantics.",
+    "Redraw the micro:bit local-root indicator as a recognizable 5x5 G glyph.",
+    "Use the sole serial-connected physical device as the dashboard gateway and derive all displayed backbone nodes from that gateway's complete GTT snapshot.",
+    "Add host-disk persisted floorplan image and normalized AdvA-keyed node positions with blank-canvas fallback and restart-safe APIs.",
+    "Carry each observing backbone's original wearable RX RSSI through a new bounded MIND observed-report record, UART event schema, host API, and dashboard evidence model.",
+    "Preserve global event deduplication by wearable plus packet_id24 and derive one rough RSSI-weighted centroid estimate from unique positioned observers.",
+    "Render draggable GTT nodes and bounded recent incident estimates on a responsive, keyboard-operable floorplan.",
+    "Persist current-code hardware acceptance evidence under microbit/hardware-results instead of tmpfs."
+  ],
+  "nonGoals": [
+    "Rename internal ROOT_STATE, ROOT_ACK, ROOT ON/OFF/STATUS, /api/root, mind_root_v1, or TAVRN/MIND root-plane symbols.",
+    "Support cloud services, multiple PCs, multiple simultaneous gateway serial connections, accounts, remote administration, or browser-profile synchronization.",
+    "Designate a remote gateway without a serial connection or add a network-level remote root command.",
+    "Infer parent-child topology edges from GTT, assign fabricated remote node numbers, merge multiple GTT views, or create automatic/default anchor coordinates.",
+    "Implement BLE AoA, fingerprinting, Kalman filtering, nonlinear least-squares trilateration, multichannel RSSI aggregation, or production-grade indoor positioning.",
+    "Claim meter-level accuracy or set a numeric localization threshold before a calibrated hallway/room dataset exists.",
+    "Persist incident history indefinitely or add a database; only layout/floorplan state persists.",
+    "Change the wearable's direct seven-byte schema-v1 advertisement or enlarge the exact TAVRN DATA payload.",
+    "Import Firebase, IndexedDB, Room, ARCore, Konva, A*, graph adjacency, zones, or the reference project's runtime dependencies in this slice."
+  ],
+  "constraints": [
+    "KISS deployment: one PC, one loopback bridge, exactly one serial argument/gateway at final launch, bounded GTT capacity, and no new runtime service or database.",
+    "Internal ROOT semantics remain unchanged; GATEWAY is presentation language only, and gateway activation still uses the existing root toggle/command targeted to physical owner device 0.",
+    "The new forwarded observed-report record remains exactly 10 application bytes and uses distinct kind 0x05; homogeneous backbone upgrade is required, legacy kind 0x02 remains accepted with RSSI unavailable, and real SID8 DATA vectors must pass while 10-byte SID16 submission remains rejected.",
+    "The observed-report packer validates the original seven-byte schema including seq before omission; unpack reconstructs seq from packet_id24 and exposes RSSI separately. Magnitude 0 is unavailable; 1..127 converts to signed -1..-127 dBm in UART/API.",
+    "Firmware remains allocation-free and bounded; MIND logger/incident priority and current resource/stack gates must remain green with reviewed measured deltas.",
+    "Final gateway identity fails closed unless health has exactly one physical owner device 0, the GTT has exactly one self entry matching gtt.local, and any authoritative root.local equals gtt.local. No gateway entry is synthesized.",
+    "Floorplan state uses an explicit absolute --state-dir or an absolute nonempty XDG_DATA_HOME/tron-dashboard, otherwise $HOME/.local/share/tron-dashboard; directories are 0700, state/image files 0600, schemas are versioned, writes atomic, and tmpfs is never authoritative.",
+    "Layout coordinates are finite normalized values in [0,1] relative to the floorplan image content rectangle or fixed 16:9 blank content rectangle, keyed by canonical AdvA, and never auto-created. Unpositioned nodes remain in a staging roster and are excluded from localization.",
+    "Layout storage is capped at 16 positioned AdvAs. Operators can unplace one node or clear all positions to admit replacements; image replacement retains normalized positions explicitly and removal returns to the 16:9 blank frame.",
+    "Floorplan upload route admits one in-flight request before body read, encoded Content-Length at most 7340032 bytes and decoded bytes at most 5242880; PNG/JPEG/WebP must be structurally complete, static, nonanimated, at most 8192x8192 and 64 million pixels, with MIME/magic agreement and no user path.",
+    "Layout PUT body is at most 65536 bytes; floorplan remove POST body is at most 256 bytes. Base64 must be canonical standard alphabet with no whitespace/data URL, length divisible by four, at most two trailing padding characters, strict decoder validation, and byte-for-byte re-encoding equality.",
+    "All layout mutations reuse strict loopback Host, same-origin/fetch-metadata, JSON media type, duplicate-key, bounded-body, revision-CAS, and close-on-invalid protections. Image responses use fixed Content-Length and bounded 65536-byte writes, nosniff, exact MIME, and ETag-aware caching.",
+    "Localization provider is synchronous and pure: no React, timers, GTT lookup, persistence, or collecting lifecycle. Input includes explicit positioned anchors, aggregated observations, and finite positive coordinate-space aspect ratio. Output is a discriminated estimated/insufficient/invalid_input result with provider ID and contributors.",
+    "Aspect-normalized distance is hypot(aspectRatio*dx,dy)/hypot(aspectRatio,1), bounded [0,1]. Normalized doubled triangle area is abs(cross(aspectRatio*x,y))/aspectRatio; geometry is degenerate when its maximum is <=1e-6. The same distance metric defines spread, tests, and HIL error.",
+    "Localization uses at least three unique positioned observers, at most the strongest four valid RSSI samples, fixed path-loss exponent 2.0 composition config, canonical-ID tie-breaking, and UI states limited to collecting, insufficient, and ballpark.",
+    "Event identity/dedup is bounded to the active process session. Logical events/feed 256, tombstones 512 FIFO, processed cursors 256, evidence/observer samples 16 per event, recent map markers 10, and every overflow/conflict/sample counter saturates at 0xffffffff with further increments as no-ops.",
+    "Repeated reports from one observer do not append contributors: distinct post-cursor records increment a saturating sample count and retain the strongest valid RSSI; API replay of an already processed cursor changes nothing.",
+    "The two-second collecting window starts at first host receipt. Late observer evidence may recompute an estimate. Persisted positions, not current GTT freshness, determine observation eligibility; GTT status annotates but never retroactively erases valid event evidence.",
+    "Floorplan controls and estimates require pointer and keyboard operation plus a semantic list/table exposing positioned/unpositioned state, coordinates, movement instructions, save/errors, estimate status, contributors, and normalized coordinates.",
+    "No hardware flash/reset, fleet rollout, PC reboot, new dependency, or config change during execution without explicit user approval at the relevant gate.",
+    "Implementation stays on feat/kiss-wearable-tavrn-dashboard and updates PR #2 unless the user directs otherwise. No source mutation may occur after the final full-range checker."
+  ],
+  "relevantFiles": [
+    "shared/schema.h",
+    "microbit/app/mind_application/mind_application_wire.h",
+    "microbit/app/mind_application/mind_application_wire.c",
+    "microbit/app/mind_application/mind_application_ingress.h",
+    "microbit/app/mind_application/mind_event_forwarder.h",
+    "microbit/app/mind_application/mind_event_forwarder.c",
+    "microbit/app/mind_application/mind_root_plane.h",
+    "microbit/app/mind_application/mind_root_inbox.h",
+    "microbit/app/mind_application/mind_root_inbox.c",
+    "microbit/app/mind_application/mind_root_coordinator.c",
+    "microbit/app/mind_application/mind_log.h",
+    "microbit/app/mind_application/mind_log_formatter.c",
+    "microbit/app/mind_application/mind_ui.c",
+    "microbit/app/tavrn_routed_node/src/main.c",
+    "microbit/tests/application/",
+    "microbit/build-tavrn-ble.sh",
+    "microbit/scripts/check_tavrn_expiry_resources.py",
+    "microbit/docs/mind_application_wire.md",
+    "host/bridge.py",
+    "host/tests/test_bridge.py",
+    "dashboard/src/lib/api.ts",
+    "dashboard/src/state/store.ts",
+    "dashboard/src/state/devices.ts",
+    "dashboard/src/components/RootControlPanel.tsx",
+    "dashboard/src/components/TopologyPanel.tsx",
+    "dashboard/src/components/IncidentFeed.tsx",
+    "dashboard/src/App.tsx",
+    "dashboard/src/styles.css",
+    "dashboard/src/test/fixtures.ts",
+    "microbit/hardware-results/",
+    "dashboard/src/localization/LocalizationProvider.ts",
+    "dashboard/src/localization/WeightedCentroidProvider.ts",
+    "dashboard/src/localization/WeightedCentroidProvider.test.ts",
+    "dashboard/src/App.test.tsx",
+    "dashboard/src/lib/api.test.ts",
+    "dashboard/src/state/store.test.ts",
+    "dashboard/src/components/RootControlPanel.test.tsx",
+    "dashboard/src/components/TopologyPanel.test.tsx",
+    "dashboard/src/components/FloorplanPanel.tsx",
+    "dashboard/src/components/FloorplanPanel.test.tsx",
+    "dashboard/src/state/layout.ts",
+    "dashboard/src/state/layout.test.ts"
+  ],
+  "planFile": ".opencode/workplan/mind-gateway-floorplan-localization.md",
+  "specFiles": [
+    "shared/schema.h",
+    "microbit/docs/mind_application_wire.md",
+    "microbit/docs/tavrn_ble_profile.md",
+    ".opencode/workplan/kiss-wearable-tavrn-dashboard.md"
+  ],
+  "phases": [
+    {
+      "id": "phase-contract-firmware",
+      "title": "Slice A — observed-RSSI contract, gateway presentation boundary, and G glyph",
+      "status": "in_progress",
+      "steps": [
+        {
+          "id": "step-a1-firmware-rssi",
+          "title": "A1 — add exact observed-report RSSI path",
+          "target": "mind_application wire, ingress/forwarder/inbox/coordinator/log path and docs/tests",
+          "action": "A firmware code-writer adds distinct kind MIND_REPORT_OBSERVED=0x05 with exact 10-byte payload. A dedicated packer first validates the original seven-byte direct schema including seq==packet_id24 low byte, then writes packet_id24, schema version/event/confidence/accel/mic, and original observer RSSI magnitude; unpack reconstructs seq and exposes RSSI separately. Legacy MIND_REPORT remains valid with RSSI unavailable. The exact observed record is the sole RSSI carrier through retained event, local publication, TAVRN SID8 DATA, root inbox, logger, and mind_event_v2; zero-RSSI or legacy records use v1/null normalization.",
+          "validation": "Host-native vectors prove exact bytes, kind/length/urgent/source/RSSI bounds, pre-omission seq validation, reconstruction, malformed rejection, and legacy decode. Real TAVRN SID8 encode/decode/root-inbox vectors preserve RSSI; 10-byte SID16 is rejected. Exact UART grammar is `mind_event_v2 now=<u32> root=<hex12> wearable=<u8> packet=<hex6> schema=1 event=<0..5> confidence=<0..100> svm=<0..8000> mic=<0..255> seq=<u8> observer=<hex12> observer_rssi_dbm=<-127..-1> path=<local|tavrn>`; v1 remains unchanged and host API v2 normalizes it to null. MIND/resource/docs suites pass.",
+          "status": "in_progress"
+        },
+        {
+          "id": "step-a2-glyph-gateway-copy",
+          "title": "A2 — redraw the gateway glyph and freeze UI-only terminology",
+          "target": "mind_ui 5x5 framebuffer plus dashboard visible copy inventory",
+          "action": "In parallel with A1 where file ownership is disjoint, a code-writer replaces only the local-root 5x5 framebuffer with a recognizable G and updates exact row tests. Inventory every visible ROOT string for later GATEWAY replacement, explicitly excluding firmware/UART/API/internal names.",
+          "validation": "UI framebuffer tests assert the five G rows, node digits/active-root overlays remain unchanged, audio transition behavior is unchanged, and no internal protocol rename appears in the diff.",
+          "status": "in_progress"
+        },
+        {
+          "id": "step-a3-review",
+          "title": "A3 — adversarial review of Slice A",
+          "target": "complete Slice A diff",
+          "action": "A code-checker reviews wire compatibility, bounded ownership, local versus remote RSSI provenance, logger priority, exact schema framing, mixed legacy behavior, resource impact, and glyph-only UI semantics before Slice B starts.",
+          "validation": "No blocker/critical/major findings remain; required corrections are applied by a scoped code-writer and all Slice A checks rerun.",
+          "status": "draft"
+        }
+      ]
+    },
+    {
+      "id": "phase-host-persistence",
+      "title": "Slice B — one-gateway bridge contract and durable floorplan state",
+      "status": "draft",
+      "steps": [
+        {
+          "id": "step-b1-host-api",
+          "title": "B1 — extend event parsing and add durable layout APIs",
+          "target": "host/bridge.py, host tests, deployment documentation",
+          "action": "A host code-writer parses exact mind_event_v1/v2 into mind.api.v2 with required nullable observer_rssi_dbm, rejects final launch before HTTP startup unless exactly one --serial exists, and preserves generic transport internals only for tests. Implement the exact GET /api/layout, PUT /api/layout, POST /api/floorplan/upload, POST /api/floorplan/remove, and GET /api/floorplan/<sha256> contracts from the Markdown. One lock spans CAS read through durable commit/cleanup. Enforce initial/corrupt revision rules, canonical no-op semantics, strict body/base64 limits, one pre-read upload admission, static dimension-parsed PNG/JPEG/WebP, XDG permissions, failure-safe atomic writes, and bounded image response writes.",
+          "validation": "Host tests cover v1/v2 event migration, one-gateway CLI/identity, every exact success/conflict/error schema and status, initial revision0, corrupt recovery base0, +1 successful mutations, canonical no-op revision retention, 64KiB layout/256B remove/7MiB upload bodies, strict canonical base64, pre-read upload_busy, XDG absolute/fallback/modes, CAS and every fsync/replace/cleanup failure, image dimensions/pixels/animation/truncation, fixed Content-Length 64KiB image writes/ETag/nosniff, security, and unchanged ROOT/GTT behavior.",
+          "status": "draft"
+        },
+        {
+          "id": "step-b2-review",
+          "title": "B2 — adversarial review of Slice B",
+          "target": "complete host persistence/API diff",
+          "action": "A code-checker reviews disk durability, fsync/replace ordering, stale revision races, upload memory bounds, image serving safety, loopback request security, reconnect authority, one-gateway deployment, and API version migration.",
+          "validation": "No blocker/critical/major findings remain; host tests, py_compile, static asset serving, and security matrices pass after corrections.",
+          "status": "draft"
+        }
+      ]
+    },
+    {
+      "id": "phase-dashboard-floorplan",
+      "title": "Slice C — gateway/GTT roster and deployable floorplan HCI",
+      "status": "draft",
+      "steps": [
+        {
+          "id": "step-c1-gateway-roster-map",
+          "title": "C1 — replace serial-node UI with gateway GTT floorplan",
+          "target": "dashboard API/state/components/styles/tests",
+          "action": "A frontend code-writer decodes exact mind.api.v2 and layout contracts, treats only physical owner device0 as Gateway, keeps /api/root but changes every visible ROOT string to GATEWAY, removes explanatory copy, and requests only device0 GTT. Roster derives only from a valid complete gateway GTT. Unpositioned GTT entries remain in an explicit staging list outside the map; only pointer/keyboard placement creates persisted coordinates. Add blank/image content-rectangle floorplan, upload/remove, positioned-node drag, unplace/clear controls, optimistic CAS with conflict refetch/reapply, stable refresh, and semantic coordinate/estimate tables. Image replacement retains coordinates and clearly announces the retained mapping.",
+          "validation": "Tests cover exact schemas, no visible ROOT copy, one gateway unknown/disconnected/off/on/pending, device0-only commands, missing/duplicate/mismatched self fail-closed, no source selector, GTT-only roster, unpositioned staging, three unplaced nodes cannot localize, reordered/stale/departed entries, blank/image frames, upload/remove/replacement, restart, drag/clamp/unplace/clear, keyboard instructions and coordinate values, focus/status announcements, 409 reapply/rollback, stable refresh, responsive semantics, reduced motion, no fabricated edges/numbers/positions, Bun/npm/typecheck/build, and wide/narrow rendered review.",
+          "status": "draft"
+        },
+        {
+          "id": "step-c2-review",
+          "title": "C2 — adversarial review of Slice C",
+          "target": "complete dashboard floorplan diff",
+          "action": "A code-checker reviews human-computer interaction, gateway authority, GTT-only identity, floorplan persistence races, drag/keyboard accessibility, responsive behavior, state continuity, exact decoder security, and explanation removal before localization integration.",
+          "validation": "No blocker/critical/major findings remain; visual evidence covers blank map, uploaded map, gateway unknown/active, node drag, stale/departed GTT, and restart-restored state.",
+          "status": "draft"
+        }
+      ]
+    },
+    {
+      "id": "phase-localization",
+      "title": "Slice D — deduplicated bounded RSSI location estimate",
+      "status": "draft",
+      "steps": [
+        {
+          "id": "step-d1-estimator-integration",
+          "title": "D1 — add provider-based weighted-centroid localization and event overlays",
+          "target": "dashboard event evidence/store, localization module, floorplan integration and tests",
+          "action": "A frontend code-writer defines the pure discriminated LocalizationProvider contract and WeightedCentroidProvider configured with path-loss exponent 2.0. It validates finite positive aspect ratio; geometry, spread, and all error reporting use d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), and normalized doubled area abs(cross(aspect*x,y))/aspect with degeneracy <=1e-6. Store owns collecting/GTT/persistence and uses 0xffffffff as the ceiling for every saturating counter. Dedup retains strongest valid RSSI per observer with canonical ties, bounded state, persisted-position joins, and ten markers.",
+          "validation": "Tests freeze discriminated statuses, aspect rejection, exact normalized distance/area/spread bounds [0,1], geometry epsilon, weighted estimate, strongest-four tie-break, current-GTT disappearance, all capacities, and counter ceiling-1/ceiling/repeated overflow semantics. Components expose collecting/insufficient/ballpark and never branch by provider.",
+          "status": "draft"
+        },
+        {
+          "id": "step-d2-review",
+          "title": "D2 — adversarial review of Slice D",
+          "target": "complete localization and cross-layer schema diff",
+          "action": "A code-checker traces one wearable observation from radio RSSI through wire, gateway UART/API, global dedup, coordinate join, and map output. Review numerical stability, overclaiming, body/multipath limitations, bounded state, and late/duplicate evidence behavior.",
+          "validation": "No blocker/critical/major findings remain; replay fixtures and all cross-layer suites pass, and UI consistently labels estimates as rough/ballpark.",
+          "status": "draft"
+        }
+      ]
+    },
+    {
+      "id": "phase-validation-deployment",
+      "title": "Slice E — full regression, persistent hardware proof, and PR handoff",
+      "status": "draft",
+      "steps": [
+        {
+          "id": "step-e1-software-gates",
+          "title": "E1 — run complete software, build, resource, and security gates",
+          "target": "entire branch and PR range",
+          "action": "After the approved workplan and each reviewed Slice A-D are committed separately, run complete MIND/wearable/protocol/benchmark suites, host security/persistence tests, dashboard Bun/npm/typecheck/build, standard firmware entrypoints, FULL+repair+wearable builds, exact paired D2 report mode from one clean committed source, toolchain fixtures, diff hygiene, workplan validation, and a pre-HIL full-range code-checker. Measure/update only reviewed resource contracts; no uncommitted source enters D2 artifacts.",
+          "validation": "Every suite passes from clean committed HEAD; exact OFF/ON D2 artifacts share source/build state and bind the supported toolchain; no blocker/critical/major pre-HIL finding remains; branch is not pushed yet.",
+          "status": "draft"
+        },
+        {
+          "id": "step-e2-hardware-proof",
+          "title": "E2 — execute and persist one-gateway floorplan/RSSI PoC evidence",
+          "target": "one PC, one serial gateway, at least four additional backbone observers, wearable injector/production wearable, persistent hardware-results bundle",
+          "action": "After separate explicit approval covering homogeneous fleet flash/reset and PC reboot, connect only gateway UART, activate GATEWAY, validate self/GTT roster, explicitly position at least four observers, and prove disk restoration. Trigger four/three/<three contributor cases. At known points/orientations record raw RSSIs, contributors, estimates, and descriptive error using d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), with no pass threshold. Persist redacted logs, APIs, layout/image, manifests, screenshots, commands, checksums, and caveats.",
+          "validation": "Persistent evidence survives reboot and proves gateway identity, GTT roster, explicit positions, restored floorplan, one marker per logical event, four-contributor spread, three-contributor spread-null/geometry warning, insufficient below three, zero critical faults, and descriptive d_norm error tables.",
+          "status": "draft"
+        },
+        {
+          "id": "step-e3-handoff",
+          "title": "E3 — final documentation, workplan closure decision, commit/push/PR update",
+          "target": "docs, workplans, branch, PR #2",
+          "action": "Commit the persistent E2 evidence and final docs/workplan updates, then run the final full-range code-checker over origin/master...HEAD. Any finding loops through a scoped correction writer, checker re-review, and all affected gates before another commit. After a clean final checker, make no source mutation; verify checksums/workplans/status, push once, and update PR #2 with scope, tests, evidence, and deferred calibration.",
+          "validation": "Final documentation matches behavior; evidence checksums pass; workplans validate; no post-checker mutation exists; git status is clean; upstream equals HEAD; PR includes all commits and avoids precision claims.",
+          "status": "draft"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [
+    {
+      "severity": "critical",
+      "title": "Automatic anchor placement contradicted localization truth",
+      "detail": "Resolved: unseen GTT nodes remain unpositioned in a staging roster; only explicit pointer/keyboard placement creates persisted coordinates or localization eligibility.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Observed-report UART/API contract was incomplete",
+      "detail": "Resolved: exact 10-byte pack/unpack semantics, pre-omission seq validation, exact mind_event_v2 grammar/range/order, v1/null normalization, SID8 E2E, and SID16 rejection are frozen.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "One-gateway authority invariants were incomplete",
+      "detail": "Resolved: final CLI requires exactly one serial, commands target physical owner 0, and GTT/root self identity mismatch fails closed.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Layout API and coordinate frame were not exact",
+      "detail": "Resolved: exact routes/schemas/statuses/conflict body, full-replacement unplace policy, image replacement behavior, 16:9/image content frames, CAS lock scope, and corrupt-state semantics are frozen.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Upload and XDG security bounds were incomplete",
+      "detail": "Resolved: encoded/decoded/dimension/pixel/animation/concurrency bounds, structural parsing, chunked nosniff ETag serving, XDG fallback/permissions, and failure-injection requirements are frozen.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Localization provider mixed estimation with UI lifecycle",
+      "detail": "Resolved: provider is pure/synchronous with aspect metadata and discriminated results; collecting/GTT/persistence remain in composition.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "RSSI aggregation and confidence were nondeterministic",
+      "detail": "Resolved: strongest representative, saturating count, canonical tie-break, first-host-receipt window, persisted-position join, geometry epsilon, exact spread, and collecting/insufficient/ballpark vocabulary are frozen.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dedup and localization retention were insufficiently bounded",
+      "detail": "Resolved: explicit feed/logical/tombstone/cursor/evidence/marker capacities, FIFO eviction, replay semantics, saturation, wrap, and churn tests are frozen.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Map lacked a nonvisual equivalent",
+      "detail": "Resolved: semantic node/estimate tables, coordinates, instructions, actions, announcements, and focus preservation are required.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Commit, HIL, and final-review order conflicted",
+      "detail": "Resolved: approve/commit plan, reviewed slice commits, clean E1, separately approved hardware+reboot, persistent E2, E3 commit, final checker/fix loop, then one push with no post-checker mutation.",
+      "source": "plan-checker iteration 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Layout error/revision/upload contract remained incomplete",
+      "detail": "Resolved: separate upload/remove routes, exact error union/status map, revision0/corrupt recovery, +1/no-op behavior, per-route body caps, canonical base64, pre-read upload admission, and fixed-length bounded image writes are frozen.",
+      "source": "plan-checker iteration 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Normalized geometry/spread metric was ambiguous",
+      "detail": "Resolved: aspect-normalized diagonal distance and normalized doubled-area transform define geometry, spread, tests, and HIL error in [0,1].",
+      "source": "plan-checker iteration 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Saturating counter ceiling was unspecified",
+      "detail": "Resolved: all relevant counters saturate at 0xffffffff and repeated ceiling increments are no-ops with boundary tests.",
+      "source": "plan-checker iteration 2",
+      "status": "resolved"
+    }
+  ],
+  "notes": [
+    "Reference architecture reviewed at /home/lucas/AndroidStudioProjects/MyApplication. Its useful seam is the IBleTriangulation-style provider boundary and a shared positioned-anchor model. Its admin web does not perform localization; Android owns BLE/AR fusion. Firebase, IndexedDB, Room, ARCore, Kalman filtering, A*, zones, graph adjacency, and Konva are intentionally not imported.",
+    "Floorplan arrangement is a required localization input because positioned backbone observers are the anchors. Full graph adjacency is orthogonal: it is deferred, and GTT hop/freshness never becomes a fabricated edge. Stable AdvA IDs and normalized positions allow a future graph schema or Konva editor without changing LocalizationProvider.",
+    "Final plan-checker iteration returned EXECUTION-READY with no blocker, critical, or major repository-feasibility findings. Workplan validation reports zero issues. Awaiting explicit user approval before workflow execution.",
+    "User approved execution with “ok go” on 2026-08-24. Slice A begins with disjoint firmware RSSI and glyph lanes; no hardware action is approved yet."
+  ],
+  "status": "in_progress",
+  "createdAt": "2026-08-24T11:43:32.405Z",
+  "updatedAt": "2026-08-24T13:08:43.745Z"
+}
