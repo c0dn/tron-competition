@@ -72,8 +72,15 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/tron-dashboard/
 
 An explicit absolute `--state-dir` overrides it. Relative/empty
 `XDG_DATA_HOME` is ignored per the XDG base-directory contract; fallback is
-`$HOME/.local/share`. Directories are mode `0700`; state/image files are
-`0600`.
+`$HOME/.local/share`. The directory is mode `0700`; one
+`dashboard.sqlite3` file is mode `0600`.
+
+SQLite is the complete durability boundary. One singleton row stores revision,
+canonical positions JSON, and nullable floorplan SHA-256/MIME/dimensions/blob.
+One process `RLock` plus `BEGIN IMMEDIATE` serializes compare-and-swap; the row
+and image blob commit atomically. There is no custom transaction marker,
+filesystem rollback protocol, content-addressed image directory, or orphan
+cleanup. SQLite busy/corrupt/I/O failures map to `storage_unavailable`.
 
 Exact layout response (`GET /api/layout`, no query):
 
@@ -95,8 +102,8 @@ Exact layout response (`GET /api/layout`, no query):
 ```
 
 Positions are sorted by AdvA, unique, finite, normalized, and capped at 16.
-Corrupt disk state returns a blank `status='corrupt'` response while preserving
-the corrupt file until an explicit valid mutation.
+Fresh state starts at revision zero. A database that cannot be opened or read
+returns `503 storage_unavailable`; the bridge never silently overwrites it.
 
 Exact position replacement:
 
@@ -117,9 +124,7 @@ returns `409`:
 }
 ```
 
-Fresh state starts at revision `0`. Corrupt state is exposed as revision `0`;
-only a valid mutation with `base_revision:0` may recover it, quarantining the
-corrupt file before durable commit. Every state-changing successful mutation
+Every state-changing successful mutation
 increments revision by exactly one. After base-revision validation, a canonical
 semantic no-op returns `200` with the current state, performs no disk write, and
 does not increment revision. No-op cases include an identical complete position
@@ -178,15 +183,10 @@ Host/origin/fetch metadata; `413` request/image size; `415` media/magic mismatch
 `503` upload busy or storage unavailable. Revision conflict uses only the
 separate `mind.dashboard.layout.conflict.v1` body above.
 
-`GET /api/floorplan/<sha256>` serves only committed content with exact
-`Content-Length` and bounded 65536-byte file writes—not HTTP chunked transfer—
-plus exact MIME, `X-Content-Type-Options: nosniff`, strong quoted ETag, immutable
-private caching, `If-None-Match`/`304`, or `404`.
-
-One process lock covers CAS read through image/state temp writes, flush/fsync,
-atomic replace, parent-directory fsync, metadata commit, and old-image cleanup.
-Cleanup occurs only after durable metadata commit. Every failure boundary keeps
-the previously committed layout readable.
+`GET /api/floorplan/<sha256>` reads the immutable blob from one SQLite snapshot
+and serves exact `Content-Length` in bounded 65536-byte writes, plus exact MIME,
+`X-Content-Type-Options: nosniff`, strong quoted ETag, immutable private caching,
+`If-None-Match`/`304`, or `404`.
 
 ### Floorplan interaction
 

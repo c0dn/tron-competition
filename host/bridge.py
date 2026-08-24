@@ -11,6 +11,8 @@ import queue
 import re
 import select
 import signal
+import socket
+import stat
 import sys
 import termios
 import threading
@@ -23,8 +25,13 @@ from socketserver import ThreadingMixIn
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+try:
+    from . import layout_store
+except ImportError:  # pragma: no cover - supports `python3 host/bridge.py`
+    import layout_store  # type: ignore[no-redef]
 
-API_SCHEMA = "mind.api.v1"
+
+API_SCHEMA = "mind.api.v2"
 HEALTH_SCHEMA = "mind.health.v2"
 COMMAND_SCHEMA = "mind.command.v1"
 ERROR_SCHEMA = "mind.error.v1"
@@ -33,13 +40,18 @@ RING_CAPACITY = 256
 MAX_PAGE_SIZE = 100
 MAX_LINE_BYTES = 512
 MAX_REQUEST_BYTES = 4096
+MAX_LAYOUT_REQUEST_BYTES = 65536
+MAX_FLOORPLAN_REMOVE_REQUEST_BYTES = 256
+MAX_FLOORPLAN_UPLOAD_REQUEST_BYTES = 7340032
 COMMAND_QUEUE_CAPACITY = 32
 HTTP_WORKER_CAPACITY = 16
+MAX_STATIC_FILE_BYTES = 16 * 1024 * 1024
 INITIAL_RECONNECT_SECONDS = 0.05
 MAX_RECONNECT_SECONDS = 1.0
 
 KNOWN_PREFIXES = (
     b"mind_event_v1",
+    b"mind_event_v2",
     b"mind_root_v1",
     b"mind_command_v1",
     b"mind_gtt_begin_v1",
@@ -72,6 +84,14 @@ EVENT_PATTERN = re.compile(
     rf"schema=1 event=(?P<event>{DECIMAL}) confidence=(?P<confidence>{DECIMAL}) "
     rf"svm=(?P<svm>{DECIMAL}) mic=(?P<mic>{DECIMAL}) seq=(?P<seq>{DECIMAL}) "
     rf"observer=(?P<observer>{HEX12}) path=(?P<path>local|tavrn)$"
+)
+EVENT_V2_PATTERN = re.compile(
+    rf"^mind_event_v2 now=(?P<now>{DECIMAL}) root=(?P<root>{HEX12}) "
+    rf"wearable=(?P<wearable>{DECIMAL}) packet=(?P<packet>{HEX6}) "
+    rf"schema=1 event=(?P<event>{DECIMAL}) confidence=(?P<confidence>{DECIMAL}) "
+    rf"svm=(?P<svm>{DECIMAL}) mic=(?P<mic>{DECIMAL}) seq=(?P<seq>{DECIMAL}) "
+    rf"observer=(?P<observer>{HEX12}) observer_rssi_dbm=(?P<observer_rssi_dbm>-{DECIMAL}) "
+    rf"path=(?P<path>local|tavrn)$"
 )
 ROOT_PATTERN = re.compile(
     rf"^mind_root_v1 now=(?P<now>{DECIMAL}) local=(?P<local>{HEX12}) "
@@ -119,6 +139,7 @@ class Timing:
     submit_wait_slack: float = 0.15
     serial_poll_interval: float = 0.02
     http_io_timeout: float = 1.0
+    http_request_deadline: float = 1.0
     http_reject_timeout: float = 0.05
     worker_join_timeout: float = 2.0
 
@@ -167,6 +188,35 @@ def parse_firmware_line(raw_line: bytes) -> Optional[dict[str, Any]]:
             "mic": _number(fields, "mic", 255),
             "seq": _number(fields, "seq", 255),
             "observer": fields["observer"],
+            "observer_rssi_dbm": None,
+            "path": fields["path"],
+        }
+        if record["seq"] != int(packet[-2:], 16):
+            raise ParseError("event sequence does not match packet ID")
+        if record["event"] == 0 and (record["confidence"] != 0 or record["mic"] != 0):
+            raise ParseError("heartbeat has nonzero confidence or microphone")
+        return record
+
+    event_v2_match = EVENT_V2_PATTERN.fullmatch(line)
+    if event_v2_match is not None:
+        fields = event_v2_match.groupdict()
+        packet = fields["packet"]
+        record = {
+            "kind": "event",
+            "now": _number(fields, "now", 0xFFFFFFFF),
+            "root": fields["root"],
+            "wearable": _number(fields, "wearable", 254, 1),
+            "packet": packet,
+            "schema": 1,
+            "event": _number(fields, "event", 5),
+            "confidence": _number(fields, "confidence", 100),
+            "svm": _number(fields, "svm", 8000),
+            "mic": _number(fields, "mic", 255),
+            "seq": _number(fields, "seq", 255),
+            "observer": fields["observer"],
+            "observer_rssi_dbm": -_number(
+                {"magnitude": fields["observer_rssi_dbm"][1:]}, "magnitude", 127, 1
+            ),
             "path": fields["path"],
         }
         if record["seq"] != int(packet[-2:], 16):
@@ -479,14 +529,19 @@ class SerialTransport:
         """Return the transport-owned health fields under its state lock."""
 
         with self._state_lock:
+            root = self._latest_root.copy() if self._latest_root is not None else None
             return {
                 "connected": self._connected,
                 "parse_errors": self._parse_errors,
                 "overlong_lines": self._overlong_lines,
                 "reconnects": self._reconnects,
                 "last_record_cursor": self._last_record_cursor,
-                "root": self._latest_root.copy() if self._latest_root is not None else None,
-                "gtt": self._gtt_snapshot(),
+                "root": root,
+                # A complete snapshot only becomes roster authority when its
+                # self identity is internally consistent with current root
+                # authority. A later ROOT mismatch merely gates an otherwise
+                # valid snapshot; a newer failed terminal GTT clears it.
+                "gtt": self._gtt_snapshot(root),
                 "owner_device": self.owner_index,
             }
 
@@ -540,10 +595,17 @@ class SerialTransport:
                     if key != "device"
                 }
 
-    def _gtt_snapshot(self) -> Optional[dict[str, Any]]:
-        if self._latest_gtt is None:
+    def _gtt_snapshot(self, root: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        if self._latest_gtt is None or not self._gateway_gtt_is_valid(self._latest_gtt, root):
             return None
         return {**self._latest_gtt, "entries": [entry.copy() for entry in self._latest_gtt["entries"]]}
+
+    @staticmethod
+    def _gateway_gtt_is_valid(gtt: dict[str, Any], root: Optional[dict[str, Any]]) -> bool:
+        local = gtt["local"]
+        if sum(entry["adva"] == local for entry in gtt["entries"]) != 1:
+            return False
+        return root is None or root["local"] == local
 
     def _invalidate_gtt(self) -> None:
         with self._state_lock:
@@ -570,7 +632,6 @@ class SerialTransport:
                     record["query"] != partial.query
                     or record["index"] != len(partial.entries)
                     or len(partial.entries) >= partial.entry_count
-                    or any(entry["adva"] == record["adva"] for entry in partial.entries)
                 ):
                     self._partial_gtt = None
                     return
@@ -587,7 +648,11 @@ class SerialTransport:
                 or record["nondeparted"] != partial.nondeparted_count
                 or len(partial.entries) != partial.entry_count
                 or not self._valid_gtt(partial)
+                or (self._latest_root is not None and self._latest_root["local"] != partial.local)
             ):
+                # A complete newer GTT that cannot establish one authoritative
+                # local identity invalidates any previously exposed roster.
+                self._latest_gtt = None
                 self._partial_gtt = None
                 return
             self._gtt_generation += 1
@@ -608,7 +673,11 @@ class SerialTransport:
             return False
         if sum(entry["departed"] != 2 for entry in partial.entries) != partial.nondeparted_count:
             return False
-        return all(
+        return (
+            len({entry["adva"] for entry in partial.entries}) == len(partial.entries)
+            and
+            sum(entry["adva"] == partial.local for entry in partial.entries) == 1
+            and all(
             0 <= entry["last"] <= 0xFFFFFFFF
             and 0 <= entry["soft"] <= 0xFFFFFFFF
             and 0 <= entry["hard"] <= 0xFFFFFFFF
@@ -621,6 +690,7 @@ class SerialTransport:
             and 0 <= entry["departed"] <= 3
             and ((entry["departed"] == 2) == (entry["freshness"] == 4))
             for entry in partial.entries
+            )
         )
 
     def _attempt_connect(self) -> None:
@@ -860,10 +930,12 @@ class Bridge:
         serial_paths: list[str],
         *,
         timing: Timing = DEFAULT_TIMING,
+        state_dir: Optional[Path] = None,
         transport_factory: Callable[["Bridge", int, str, tuple[str, ...], Timing], SerialTransport] = SerialTransport,
     ) -> None:
         self.timing = timing
         self.ring = CursorRing()
+        self.layout = layout_store.LayoutStore(state_dir or layout_store.default_state_dir())
         # Lock order is bridge snapshot -> ring -> transport state.  Transport
         # lifecycle paths never acquire this lock while holding state, so health
         # snapshots cannot deadlock with reconnect or disconnect handling.
@@ -889,6 +961,7 @@ class Bridge:
     def stop(self) -> None:
         for transport in self.transports:
             transport.stop()
+        self.layout.close()
 
     def record_from_transport(self, transport: SerialTransport, record: dict[str, Any]) -> None:
         with self._snapshot_lock:
@@ -938,7 +1011,10 @@ def serial_grouping_identity(path: str) -> str:
 class BoundedThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """Threaded HTTP with a fixed request-worker ceiling."""
 
-    daemon_threads = True
+    # ThreadingMixIn.server_close() joins these workers before Bridge.stop()
+    # permanently closes the SQLite connection.
+    daemon_threads = False
+    block_on_close = True
     allow_reuse_address = True
     request_queue_size = HTTP_WORKER_CAPACITY
 
@@ -998,8 +1074,92 @@ class BoundedThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 class BridgeHTTPServer(BoundedThreadingHTTPServer):
     def __init__(self, bridge: Bridge, assets: Path, port: int) -> None:
         self.bridge = bridge
-        self.assets = assets.resolve()
-        super().__init__(("127.0.0.1", port), BridgeRequestHandler, bridge.timing)
+        # Keep a descriptor for the root instead of resolving every request.
+        # O_NOFOLLOW rejects a symlinked asset root and openat below prevents
+        # nested replacement/symlink races from escaping this pinned directory.
+        self.assets = Path(os.path.abspath(assets))
+        self._assets_fd: Optional[int] = None
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self._assets_fd = os.open(self.assets, flags)
+            details = os.fstat(self._assets_fd)
+            if not stat.S_ISDIR(details.st_mode):
+                raise OSError("assets root is not a directory")
+            self._assets_identity = (details.st_dev, details.st_ino)
+            super().__init__(("127.0.0.1", port), BridgeRequestHandler, bridge.timing)
+        except BaseException:
+            if self._assets_fd is not None:
+                os.close(self._assets_fd)
+                self._assets_fd = None
+            raise
+
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            if self._assets_fd is not None:
+                try:
+                    os.close(self._assets_fd)
+                except OSError:
+                    pass
+                self._assets_fd = None
+
+    def _verify_assets_root(self) -> int:
+        if self._assets_fd is None:
+            raise OSError("assets root is closed")
+        details = os.lstat(self.assets)
+        if not stat.S_ISDIR(details.st_mode) or (details.st_dev, details.st_ino) != self._assets_identity:
+            raise OSError("assets root was replaced")
+        pinned = os.fstat(self._assets_fd)
+        if not stat.S_ISDIR(pinned.st_mode) or (pinned.st_dev, pinned.st_ino) != self._assets_identity:
+            raise OSError("assets root descriptor changed")
+        return os.dup(self._assets_fd)
+
+    def open_static(self, relative: str) -> tuple[int, int]:
+        """Open a bounded regular asset through component-wise nofollow paths."""
+
+        parts = relative.split("/")
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise OSError("unsafe static path")
+        directory_fd = self._verify_assets_root()
+        try:
+            for part in parts[:-1]:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_fd,
+                )
+                try:
+                    if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                        raise OSError("non-directory static component")
+                except BaseException:
+                    os.close(child_fd)
+                    raise
+                os.close(directory_fd)
+                directory_fd = child_fd
+            fd = os.open(
+                parts[-1],
+                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                details = os.fstat(fd)
+                if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_STATIC_FILE_BYTES:
+                    raise OSError("unsafe static file")
+                # Detect an asset-root replacement that raced the initial pin check
+                # before returning a descriptor to the response writer.
+                verification_fd = self._verify_assets_root()
+                try:
+                    result = fd, details.st_size
+                    fd = None
+                    return result
+                finally:
+                    os.close(verification_fd)
+            finally:
+                if fd is not None:
+                    os.close(fd)
+        finally:
+            os.close(directory_fd)
 
 
 class BridgeRequestHandler(BaseHTTPRequestHandler):
@@ -1019,12 +1179,65 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         super().setup()
         self._close_after_response = False
         self._request_host: Optional[str] = None
+        self._request_expired = threading.Event()
+        self._request_deadline = time.monotonic() + self.bridge_server.timing.http_request_deadline
+        # Socket timeouts restart when a peer drips bytes. This bounded timer
+        # shuts the socket at one absolute deadline; there can be no more than
+        # HTTP_WORKER_CAPACITY live handlers/timers.
+        self._deadline_timer = threading.Timer(
+            max(0.0, self._request_deadline - time.monotonic()), self._expire_request
+        )
+        self._deadline_timer.daemon = True
+        self._deadline_timer.start()
+
+    def _expire_request(self) -> None:
+        self._request_expired.set()
+        try:
+            self.request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _mutation_is_active(self) -> bool:
+        """Prevent a queued handler from starting SQLite after its deadline."""
+
+        if self._request_expired.is_set() or time.monotonic() >= self._request_deadline:
+            self._request_expired.set()
+            return False
+        return True
 
     def handle(self) -> None:
         try:
-            super().handle()
+            # The bridge deliberately accepts only one request per TCP
+            # connection so unread mutation bytes can never desynchronize a
+            # subsequent request.
+            self.handle_one_request()
         except (OSError, TimeoutError):
+            pass
+        finally:
             self.close_connection = True
+            self._deadline_timer.cancel()
+
+    def end_headers(self) -> None:
+        self.send_header("Connection", "close")
+        super().end_headers()
+        self.close_connection = True
+
+    def handle_expect_100(self) -> bool:
+        # Never invite a body before the loopback Host gate has run. This also
+        # prevents an Expect request from consuming a second parser turn.
+        self._request_host = self._validated_host()
+        self._close_after_response = True
+        parsed = urlsplit(self.path)
+        if self._request_host is None:
+            if parsed.path == "/api/layout" or parsed.path.startswith("/api/floorplan/"):
+                self._send_dashboard_error(403, "forbidden_request")
+            else:
+                self._send_error(400, "invalid_host")
+        elif parsed.path == "/api/layout" or parsed.path.startswith("/api/floorplan/"):
+            self._send_dashboard_error(400, "invalid_body")
+        else:
+            self._send_error(400, "invalid_body")
+        return False
 
     def parse_request(self) -> bool:
         self._request_host = None
@@ -1033,7 +1246,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._request_host = self._validated_host()
         if self._request_host is None:
             self._close_after_response = True
-            self._send_error(400, "invalid_host")
+            parsed = urlsplit(self.path)
+            if parsed.path == "/api/layout" or parsed.path.startswith("/api/floorplan/"):
+                self._send_dashboard_error(403, "forbidden_request")
+            else:
+                self._send_error(400, "invalid_host")
             return False
         return True
 
@@ -1044,14 +1261,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             if api:
                 self.send_header("Cache-Control", "no-store")
-            if self._close_after_response:
-                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
         except (OSError, TimeoutError):
             self.close_connection = True
-        if self._close_after_response:
-            self.close_connection = True
+        self.close_connection = True
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -1060,8 +1274,30 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _send_error(self, status: int, error: str) -> None:
         self._send_json(status, {"schema": ERROR_SCHEMA, "accepted": False, "error": error})
 
+    def _send_dashboard_error(self, status: int, error: str) -> None:
+        self._send_json(status, layout_store.dashboard_error(error))
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/layout":
+            if parsed.query:
+                self._send_dashboard_error(400, "invalid_body")
+                return
+            try:
+                self._send_json(200, self.bridge_server.bridge.layout.get())
+            except layout_store.StorageUnavailable:
+                self._send_dashboard_error(503, "storage_unavailable")
+            return
+        floorplan = re.fullmatch(r"/api/floorplan/([0-9a-f]{64})", parsed.path)
+        if floorplan is not None:
+            if parsed.query:
+                self._send_dashboard_error(404, "not_found")
+                return
+            self._serve_floorplan(floorplan[1])
+            return
+        if parsed.path.startswith("/api/floorplan/"):
+            self._send_dashboard_error(404, "not_found")
+            return
         if parsed.path == "/api/events":
             query = self._event_query(parsed.query)
             if query is None:
@@ -1075,8 +1311,57 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         self._serve_static(parsed.path)
 
+    def do_PUT(self) -> None:  # noqa: N802
+        parsed = urlsplit(self.path)
+        if parsed.path == "/api/layout" and parsed.query:
+            self._send_dashboard_error(400, "invalid_body")
+            return
+        if parsed.path != "/api/layout":
+            self._send(404, b"Not found\n", "text/plain; charset=utf-8")
+            return
+        request_error = self._layout_mutation_request_error()
+        if request_error is not None:
+            status, error = request_error
+            self._close_after_response = True
+            self._send_dashboard_error(status, error)
+            return
+        body, body_error = self._dashboard_json_body(MAX_LAYOUT_REQUEST_BYTES)
+        if body_error is not None:
+            self._send_dashboard_error(*body_error)
+            return
+        try:
+            base_revision, positions = self._parse_layout_update(body)
+        except ValueError:
+            self._send_dashboard_error(400, "invalid_body")
+            return
+        try:
+            if not self._mutation_is_active():
+                self.close_connection = True
+                return
+            response = self.bridge_server.bridge.layout.replace_positions(
+                base_revision, positions, cancel_check=self._mutation_is_active
+            )
+        except layout_store.Conflict as error:
+            self._send_json(
+                409,
+                {
+                    "schema": layout_store.CONFLICT_SCHEMA,
+                    "error": "revision_conflict",
+                    "current": error.current,
+                },
+            )
+        except layout_store.MutationCancelled:
+            self.close_connection = True
+        except layout_store.StorageUnavailable:
+            self._send_dashboard_error(503, "storage_unavailable")
+        else:
+            self._send_json(200, response)
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
+        if parsed.path in {"/api/floorplan/upload", "/api/floorplan/remove"}:
+            self._floorplan_mutation(parsed)
+            return
         if parsed.query or parsed.path not in {"/api/root", "/api/gtt"}:
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
             return
@@ -1114,6 +1399,116 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_error(503, "write_failed")
 
+    def _floorplan_mutation(self, parsed: Any) -> None:
+        if parsed.query:
+            self._send_dashboard_error(400, "invalid_body")
+            return
+        request_error = self._layout_mutation_request_error()
+        if request_error is not None:
+            status, error = request_error
+            self._close_after_response = True
+            self._send_dashboard_error(status, error)
+            return
+        uploading = parsed.path == "/api/floorplan/upload"
+        admitted = False
+        if uploading:
+            admitted = self.bridge_server.bridge.layout.try_admit_upload()
+            if not admitted:
+                self._close_after_response = True
+                self._send_dashboard_error(503, "upload_busy")
+                return
+        try:
+            body, body_error = self._dashboard_json_body(
+                MAX_FLOORPLAN_UPLOAD_REQUEST_BYTES if uploading else MAX_FLOORPLAN_REMOVE_REQUEST_BYTES
+            )
+            if body_error is not None:
+                self._send_dashboard_error(*body_error)
+                return
+            if uploading:
+                self._floorplan_upload(body)
+            else:
+                self._floorplan_remove(body)
+        finally:
+            if admitted:
+                self.bridge_server.bridge.layout.release_upload_admission()
+
+    def _floorplan_upload(self, body: Any) -> None:
+        try:
+            base_revision, mime, encoded = self._parse_floorplan_upload(body)
+        except ValueError:
+            self._send_dashboard_error(400, "invalid_body")
+            return
+        try:
+            decoded = layout_store.decode_canonical_base64(encoded)
+        except ValueError:
+            self._send_dashboard_error(400, "invalid_base64")
+            return
+        if len(decoded) > layout_store.MAX_DECODED_IMAGE_BYTES:
+            self._send_dashboard_error(413, "image_too_large")
+            return
+        try:
+            image = layout_store.inspect_image(mime, decoded)
+        except layout_store.InvalidImage as error:
+            status = 413 if error.error == "image_too_large" else 415 if error.error in {
+                "unsupported_media_type",
+                "image_type_mismatch",
+            } else 422
+            self._send_dashboard_error(status, error.error)
+            return
+        try:
+            # Decode and validate before the transaction, then recheck the
+            # absolute deadline immediately before acquiring the store lock.
+            if not self._mutation_is_active():
+                self.close_connection = True
+                return
+            response = self.bridge_server.bridge.layout.upload(
+                base_revision, image, decoded, cancel_check=self._mutation_is_active
+            )
+        except layout_store.Conflict as error:
+            self._send_json(
+                409,
+                {
+                    "schema": layout_store.CONFLICT_SCHEMA,
+                    "error": "revision_conflict",
+                    "current": error.current,
+                },
+            )
+        except layout_store.MutationCancelled:
+            self.close_connection = True
+        except layout_store.StorageUnavailable:
+            self._send_dashboard_error(503, "storage_unavailable")
+        else:
+            self._send_json(200, response)
+
+    def _floorplan_remove(self, body: Any) -> None:
+        try:
+            base_revision = self._parse_floorplan_remove(body)
+        except ValueError:
+            self._send_dashboard_error(400, "invalid_body")
+            return
+        try:
+            if not self._mutation_is_active():
+                self.close_connection = True
+                return
+            response = self.bridge_server.bridge.layout.remove(
+                base_revision, cancel_check=self._mutation_is_active
+            )
+        except layout_store.Conflict as error:
+            self._send_json(
+                409,
+                {
+                    "schema": layout_store.CONFLICT_SCHEMA,
+                    "error": "revision_conflict",
+                    "current": error.current,
+                },
+            )
+        except layout_store.MutationCancelled:
+            self.close_connection = True
+        except layout_store.StorageUnavailable:
+            self._send_dashboard_error(503, "storage_unavailable")
+        else:
+            self._send_json(200, response)
+
     def _validated_host(self) -> Optional[str]:
         values = self.headers.get_all("Host") or []
         if len(values) != 1:
@@ -1138,6 +1533,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if fetch_sites and (len(fetch_sites) != 1 or fetch_sites[0] not in {"same-origin", "none"}):
             return 403, "forbidden_fetch_site"
         return None
+
+    def _layout_mutation_request_error(self) -> Optional[tuple[int, str]]:
+        """Apply the existing loopback CSRF gate with dashboard vocabulary."""
+
+        request_error = self._mutation_request_error()
+        if request_error is None:
+            return None
+        status, error = request_error
+        if status == 403:
+            return 403, "forbidden_request"
+        return status, error
 
     def _has_json_content_type(self) -> bool:
         values = self.headers.get_all("Content-Type") or []
@@ -1173,9 +1579,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length") or []
         if len(lengths) != 1 or not re.fullmatch(DECIMAL, lengths[0]):
             return self._invalid_body()
-        size = int(lengths[0])
-        if size > MAX_REQUEST_BYTES:
-            return self._invalid_body()
+        size, too_large = self._bounded_content_length(MAX_REQUEST_BYTES)
+        if size is None:
+            self._close_after_response = True
+            return "invalid_body"
         try:
             raw = self.rfile.read(size)
         except (OSError, TimeoutError):
@@ -1203,6 +1610,127 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._close_after_response = True
         return "invalid_body"
 
+    def _dashboard_json_body(self, limit: int) -> tuple[Any, Optional[tuple[int, str]]]:
+        """Read one bounded JSON request body without accepting transfer coding."""
+
+        if self.headers.get_all("Transfer-Encoding"):
+            self._close_after_response = True
+            return None, (400, "invalid_body")
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) != 1 or not re.fullmatch(DECIMAL, lengths[0]):
+            self._close_after_response = True
+            return None, (400, "invalid_body")
+        size, too_large = self._bounded_content_length(limit)
+        if size is None:
+            self._close_after_response = True
+            return None, ((413, "request_too_large") if too_large else (400, "invalid_body"))
+        try:
+            raw = self.rfile.read(size)
+        except (OSError, TimeoutError):
+            self._close_after_response = True
+            return None, (400, "invalid_body")
+        if len(raw) != size:
+            self._close_after_response = True
+            return None, (400, "invalid_body")
+        try:
+            return (
+                json.loads(
+                    raw.decode("utf-8"),
+                    object_pairs_hook=_unique_object,
+                    parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+                ),
+                None,
+            )
+        except _DuplicateJSONKey:
+            return None, (400, "invalid_body")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return None, (400, "invalid_json")
+
+    def _bounded_content_length(self, limit: int) -> tuple[Optional[int], bool]:
+        """Parse a decimal Content-Length without risking Python digit limits."""
+
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) != 1 or re.fullmatch(DECIMAL, lengths[0]) is None:
+            return None, False
+        raw = lengths[0]
+        maximum = str(limit)
+        if len(raw) > len(maximum) or (len(raw) == len(maximum) and raw > maximum):
+            return None, True
+        return int(raw), False
+
+    @staticmethod
+    def _base_revision(value: Any) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid base revision")
+        return value
+
+    def _parse_layout_update(self, body: Any) -> tuple[int, list[dict[str, Any]]]:
+        if type(body) is not dict or set(body) != {"schema", "base_revision", "positions"}:
+            raise ValueError("invalid layout update")
+        if body["schema"] != layout_store.LAYOUT_UPDATE_SCHEMA:
+            raise ValueError("invalid layout update schema")
+        return self._base_revision(body["base_revision"]), layout_store.normalize_positions(body["positions"])
+
+    def _parse_floorplan_upload(self, body: Any) -> tuple[int, str, str]:
+        if type(body) is not dict or set(body) != {"schema", "base_revision", "mime", "data_base64"}:
+            raise ValueError("invalid floorplan upload")
+        if body["schema"] != layout_store.FLOORPLAN_UPLOAD_SCHEMA:
+            raise ValueError("invalid floorplan upload schema")
+        if type(body["mime"]) is not str or type(body["data_base64"]) is not str:
+            raise ValueError("invalid floorplan upload fields")
+        return self._base_revision(body["base_revision"]), body["mime"], body["data_base64"]
+
+    def _parse_floorplan_remove(self, body: Any) -> int:
+        if type(body) is not dict or set(body) != {"schema", "base_revision"}:
+            raise ValueError("invalid floorplan remove")
+        if body["schema"] != layout_store.FLOORPLAN_REMOVE_SCHEMA:
+            raise ValueError("invalid floorplan remove schema")
+        return self._base_revision(body["base_revision"])
+
+    def _serve_floorplan(self, sha256: str) -> None:
+        try:
+            image = self.bridge_server.bridge.layout.open_image(sha256)
+        except (layout_store.StorageUnavailable, layout_store.StateCorrupt):
+            self._send_dashboard_error(503, "storage_unavailable")
+            return
+        if image is None:
+            self._send_dashboard_error(404, "not_found")
+            return
+        etag = f'"{image.sha256}"'
+        try:
+            if self._if_none_match_matches(etag):
+                self._send_floorplan_headers(304, image, None)
+                return
+            self._send_floorplan_headers(200, image, image.length)
+            data = memoryview(image.data)
+            for offset in range(0, image.length, layout_store.IMAGE_CHUNK_BYTES):
+                self.wfile.write(data[offset : offset + layout_store.IMAGE_CHUNK_BYTES])
+        except (OSError, TimeoutError):
+            self.close_connection = True
+
+    def _send_floorplan_headers(self, status: int, image: layout_store.OpenImage, length: Optional[int]) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", image.mime)
+        if length is not None:
+            self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+        self.send_header("ETag", f'"{image.sha256}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+    def _if_none_match_matches(self, etag: str) -> bool:
+        values = self.headers.get_all("If-None-Match") or []
+        for value in values:
+            for token in value.split(","):
+                candidate = token.strip()
+                if candidate == "*":
+                    return True
+                if candidate.startswith("W/"):
+                    candidate = candidate[2:].strip()
+                if candidate == etag:
+                    return True
+        return False
+
     def _serve_static(self, raw_path: str) -> None:
         decoded = unquote(raw_path)
         relative = "index.html" if decoded == "/" else decoded.lstrip("/")
@@ -1210,20 +1738,29 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
             return
         try:
-            candidate = (self.bridge_server.assets / relative).resolve()
-            candidate.relative_to(self.bridge_server.assets)
+            fd, length = self.bridge_server.open_static(relative)
         except (OSError, ValueError):
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
             return
-        if not candidate.is_file():
-            self._send(404, b"Not found\n", "text/plain; charset=utf-8")
-            return
         try:
-            body = candidate.read_bytes()
-        except OSError:
-            self._send(404, b"Not found\n", "text/plain; charset=utf-8")
-            return
-        self._send(200, body, _mime_type(candidate))
+            self.send_response(200)
+            self.send_header("Content-Type", _mime_type(Path(relative)))
+            self.send_header("Content-Length", str(length))
+            self.end_headers()
+            remaining = length
+            while remaining:
+                chunk = os.read(fd, min(layout_store.IMAGE_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise OSError("truncated static file")
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        except (OSError, TimeoutError):
+            self.close_connection = True
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 class _DuplicateJSONKey(ValueError):
@@ -1261,9 +1798,16 @@ def _port(value: str) -> int:
     return port
 
 
+def _state_dir(value: str) -> Path:
+    try:
+        return layout_store.state_dir_argument(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", action="append", default=[], metavar="PATH", help="POSIX serial path (repeatable)")
+    parser.add_argument("--serial", action="append", default=[], metavar="PATH", help="the sole POSIX serial path")
     parser.add_argument("--port", type=_port, default=8787, help="localhost TCP port (default: 8787)")
     parser.add_argument(
         "--assets",
@@ -1271,7 +1815,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=Path(__file__).resolve().parent.parent / "dashboard" / "dist",
         help="built dashboard asset directory (default: dashboard/dist)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--state-dir",
+        type=_state_dir,
+        metavar="ABSOLUTE_PATH",
+        help="absolute durable dashboard state directory (default: XDG data directory)",
+    )
+    args = parser.parse_args(argv)
+    if len(args.serial) != 1:
+        parser.error("exactly one --serial PATH is required")
+    return args
 
 
 def serve(bridge: Bridge, assets: Path, port: int) -> BridgeHTTPServer:
@@ -1280,7 +1833,7 @@ def serve(bridge: Bridge, assets: Path, port: int) -> BridgeHTTPServer:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    bridge = Bridge(args.serial)
+    bridge = Bridge(args.serial, state_dir=args.state_dir)
     httpd = serve(bridge, args.assets, args.port)
     bridge.start()
     def _interrupt(_signal: int, _frame: Any) -> None:

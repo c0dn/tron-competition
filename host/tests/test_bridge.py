@@ -13,6 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -23,6 +24,11 @@ EVENT = (
     b"mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 "
     b"schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 "
     b"observer=0102545678c0 path=tavrn\n"
+)
+EVENT_V2 = (
+    b"mind_event_v2 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 "
+    b"schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 "
+    b"observer=0102545678c0 observer_rssi_dbm=-37 path=tavrn\n"
 )
 ROOT = (
     b"mind_root_v1 now=99 local=8081545678c0 node=6 role=root roots=16 "
@@ -39,7 +45,7 @@ def gtt_entry(
     index: int = 0,
     *,
     query: int = 100,
-    adva: str = "0102545678c0",
+    adva: str = "8081545678c0",
     last: int = 90,
     soft: int = 110,
     hard: int = 120,
@@ -100,6 +106,7 @@ def receive_until_eof(connection: socket.socket, timeout: float = 1.0) -> bytes:
 
 class ServerHarness:
     def __init__(self, state: bridge.Bridge, assets: Path) -> None:
+        self.state = state
         self.server = bridge.serve(state, assets, 0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -112,6 +119,7 @@ class ServerHarness:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        self.state.stop()
 
     def request(
         self,
@@ -178,6 +186,7 @@ class ParserTests(unittest.TestCase):
                 "mic": 125,
                 "seq": 195,
                 "observer": "0102545678c0",
+                "observer_rssi_dbm": None,
                 "path": "tavrn",
             },
         )
@@ -222,7 +231,7 @@ class ParserTests(unittest.TestCase):
             gtt_entry(hop_state=3).rstrip(),
             gtt_entry(freshness=5).rstrip(),
             gtt_entry(departed=4).rstrip(),
-            gtt_entry().replace(b"adva=0102545678c0", b"adva=0102545678C0").rstrip(),
+            gtt_entry().replace(b"adva=8081545678c0", b"adva=8081545678C0").rstrip(),
             gtt_end(nondeparted=17).rstrip(),
         ]
         for line in invalid:
@@ -250,6 +259,22 @@ class ParserTests(unittest.TestCase):
         with self.assertRaises(bridge.ParseError):
             bridge.parse_firmware_line(heartbeat.rstrip())
         self.assertIsNone(bridge.parse_firmware_line(b"UART ready"))
+
+    def test_exact_v2_event_normalizes_signed_observer_rssi_and_rejects_invalid_ranges(self) -> None:
+        record = bridge.parse_firmware_line(EVENT_V2.rstrip())
+        self.assertEqual(record["observer_rssi_dbm"], -37)
+        ring = bridge.CursorRing()
+        self.assertEqual(ring.append(record)["observer_rssi_dbm"], -37)
+        self.assertEqual((ring.page(0, 1)["schema"], ring.page(0, 1)["events"][0]["observer_rssi_dbm"]), ("mind.api.v2", -37))
+        for invalid in (
+            EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=37"),
+            EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=-0"),
+            EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=-128"),
+            EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=-037"),
+            EVENT_V2.replace(b"path=tavrn", b"observer_rssi_dbm=-37 path=tavrn"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(bridge.ParseError):
+                bridge.parse_firmware_line(invalid.rstrip())
 
     def test_partial_overlong_and_recovery_do_not_mutate_early_state(self) -> None:
         state = bridge.Bridge(["test"])
@@ -446,7 +471,9 @@ class HealthSnapshotTests(unittest.TestCase):
 
 class GTTAssemblyTests(unittest.TestCase):
     def _state(self) -> bridge.Bridge:
-        return bridge.Bridge(["test"])
+        state = bridge.Bridge(["test"])
+        self.addCleanup(state.stop)
+        return state
 
     def test_complete_snapshot_is_atomic_normalized_and_excluded_from_event_ring(self) -> None:
         state = self._state()
@@ -478,7 +505,7 @@ class GTTAssemblyTests(unittest.TestCase):
                 "entries": [
                     {
                         "index": 0,
-                        "adva": "0102545678c0",
+                        "adva": "8081545678c0",
                         "last": 90,
                         "soft": 110,
                         "hard": 120,
@@ -522,18 +549,19 @@ class GTTAssemblyTests(unittest.TestCase):
             },
         )
 
-    def test_zero_and_sixteen_entry_snapshots_increment_generation_only_on_completion(self) -> None:
+    def test_zero_entry_snapshot_fails_closed_and_sixteen_entry_snapshot_requires_self(self) -> None:
         state = self._state()
         device = state.devices[0]
         device.feed_bytes(gtt_begin(query=10, entries=0, nondeparted=0) + gtt_end(query=10, entries=0, nondeparted=0))
-        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
         device.feed_bytes(gtt_begin(query=11, entries=16, nondeparted=16))
         for index in range(16):
-            device.feed_bytes(gtt_entry(index, query=11, adva=f"{index + 1:012x}"))
-        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+            adva = "8081545678c0" if index == 0 else f"{index + 1:012x}"
+            device.feed_bytes(gtt_entry(index, query=11, adva=adva))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
         device.feed_bytes(gtt_end(query=11, entries=16, nondeparted=16))
         snapshot = state.health()["devices"][0]["gtt"]
-        self.assertEqual((snapshot["generation"], snapshot["entry_count"], snapshot["nondeparted_count"]), (2, 16, 16))
+        self.assertEqual((snapshot["generation"], snapshot["entry_count"], snapshot["nondeparted_count"]), (1, 16, 16))
         self.assertEqual([entry["index"] for entry in snapshot["entries"]], list(range(16)))
 
     def test_replacement_and_invalid_records_discard_only_partial_assembly(self) -> None:
@@ -545,8 +573,7 @@ class GTTAssemblyTests(unittest.TestCase):
         state = self._state()
         device = state.devices[0]
         device.feed_bytes(gtt_begin(query=1) + gtt_entry(query=1) + gtt_begin(query=2, entries=0, nondeparted=0) + gtt_end(query=2, entries=0, nondeparted=0))
-        replacement = state.health()["devices"][0]["gtt"]
-        self.assertEqual((replacement["generation"], replacement["query_at_ms"], replacement["entry_count"]), (1, 2, 0))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
 
         assert_invalid(gtt_begin() + b"mind_gtt_entry_v1 malformed\n" + gtt_entry() + gtt_end())
         assert_invalid(gtt_begin() + gtt_entry() + gtt_entry() + gtt_end())
@@ -568,6 +595,54 @@ class GTTAssemblyTests(unittest.TestCase):
                 state = self._state()
                 state.devices[0].feed_bytes(lines)
                 self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+    def test_roster_fails_closed_without_exactly_one_self_or_matching_root(self) -> None:
+        state = self._state()
+        device = state.devices[0]
+        device.feed_bytes(gtt_begin() + gtt_entry(adva="0102545678c0") + gtt_end())
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        device.feed_bytes(gtt_begin(query=101, entries=2, nondeparted=2))
+        device.feed_bytes(gtt_entry(0, query=101) + gtt_entry(1, query=101, adva="8081545678c0") + gtt_end(query=101, entries=2, nondeparted=2))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        device.feed_bytes(gtt_begin(query=102) + gtt_entry(query=102) + gtt_end(query=102))
+        self.assertIsNotNone(state.health()["devices"][0]["gtt"])
+        device.feed_bytes(ROOT.replace(b"local=8081545678c0", b"local=0102545678c0"))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+    def test_newer_terminal_identity_failures_clear_a_previously_valid_roster(self) -> None:
+        state = self._state()
+        device = state.devices[0]
+
+        def valid(query: int) -> None:
+            device.feed_bytes(gtt_begin(query=query) + gtt_entry(query=query) + gtt_end(query=query))
+            self.assertIsNotNone(state.health()["devices"][0]["gtt"])
+
+        valid(1)
+        device.feed_bytes(
+            gtt_begin(query=2, entries=1)
+            + gtt_entry(query=2, adva="0102545678c0")
+            + gtt_end(query=2, entries=1)
+        )
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        valid(3)
+        device.feed_bytes(
+            gtt_begin(query=4, entries=2, nondeparted=2)
+            + gtt_entry(0, query=4)
+            + gtt_entry(1, query=4)
+            + gtt_end(query=4, entries=2, nondeparted=2)
+        )
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        valid(5)
+        device.feed_bytes(gtt_begin(query=6) + gtt_entry(query=6) + gtt_end(query=6, local="0102545678c0"))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        valid(7)
+        device.feed_bytes(b"mind_gtt_entry_v1 malformed\n")
+        self.assertIsNotNone(state.health()["devices"][0]["gtt"])
 
 
 class AliasTransportTests(unittest.TestCase):
@@ -873,19 +948,23 @@ class HTTPTests(unittest.TestCase):
         (self.assets / "index.html").write_text("<h1>MIND</h1>", encoding="utf-8")
         (self.assets / "app.js").write_text("export {};", encoding="utf-8")
         (self.assets / "style.css").write_text("body{}", encoding="utf-8")
+        self.servers: list[ServerHarness] = []
 
     def tearDown(self) -> None:
+        for server in reversed(self.servers):
+            server.close()
         self.temp.cleanup()
 
     def test_events_defaults_query_rejection_and_no_store_json(self) -> None:
         state = bridge.Bridge(["test"])
         state.devices[0].feed_bytes(EVENT + ROOT + COMMAND)
         server = ServerHarness(state, self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         status, headers, body = server.request("GET", "/api/events")
         response = json.loads(body)
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual((response["schema"], response["events"][0]["observer_rssi_dbm"]), ("mind.api.v2", None))
         self.assertEqual([record["kind"] for record in response["events"]], ["event", "root", "command"])
         self.assertEqual(server.request("GET", "/api/events?after=1&limit=1")[0], 200)
         for query in ("after=-1", "after=1&after=2", "extra=1", "limit=0", "limit=101", "limit=one", "after=1.2"):
@@ -896,7 +975,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_empty_health_keeps_explicit_initial_cursor_pair(self) -> None:
         server = ServerHarness(bridge.Bridge([]), self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         status, _, body = server.request("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(
@@ -907,7 +986,7 @@ class HTTPTests(unittest.TestCase):
     def test_root_post_error_matrix(self) -> None:
         state = bridge.Bridge(["/does/not/exist"])
         server = ServerHarness(state, self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
 
         status, headers, body = server.request("POST", "/api/root", b"{", {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"], headers["Cache-Control"]), (400, "invalid_json", "no-store"))
@@ -923,7 +1002,7 @@ class HTTPTests(unittest.TestCase):
     def test_gtt_post_error_matrix(self) -> None:
         state = bridge.Bridge(["/does/not/exist"])
         server = ServerHarness(state, self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
 
         status, headers, body = server.request("POST", "/api/gtt", b"{", {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"], headers["Cache-Control"]), (400, "invalid_json", "no-store"))
@@ -947,7 +1026,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_host_validation_rejects_rebinding_malformed_missing_and_wrong_port(self) -> None:
         server = ServerHarness(bridge.Bridge([]), self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         wrong_port = 1 if server.port != 1 else 2
         requests = (
             ("missing", "GET", "/", [], b""),
@@ -978,7 +1057,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_mutations_require_one_utf8_json_content_type(self) -> None:
         server = ServerHarness(bridge.Bridge(["/does/not/exist"]), self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         payload = b'{"device":0,"active":true}'
 
         def mutate(content_type_headers: list[tuple[str, str]]) -> tuple[int, dict[str, str], bytes]:
@@ -1012,7 +1091,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_mutations_reject_cross_origin_null_origin_and_cross_site_metadata(self) -> None:
         server = ServerHarness(bridge.Bridge(["/does/not/exist"]), self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         payload = b'{"device":0}'
 
         def mutate(browser_headers: list[tuple[str, str]]) -> tuple[int, dict[str, str], bytes]:
@@ -1045,7 +1124,7 @@ class HTTPTests(unittest.TestCase):
         os.symlink(outside, self.assets / "escape.txt")
         state = bridge.Bridge([])
         server = ServerHarness(state, self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         self.assertEqual(server.server.server_address[0], "127.0.0.1")
         status, headers, body = server.request("GET", "/")
         self.assertEqual((status, headers["Content-Type"], body), (200, "text/html; charset=utf-8", b"<h1>MIND</h1>"))
@@ -1057,10 +1136,108 @@ class HTTPTests(unittest.TestCase):
         (self.assets / "directory").mkdir()
         self.assertEqual(server.request("GET", "/directory/")[0], 404)
 
+    def test_static_assets_are_pinned_component_safe_bounded_and_streamed(self) -> None:
+        nested = self.assets / "assets" / "nested"
+        nested.mkdir(parents=True)
+        payload = b"x" * (bridge.MAX_STATIC_FILE_BYTES // 32 + 1)
+        asset = nested / "bundle.js"
+        asset.write_bytes(payload)
+        oversize = self.assets / "too-large.bin"
+        oversize.write_bytes(b"x" * (bridge.MAX_STATIC_FILE_BYTES + 1))
+        outside = Path(self.temp.name) / "outside.js"
+        outside.write_bytes(b"outside")
+        os.symlink(outside, nested / "escape.js")
+        state = bridge.Bridge([])
+        server = ServerHarness(state, self.assets)
+        self.servers.append(server)
+        original_read = os.read
+        with mock.patch("host.bridge.os.read", wraps=original_read) as reads:
+            status, headers, body = server.request("GET", "/assets/nested/bundle.js")
+        sizes = [call.args[1] for call in reads.call_args_list]
+        self.assertEqual((status, headers["Content-Type"], headers["Content-Length"], body), (200, "application/javascript; charset=utf-8", str(len(payload)), payload))
+        self.assertGreaterEqual(len(sizes), 2)
+        self.assertTrue(all(size <= bridge.layout_store.IMAGE_CHUNK_BYTES for size in sizes))
+        self.assertEqual(server.request("GET", "/assets/nested/escape.js")[0], 404)
+        self.assertEqual(server.request("GET", "/too-large.bin")[0], 404)
+
+        class Writes:
+            def __init__(self, fail_after: int | None = None) -> None:
+                self.chunks: list[bytes] = []
+                self.fail_after = fail_after
+
+            def write(self, chunk: bytes) -> int:
+                self.chunks.append(chunk)
+                if self.fail_after is not None and len(self.chunks) > self.fail_after:
+                    raise OSError("disconnected")
+                return len(chunk)
+
+        def stream_handler(fd: int, writes: Writes) -> bridge.BridgeRequestHandler:
+            handler = object.__new__(bridge.BridgeRequestHandler)
+            handler.server = SimpleNamespace(open_static=lambda _relative: (fd, len(payload)))
+            handler.wfile = writes
+            handler.close_connection = False
+            handler.send_response = lambda _status: None
+            handler.send_header = lambda _name, _value: None
+            handler.end_headers = lambda: None
+            return handler
+
+        tracked_fd = os.open(asset, os.O_RDONLY)
+        complete = Writes()
+        stream_handler(tracked_fd, complete)._serve_static("/assets/nested/bundle.js")
+        self.assertEqual(b"".join(complete.chunks), payload)
+        self.assertTrue(all(0 < len(chunk) <= bridge.layout_store.IMAGE_CHUNK_BYTES for chunk in complete.chunks))
+        with self.assertRaises(OSError):
+            os.fstat(tracked_fd)
+
+        failed_fd = os.open(asset, os.O_RDONLY)
+        failed_handler = stream_handler(failed_fd, Writes(fail_after=1))
+        failed_handler._serve_static("/assets/nested/bundle.js")
+        self.assertTrue(failed_handler.close_connection)
+        with self.assertRaises(OSError):
+            os.fstat(failed_fd)
+
+        # A renamed root must not make the pinned descriptor serve a replacement.
+        moved = Path(self.temp.name) / "moved-dist"
+        os.rename(self.assets, moved)
+        self.assets.mkdir()
+        (self.assets / "index.html").write_text("replacement", encoding="utf-8")
+        self.assertEqual(server.request("GET", "/")[0], 404)
+
+    def test_static_fifo_is_never_blockingly_opened_and_shutdown_completes(self) -> None:
+        fifo = self.assets / "untrusted.pipe"
+        os.mkfifo(fifo)
+        server = ServerHarness(bridge.Bridge([]), self.assets)
+        self.servers.append(server)
+        started = time.monotonic()
+        self.assertEqual(server.request("GET", "/untrusted.pipe")[0], 404)
+        self.assertLess(time.monotonic() - started, 0.8)
+        started = time.monotonic()
+        server.close()
+        self.servers.remove(server)
+        self.assertLess(time.monotonic() - started, 0.8)
+
+    def test_legacy_root_and_gtt_oversized_content_lengths_remain_invalid_body_400(self) -> None:
+        server = ServerHarness(bridge.Bridge(["/does/not/exist"]), self.assets)
+        self.servers.append(server)
+        for endpoint, payload in (("/api/root", b'{"device":0,"active":true}'), ("/api/gtt", b'{"device":0}')):
+            for declared in (str(bridge.MAX_REQUEST_BYTES + 1), "9" * 5000):
+                with self.subTest(endpoint=endpoint, declared_length=len(declared)):
+                    status, _, response = server.raw_request(
+                        "POST",
+                        endpoint,
+                        [
+                            ("Host", f"127.0.0.1:{server.port}"),
+                            ("Content-Type", "application/json"),
+                            ("Content-Length", declared),
+                        ],
+                        payload,
+                    )
+                    self.assertEqual((status, json.loads(response)["error"]), (400, "invalid_body"))
+
     def test_partial_http_body_times_out_with_invalid_body_and_releases_worker(self) -> None:
         timing = bridge.Timing(http_io_timeout=0.15, serial_poll_interval=0.01)
         server = ServerHarness(bridge.Bridge([], timing=timing), self.assets)
-        self.addCleanup(server.close)
+        self.servers.append(server)
         client = socket.create_connection(("127.0.0.1", server.port), timeout=1)
         try:
             started = time.monotonic()
@@ -1084,6 +1261,7 @@ class HTTPTests(unittest.TestCase):
     def test_stalled_http_clients_are_rejected_then_release_capacity_and_shutdown(self) -> None:
         timing = bridge.Timing(http_io_timeout=0.15, serial_poll_interval=0.01)
         server = ServerHarness(bridge.Bridge([], timing=timing), self.assets)
+        self.servers.append(server)
         clients: list[socket.socket] = []
         try:
             for _ in range(bridge.HTTP_WORKER_CAPACITY):
@@ -1108,6 +1286,66 @@ class HTTPTests(unittest.TestCase):
             if server.thread.is_alive():
                 server.close()
 
+    def test_server_close_waits_for_live_mutation_worker_before_closing_store(self) -> None:
+        state = bridge.Bridge(["test"], state_dir=(Path(self.temp.name) / "worker-state").resolve())
+        server = ServerHarness(state, self.assets)
+        entered = threading.Event()
+        release = threading.Event()
+        worker_exited = threading.Event()
+        close_after_worker: list[bool] = []
+        original_replace = state.layout.replace_positions
+        original_close = state.layout.close
+
+        def blocked_replace(*args, **kwargs):  # type: ignore[no-untyped-def]
+            entered.set()
+            release.wait(timeout=1)
+            try:
+                return original_replace(*args, **kwargs)
+            finally:
+                worker_exited.set()
+
+        def observed_close() -> None:
+            close_after_worker.append(worker_exited.is_set())
+            original_close()
+
+        state.layout.replace_positions = blocked_replace  # type: ignore[method-assign]
+        state.layout.close = observed_close  # type: ignore[method-assign]
+        payload = json.dumps(
+            {
+                "schema": "mind.dashboard.layout.update.v1",
+                "base_revision": 0,
+                "positions": [{"adva": "0102545678c0", "x": 0.5, "y": 0.5}],
+            },
+            separators=(",", ":"),
+        ).encode()
+        client = socket.create_connection(("127.0.0.1", server.port), timeout=2)
+        closer: threading.Thread | None = None
+        try:
+            client.sendall(
+                (
+                    f"PUT /api/layout HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+                    f"Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n"
+                ).encode()
+                + payload
+            )
+            self.assertTrue(entered.wait(timeout=1))
+            closer = threading.Thread(target=server.close)
+            closer.start()
+            self.assertTrue(eventually(lambda: closer is not None and closer.is_alive()))
+            self.assertEqual(server.server.active_request_count(), 1)
+            release.set()
+            closer.join(timeout=2)
+            self.assertFalse(closer.is_alive())
+            self.assertTrue(worker_exited.is_set())
+            self.assertEqual(close_after_worker, [True])
+            with self.assertRaises(bridge.layout_store.StorageUnavailable):
+                state.layout.get()
+        finally:
+            release.set()
+            client.close()
+            if closer is not None and closer.is_alive():
+                closer.join(timeout=2)
+
 
 class SerialWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1115,11 +1353,14 @@ class SerialWorkerTests(unittest.TestCase):
         self.path = os.ttyname(slave)
         os.close(slave)
         self.state = bridge.Bridge([self.path])
+        self.servers: list[ServerHarness] = []
         self.state.start()
         self.assertTrue(eventually(self.state.devices[0].is_connected), "PTY worker did not connect")
         self.assertEqual(read_exact(self.master, len(bridge.ROOT_STATUS)), bridge.ROOT_STATUS)
 
     def tearDown(self) -> None:
+        for server in reversed(self.servers):
+            server.close()
         self.state.stop()
         os.close(self.master)
 
@@ -1131,7 +1372,7 @@ class SerialWorkerTests(unittest.TestCase):
 
         device.write_fn = partial_write
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
-        self.addCleanup(server.close)
+        self.servers.append(server)
         responses: list[tuple[int, dict[str, str], bytes]] = []
         response_lock = threading.Lock()
 
@@ -1181,7 +1422,7 @@ class SerialWorkerTests(unittest.TestCase):
 
     def test_http_csrf_gate_allows_same_origin_and_originless_local_clients(self) -> None:
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
-        self.addCleanup(server.close)
+        self.servers.append(server)
 
         def rooted_request(host: str, active: bool, fetch_site: str = "same-origin") -> tuple[int, dict[str, str], bytes]:
             payload = json.dumps({"device": 0, "active": active}, separators=(",", ":")).encode()
@@ -1220,14 +1461,14 @@ class SerialWorkerTests(unittest.TestCase):
     def test_post_reports_write_failure(self) -> None:
         self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
-        self.addCleanup(server.close)
+        self.servers.append(server)
         status, _, body = server.request("POST", "/api/root", b'{"device":0,"active":false}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
 
     def test_gtt_post_reports_write_failure(self) -> None:
         self.state.devices[0].write_fn = lambda _fd, _data: (_ for _ in ()).throw(OSError("broken"))
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
-        self.addCleanup(server.close)
+        self.servers.append(server)
         status, _, body = server.request("POST", "/api/gtt", b'{"device":0}', {"Content-Type": "application/json"})
         self.assertEqual((status, json.loads(body)["error"]), (503, "write_failed"))
 
@@ -1256,7 +1497,7 @@ class SerialWorkerTests(unittest.TestCase):
 
         self.state.devices[0].write_fn = partial_then_block
         server = ServerHarness(self.state, Path(tempfile.gettempdir()))
-        self.addCleanup(server.close)
+        self.servers.append(server)
         responses: list[tuple[int, dict[str, str], bytes]] = []
 
         def post(active: bool) -> None:
@@ -1350,17 +1591,21 @@ class CLITests(unittest.TestCase):
             finally:
                 bridge.os = original_os
 
-    def test_repeated_serial_cli_and_port_validation(self) -> None:
-        args = bridge.parse_args(["--serial", "one", "--serial", "one", "--serial", "two", "--port", "0", "--assets", "/tmp/assets"])
-        self.assertEqual(args.serial, ["one", "one", "two"])
+    def test_exactly_one_serial_cli_and_port_validation(self) -> None:
+        args = bridge.parse_args(["--serial", "one", "--port", "0", "--assets", "/tmp/assets", "--state-dir", "/tmp/state"])
+        self.assertEqual(args.serial, ["one"])
         self.assertEqual(args.port, 0)
         self.assertEqual(args.assets, Path("/tmp/assets"))
+        self.assertEqual(args.state_dir, Path("/tmp/state"))
         self.assertEqual(
             bridge.serial_grouping_identity("missing-device"),
             bridge.serial_grouping_identity("./missing-device"),
         )
         with self.assertRaises(SystemExit):
             bridge.parse_args(["--port", "65536"])
+        for argv in ([], ["--serial", "one", "--serial", "two"], ["--serial", "one", "--state-dir", "relative"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                bridge.parse_args(argv)
 
 
 if __name__ == "__main__":
