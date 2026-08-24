@@ -435,6 +435,7 @@ run_expiry_fixture_checks() {
                    preprocessed-main-inactive.json preprocessed-main-unguarded.json)
     local malformed=(malformed.json missing-key.json duplicate-key.json)
 
+    python3 "${MICROBIT_ROOT}/tests/protocol/test_tavrn_required_stack_contract_toolchain.py"
     for fixture in stack-max-bytes.json declared-leaf-pass.json unknown-leaf-fail.json \
                     map-vector-overlap.json sibling-operation-edges.json \
                     sibling-operation-heavier.json; do

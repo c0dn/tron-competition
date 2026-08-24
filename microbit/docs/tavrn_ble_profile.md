@@ -496,6 +496,28 @@ observable limits without revising this profile.
 | **BUILD-03** | Every feature slice keeps legacy wire-v1, routed AODV_ONLY, and applicable FULL_TAVRN builds/tests green. The implemented Phase 5 FULL build adds ESC, mentorship, HELLO/SYNC/TC bootstrap, copied FULL telemetry, adaptive SID8 ordinary-HELLO cadence/suppression, local expiry/demand, and V2.3 bounded post-bootstrap GTT gossip with its FULL binding to the Phase 3 GTT/Smart-TTL prefix; AODV_ONLY contains no FULL dependency. The V2.3 ordinary-HELLO wire change requires homogeneous FULL-fleet artifacts. Acceptance requires manifest/source closure and lower-profile isolation, but authorizes no scheduler/radio edit, generated timer/config change, RREQ implementation, or repair-on/off expansion. |
 | **BUILD-04** | Hardware claims attach to immutable clean candidate commits. Mandatory gates are two-board routed link, two-board direct and three-board forced-relay AODV, three-to-eight-board full-profile behavior, four-board transit repair, and finite soak; the `98/150` foundation remains only a best-effort baseline. |
 
+### D2 resource-contract toolchain
+
+Generic firmware builds require a compatible ARM `arm-none-eabi-gcc`, but the
+D2 current-resource gate is intentionally compiler/archive-bound: its declared
+library stack leaves must match both `build.compiler.sha256` and the exact
+Cortex-M4 hard-float archive bytes. The supported Arch workstation contract is
+`arm-none-eabi-gcc 16.2.0-1.1` (`arm-none-eabi-gcc (Arch Repository) 16.2.0`)
+with `arm-none-eabi-newlib 4.6.0.20260123-1`:
+
+- `/usr/bin/arm-none-eabi-gcc` SHA-256:
+  `04d818b91fff08550e414c23704cc2344ae8568a896951e5772c722210c99395`
+- `/usr/lib/gcc/arm-none-eabi/16.2.0/thumb/v7e-m+fp/hard/libgcc.a` SHA-256:
+  `3885a8d6661a68ce1da5b6586a54b5beb796df13e6dfaa40c1708f9392620d87`
+- `/usr/lib/gcc/arm-none-eabi/16.2.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a`
+  SHA-256:
+  `a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659`
+
+On any compiler, libgcc, or newlib upgrade, D2 evidence must be regenerated and
+reviewed before its frozen `required-*-stack-edges.json` paths and hashes change.
+The check must not become permissive merely because a compatible ARM compiler
+can build the firmware.
+
 ## Derived-contract boundary
 
 Wire-v2 owns byte offsets, type codes, exact golden vectors, and the size proof
