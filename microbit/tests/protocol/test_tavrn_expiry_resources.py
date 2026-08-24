@@ -121,7 +121,7 @@ def main() -> int:
         symbol: 1 for symbol in checker.MIND_APPLICATION_PRODUCTION_COMPONENTS |
         checker.MIND_APPLICATION_STATIC_STACK_COMPONENTS
     }
-    if checker.APPLICATION_FIXED_STATE_LINKER_PLACEMENT_BYTES != 14:
+    if checker.APPLICATION_FIXED_STATE_LINKER_PLACEMENT_BYTES != 20:
         return 1
     application_report = {
         "schema": checker.APPLICATION_SIZE_SCHEMA,

@@ -583,16 +583,14 @@ if [[ "$stack_usage" == "ON" ]]; then
         fi
         if [[ "$wearable_ingress" == "ON" ]]; then
             # ARM FULL+repair node-6 map evidence against the immutable
-            # ingress-off FULL+repair baseline measures +8012 bytes. The
-            # separate sizeof report proves 8002 owned static bytes, including
-            # three 640-byte TA_USERBUF stacks, the 96-byte first-invalid
-            # provenance snapshot, the 4-byte logger-dispatch epoch, and the
-            # separate one-byte progress-wake and quiet fault-log states. The
-            # transition also removes the 4-byte diagnostic pending value and
-            # leaves 14 bytes of measured linker placement. Keep this allowance
+            # ingress-off FULL+repair baseline measures +8032 bytes. Exact ELF
+            # symbol accounting attributes 8016 bytes to added application
+            # owners, including the bounded GTT response state, and removes the
+            # 4-byte diagnostic pending value. The remaining 20 bytes are
+            # measured linker placement. Keep this allowance
             # separate from inherited TAVRN state and re-check it from fresh
             # ELF/MAP/sizeof evidence.
-            resource_application_fixed_state_delta=8012
+            resource_application_fixed_state_delta=8032
         fi
         resource_declared_fixed_state_delta=$((resource_inherited_fixed_state_delta + resource_application_fixed_state_delta))
     fi
