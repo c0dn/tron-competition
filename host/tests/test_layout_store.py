@@ -194,6 +194,119 @@ class LayoutStoreTests(unittest.TestCase):
             self.assertFalse(writer.is_alive())
         self.assertEqual(sorted(results), ["conflict", "success"])
 
+    def test_delayed_state_update_and_execute_cancellation_never_commits(self) -> None:
+        self.store.get()
+        connection = self.store._connection_for_use()
+
+        class CommitSpy:
+            def __init__(self, wrapped: sqlite3.Connection, expire: threading.Event, expire_after_update: bool) -> None:
+                self.wrapped = wrapped
+                self.expire = expire
+                self.expire_after_update = expire_after_update
+                self.commits = 0
+
+            def execute(self, *args: object) -> sqlite3.Cursor:
+                result = self.wrapped.execute(*args)  # type: ignore[arg-type]
+                if self.expire_after_update and args[0].startswith("UPDATE "):  # type: ignore[union-attr]
+                    self.expire.set()
+                return result
+
+            def commit(self) -> None:
+                self.commits += 1
+                self.wrapped.commit()
+
+            def rollback(self) -> None:
+                self.wrapped.rollback()
+
+        for phase in ("state", "update", "execute"):
+            with self.subTest(phase=phase):
+                expired = threading.Event()
+                cancellation = layout_store.MutationCancellation(lambda: not expired.is_set())
+                spy = CommitSpy(connection, expired, expire_after_update=phase == "execute")
+                original_connection_for_use = self.store._connection_for_use
+                original_read_state = self.store._read_state
+                self.store._connection_for_use = lambda: spy  # type: ignore[method-assign]
+
+                def update(state: dict[str, object]) -> tuple[str, tuple[object, ...]]:
+                    if phase == "update":
+                        expired.set()
+                    return "UPDATE layout_state SET revision = ?, positions_json = ? WHERE id = 1", (
+                        state["revision"] + 1,
+                        "[]",
+                    )
+
+                if phase == "state":
+                    def delayed_read_state(used_connection: sqlite3.Connection) -> dict[str, object]:
+                        state = original_read_state(used_connection)
+                        expired.set()
+                        return state
+
+                    self.store._read_state = delayed_read_state  # type: ignore[method-assign]
+
+                try:
+                    with self.assertRaises(layout_store.MutationCancelled):
+                        self.store._mutate(0, update, cancellation)
+                finally:
+                    self.store._connection_for_use = original_connection_for_use  # type: ignore[method-assign]
+                    self.store._read_state = original_read_state  # type: ignore[method-assign]
+
+                self.assertEqual(spy.commits, 0)
+                self.assertEqual(self.store.get()["revision"], 0)
+
+    def test_commit_admission_serializes_expiry_started_by_a_commit_hook(self) -> None:
+        self.store.get()
+        connection = self.store._connection_for_use()
+        case = self
+        cancellation = layout_store.MutationCancellation(lambda: True)
+        expiry_started = threading.Event()
+        expiry_finished = threading.Event()
+        expiry_threads: list[threading.Thread] = []
+
+        class CommitSpy:
+            def __init__(self, wrapped: sqlite3.Connection) -> None:
+                self.wrapped = wrapped
+                self.commits = 0
+
+            def execute(self, *args: object) -> sqlite3.Cursor:
+                return self.wrapped.execute(*args)  # type: ignore[arg-type]
+
+            def commit(self) -> None:
+                self.commits += 1
+
+                def expire() -> None:
+                    expiry_started.set()
+                    cancellation.cancel()
+                    expiry_finished.set()
+
+                expiry_thread = threading.Thread(target=expire)
+                expiry_threads.append(expiry_thread)
+                expiry_thread.start()
+                case.assertTrue(expiry_started.wait(timeout=1))
+                # Expiry has started from the commit hook but cannot become
+                # visible until the admitted durable commit releases the gate.
+                case.assertFalse(expiry_finished.wait(timeout=0.1))
+                self.wrapped.commit()
+
+            def rollback(self) -> None:
+                self.wrapped.rollback()
+
+        spy = CommitSpy(connection)
+        original_connection_for_use = self.store._connection_for_use
+        self.store._connection_for_use = lambda: spy  # type: ignore[method-assign]
+        try:
+            response = self.store.replace_positions(
+                0, [{"adva": "0102545678c0", "x": 0.5, "y": 0.5}], cancel_check=cancellation
+            )
+        finally:
+            self.store._connection_for_use = original_connection_for_use  # type: ignore[method-assign]
+
+        self.assertEqual((spy.commits, response["revision"]), (1, 1))
+        for expiry_thread in expiry_threads:
+            expiry_thread.join(timeout=1)
+            self.assertFalse(expiry_thread.is_alive())
+        self.assertTrue(expiry_finished.is_set())
+        self.assertEqual(self.store.get()["revision"], 1)
+
     def test_busy_corrupt_and_closed_store_are_unavailable_without_recovery(self) -> None:
         self.store.get()
         blocker = sqlite3.connect(self.store.database_path, isolation_level=None, timeout=0)

@@ -37,12 +37,23 @@ function bridgeFetch(health = gatewayHealth()) {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 describe('Gateway floorplan dashboard', () => {
   it('renders one Gateway, a focal floorplan, staged GTT nodes, and no visible ROOT vocabulary', async () => {
     stubFetch(bridgeFetch());
     render(<App pollIntervalMs={60_000} />);
     const ui = within(document.body);
     await ui.findByRole('heading', { name: 'Floorplan' });
+    const headings = ui.getAllByRole('heading');
+    expect(headings.indexOf(ui.getByRole('heading', { name: 'Event feed' })))
+      .toBeLessThan(headings.indexOf(ui.getByRole('heading', { name: 'Floorplan' })));
     expect(ui.getByRole('switch', { name: 'Turn Gateway on' })).not.toBeNull();
     expect(ui.getByText('Unpositioned nodes')).not.toBeNull();
     expect(ui.getAllByText('0102545678c1')).toHaveLength(2);
@@ -126,10 +137,189 @@ describe('Gateway floorplan dashboard', () => {
     expect(fetchMock.mock.calls.filter(([input]) => input === '/api/gtt')).toHaveLength(0);
   });
 
+  it('discards a changed-session old-cursor page and drains the replacement from zero', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const oldSession = '0123456789abcdef0123456789abcdef';
+    const nextSession = 'fedcba9876543210fedcba9876543210';
+    const eventTargets: string[] = [];
+    let healthPages = 0;
+    const recordsAt = (count: number, firstWearable: number) => Array.from(
+      { length: count },
+      (_, index) => eventRecord({
+        cursor: index + 1,
+        wearable: firstWearable + index,
+        packet: (index + 1).toString(16).padStart(6, '0'),
+        seq: index + 1,
+        received_at_ms: 0,
+      }),
+    );
+    const fetchMock = vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) {
+        eventTargets.push(input);
+        if (input.includes('after=0')) {
+          if (eventTargets.length === 1) {
+            return Promise.resolve(jsonResponse(200, eventsResponse(recordsAt(10, 7), false, oldSession)));
+          }
+          return Promise.resolve(jsonResponse(200, eventsResponse(recordsAt(5, 8), false, nextSession)));
+        }
+        return Promise.resolve(jsonResponse(200, eventsResponse(recordsAt(5, 99), false, nextSession)));
+      }
+      if (input === '/api/health') {
+        healthPages += 1;
+        return Promise.resolve(jsonResponse(200, healthResponse([], healthPages === 1 ? oldSession : nextSession)));
+      }
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    render(<App pollIntervalMs={1} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    const ui = within(document.body);
+    expect(eventTargets).toEqual([
+      '/api/events?after=0&limit=100',
+      '/api/events?after=10&limit=100',
+      '/api/events?after=0&limit=100',
+    ]);
+    expect(ui.getByRole('heading', { name: /Wearable 8/i })).not.toBeNull();
+    expect(ui.queryByRole('heading', { name: /Wearable 7/i })).toBeNull();
+    expect(ui.queryByRole('heading', { name: /Wearable 99/i })).toBeNull();
+  });
+
+  it('retries cursor zero when health adopts a new session before the old-cursor event request resolves', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const oldSession = '0123456789abcdef0123456789abcdef';
+    const nextSession = 'fedcba9876543210fedcba9876543210';
+    const delayedHealthB = deferred<Response>();
+    const delayedEventsB = deferred<Response>();
+    const eventTargets: string[] = [];
+    let zeroPages = 0;
+    let healthPages = 0;
+    const eventsAt = (count: number, firstWearable: number) => Array.from(
+      { length: count },
+      (_, index) => eventRecord({
+        cursor: index + 1,
+        wearable: firstWearable + index,
+        packet: (index + 1).toString(16).padStart(6, '0'),
+        seq: index + 1,
+        received_at_ms: 0,
+      }),
+    );
+    const fetchMock = vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) {
+        eventTargets.push(input);
+        if (input.includes('after=10')) return delayedEventsB.promise;
+        zeroPages += 1;
+        if (zeroPages === 1) {
+          return Promise.resolve(jsonResponse(200, eventsResponse(eventsAt(10, 7), false, oldSession)));
+        }
+        return Promise.resolve(jsonResponse(200, eventsResponse(eventsAt(5, 8), false, nextSession)));
+      }
+      if (input === '/api/health') {
+        healthPages += 1;
+        if (healthPages === 1) {
+          return Promise.resolve(jsonResponse(200, { ...healthResponse([], oldSession), current_cursor: 10 }));
+        }
+        return delayedHealthB.promise;
+      }
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    render(<App pollIntervalMs={1} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(eventTargets).toEqual(['/api/events?after=0&limit=100', '/api/events?after=10&limit=100']);
+
+    await act(async () => {
+      delayedHealthB.resolve(jsonResponse(200, { ...healthResponse([], nextSession), current_cursor: 5 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      delayedEventsB.resolve(jsonResponse(200, eventsResponse(eventsAt(5, 99), false, nextSession)));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(eventTargets).toEqual([
+      '/api/events?after=0&limit=100',
+      '/api/events?after=10&limit=100',
+      '/api/events?after=0&limit=100',
+    ]);
+    const ui = within(document.body);
+    expect(ui.getByRole('heading', { name: /Wearable 8/i })).not.toBeNull();
+    expect(ui.queryByRole('heading', { name: /Wearable 7/i })).toBeNull();
+    expect(ui.queryByRole('heading', { name: /Wearable 99/i })).toBeNull();
+  });
+
+  it('ignores abort-insensitive responses from a cleaned-up poll effect before they can adopt a session', async () => {
+    const oldSession = '0123456789abcdef0123456789abcdef';
+    const nextSession = 'fedcba9876543210fedcba9876543210';
+    const staleEvents = deferred<Response>();
+    const staleHealth = deferred<Response>();
+    const currentEvents = deferred<Response>();
+    const currentHealth = deferred<Response>();
+    let eventRequests = 0;
+    let healthRequests = 0;
+    const fetchMock = vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) {
+        eventRequests += 1;
+        return eventRequests === 1 ? staleEvents.promise : currentEvents.promise;
+      }
+      if (input === '/api/health') {
+        healthRequests += 1;
+        return healthRequests === 1 ? staleHealth.promise : currentHealth.promise;
+      }
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    const view = render(<App pollIntervalMs={60_000} />);
+    await waitFor(() => expect([eventRequests, healthRequests]).toEqual([1, 1]));
+    view.rerender(<App pollIntervalMs={60_001} />);
+    await waitFor(() => expect([eventRequests, healthRequests]).toEqual([2, 2]));
+
+    await act(async () => {
+      staleHealth.resolve(jsonResponse(200, gatewayHealth()));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const ui = within(document.body);
+    expect(ui.queryByRole('switch', { name: 'Turn Gateway on' })).toBeNull();
+
+    await act(async () => {
+      staleEvents.resolve(jsonResponse(200, eventsResponse([
+        eventRecord({ wearable: 7, packet: '000007', seq: 7 }),
+      ], false, oldSession)));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(ui.queryByRole('heading', { name: /Wearable 7/i })).toBeNull();
+
+    await act(async () => {
+      currentEvents.resolve(jsonResponse(200, eventsResponse([
+        eventRecord({ wearable: 8, packet: '000008', seq: 8 }),
+      ], false, nextSession)));
+      currentHealth.resolve(jsonResponse(200, healthResponse([
+        healthDevice(0, { root: rootStatus({ role: 'leaf' }) }),
+      ], nextSession)));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await ui.findByRole('switch', { name: 'Turn Gateway on' });
+    expect(ui.getByRole('heading', { name: /Wearable 8/i })).not.toBeNull();
+    expect(ui.queryByRole('heading', { name: /Wearable 7/i })).toBeNull();
+  });
+
   it('keeps responsive, touch-sized, and reduced-motion floorplan rules in the stylesheet', async () => {
     const styles = await readFile('src/styles.css', 'utf8');
     expect(styles).toContain('.floorplan-content');
     expect(styles).toContain('.floorplan-node');
+    expect(styles).toMatch(/\.floorplan-node-point \{[^}]*border-radius: 50%/);
+    expect(styles).toMatch(/\.floorplan-marker-point \{[^}]*rotate\(45deg\)/);
     expect(styles).toContain('width: 44px; height: 44px');
     expect(styles).toContain('@media (max-width: 900px)');
     expect(styles).toContain('@media (max-width: 620px)');
@@ -216,9 +406,9 @@ describe('Gateway floorplan dashboard', () => {
     vi.setSystemTime(new Date(0));
     const observers = ['0102545678c1', '0102545678c2', '0102545678c3', '0102545678c4'];
     const initialEvents = observers.slice(0, 3).map((observer, index) => eventRecord({
-      cursor: index + 1, observer, observer_rssi_dbm: -60, packet: '000007', seq: 7,
+      cursor: index + 1, observer, observer_rssi_dbm: -60, packet: '000007', seq: 7, received_at_ms: 0,
     }));
-    const lateEvent = eventRecord({ cursor: 4, observer: observers[3], observer_rssi_dbm: -40, packet: '000007', seq: 7 });
+    const lateEvent = eventRecord({ cursor: 4, observer: observers[3], observer_rssi_dbm: -40, packet: '000007', seq: 7, received_at_ms: 3_000 });
     const layout = layoutReady({ positions: observers.map((adva, index) => ({
       adva,
       x: index === 1 || index === 3 ? 1 : 0,
@@ -229,16 +419,16 @@ describe('Gateway floorplan dashboard', () => {
     stubFetch(vi.fn((input: string) => {
       if (input.startsWith('/api/events')) {
         if (input.includes('after=0')) return Promise.resolve(jsonResponse(200, {
-          schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 3, events: initialEvents,
+          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 3, events: initialEvents,
         }));
         if (lateEnabled && !lateDelivered) {
           lateDelivered = true;
           return Promise.resolve(jsonResponse(200, {
-            schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 4, events: [lateEvent],
+            schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 4, events: [lateEvent],
           }));
         }
         return Promise.resolve(jsonResponse(200, {
-          schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: lateDelivered ? 4 : 3, events: [],
+          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: lateDelivered ? 4 : 3, events: [],
         }));
       }
       if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
@@ -268,7 +458,7 @@ describe('Gateway floorplan dashboard', () => {
     vi.setSystemTime(new Date(0));
     const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
     const events = observers.map((observer, index) => eventRecord({
-      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7, received_at_ms: 0,
     }));
     const layout = layoutReady({ positions: [
       { adva: observers[0], x: 0, y: 0 },
@@ -291,7 +481,7 @@ describe('Gateway floorplan dashboard', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(ui.getAllByText('Collecting').length).toBeGreaterThan(0);
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_749); });
     expect(ui.getAllByText('Collecting').length).toBeGreaterThan(0);
     expect(ui.queryByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).toBeNull();
 
@@ -305,7 +495,7 @@ describe('Gateway floorplan dashboard', () => {
     const local = '1842de524add';
     const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
     const events = observers.map((observer, index) => eventRecord({
-      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7, received_at_ms: 0,
     }));
     const layout = layoutReady({ positions: [
       { adva: observers[0], x: 0, y: 0 },
@@ -354,7 +544,7 @@ describe('Gateway floorplan dashboard', () => {
     vi.setSystemTime(new Date(0));
     const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
     const events = observers.map((observer, index) => eventRecord({
-      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7, received_at_ms: 0,
     }));
     const mismatchedHealth = healthResponse([healthDevice(0, {
       root: rootStatus({ local: '1842de524add' }),
@@ -365,7 +555,7 @@ describe('Gateway floorplan dashboard', () => {
     })]);
     stubFetch(vi.fn((input: string) => {
       if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, {
-        schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 3, events: input.includes('after=0') ? events : [],
+        schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 3, events: input.includes('after=0') ? events : [],
       }));
       if (input === '/api/health') return Promise.resolve(jsonResponse(200, mismatchedHealth));
       if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ positions: [
@@ -394,12 +584,12 @@ describe('Gateway floorplan dashboard', () => {
       const packet = wearable.toString(16).padStart(6, '0');
       const evidenceCount = wearable === 11 ? 2 : 3;
       return observers.slice(0, evidenceCount).map((observer) => eventRecord({
-        cursor: cursor++, wearable, packet, seq: wearable, observer, observer_rssi_dbm: -55,
+        cursor: cursor++, wearable, packet, seq: wearable, observer, observer_rssi_dbm: -55, received_at_ms: 0,
       }));
     }).flat();
     stubFetch(vi.fn((input: string) => {
       if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, {
-        schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: records.length, events: input.includes('after=0') ? records : [],
+        schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: records.length, events: input.includes('after=0') ? records : [],
       }));
       if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
       if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ positions: [

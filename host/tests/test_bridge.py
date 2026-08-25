@@ -264,8 +264,10 @@ class ParserTests(unittest.TestCase):
         record = bridge.parse_firmware_line(EVENT_V2.rstrip())
         self.assertEqual(record["observer_rssi_dbm"], -37)
         ring = bridge.CursorRing()
-        self.assertEqual(ring.append(record)["observer_rssi_dbm"], -37)
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_000.123):
+            self.assertEqual(ring.append(record)["observer_rssi_dbm"], -37)
         self.assertEqual((ring.page(0, 1)["schema"], ring.page(0, 1)["events"][0]["observer_rssi_dbm"]), ("mind.api.v2", -37))
+        self.assertEqual(ring.page(0, 1)["events"][0]["received_at_ms"], 1_700_000_000_123)
         for invalid in (
             EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=37"),
             EVENT_V2.replace(b"observer_rssi_dbm=-37", b"observer_rssi_dbm=-0"),
@@ -294,6 +296,22 @@ class ParserTests(unittest.TestCase):
 
 
 class RingTests(unittest.TestCase):
+    def test_bridge_sessions_are_opaque_per_process_and_only_events_receive_host_timestamps(self) -> None:
+        state = bridge.Bridge(["test"])
+        other = bridge.Bridge(["other"])
+        self.addCleanup(state.stop)
+        self.addCleanup(other.stop)
+        self.assertRegex(state.session_id, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(state.session_id, other.session_id)
+
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_000.789):
+            state.devices[0].feed_bytes(EVENT + ROOT + COMMAND)
+        page = state.events_page(0, 100)
+        self.assertEqual(page["session_id"], state.session_id)
+        self.assertEqual(page["events"][0]["received_at_ms"], 1_700_000_000_789)
+        self.assertNotIn("received_at_ms", page["events"][1])
+        self.assertNotIn("received_at_ms", page["events"][2])
+
     def test_256_boundary_cursor_and_gap_semantics(self) -> None:
         ring = bridge.CursorRing()
         for value in range(257):
@@ -583,6 +601,20 @@ class GTTAssemblyTests(unittest.TestCase):
         assert_invalid(gtt_begin() + b"mind_gtt_entry_v1 " + b"x" * (bridge.MAX_LINE_BYTES + 1) + b"\n" + gtt_entry() + gtt_end())
         assert_invalid(gtt_begin() + gtt_end())
 
+    def test_nested_begin_revokes_a_prior_valid_roster(self) -> None:
+        state = self._state()
+        device = state.devices[0]
+        device.feed_bytes(gtt_begin(query=1) + gtt_entry(query=1) + gtt_end(query=1))
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+
+        device.feed_bytes(gtt_begin(query=2))
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+        device.feed_bytes(gtt_begin(query=3))
+        self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+        device.feed_bytes(gtt_entry(query=3) + gtt_end(query=3))
+        self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 2)
+
     def test_terminal_validation_rejects_cross_field_constraints(self) -> None:
         cases = [
             gtt_begin(entries=0, nondeparted=1) + gtt_end(entries=0, nondeparted=1),
@@ -643,6 +675,34 @@ class GTTAssemblyTests(unittest.TestCase):
         valid(7)
         device.feed_bytes(b"mind_gtt_entry_v1 malformed\n")
         self.assertIsNotNone(state.health()["devices"][0]["gtt"])
+
+    def test_invalid_active_refresh_revokes_prior_roster_until_a_later_complete_response(self) -> None:
+        invalid_entries = (
+            ("malformed", b"mind_gtt_entry_v1 malformed\n"),
+            ("overlong", b"mind_gtt_entry_v1 " + b"x" * (bridge.MAX_LINE_BYTES + 1) + b"\n"),
+            ("mismatched", gtt_entry(query=3)),
+            ("out_of_order", gtt_entry(index=1, query=2)),
+        )
+        for name, invalid in invalid_entries:
+            with self.subTest(name=name):
+                state = self._state()
+                device = state.devices[0]
+                device.feed_bytes(gtt_begin(query=1) + gtt_entry(query=1) + gtt_end(query=1))
+                self.assertEqual(state.health()["devices"][0]["gtt"]["generation"], 1)
+
+                # These trailing records would complete the newer response if
+                # the invalid record had not revoked its partial assembly.
+                device.feed_bytes(
+                    gtt_begin(query=2)
+                    + invalid
+                    + gtt_entry(query=2)
+                    + gtt_end(query=2)
+                )
+                self.assertIsNone(state.health()["devices"][0]["gtt"])
+
+                device.feed_bytes(gtt_begin(query=4) + gtt_entry(query=4) + gtt_end(query=4))
+                restored = state.health()["devices"][0]["gtt"]
+                self.assertEqual((restored["generation"], restored["query_at_ms"]), (2, 4))
 
 
 class AliasTransportTests(unittest.TestCase):
@@ -965,6 +1025,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual((response["schema"], response["events"][0]["observer_rssi_dbm"]), ("mind.api.v2", None))
+        self.assertRegex(response["session_id"], r"^[0-9a-f]{32}$")
+        self.assertIsInstance(response["events"][0]["received_at_ms"], int)
+        self.assertGreaterEqual(response["events"][0]["received_at_ms"], 0)
+        self.assertLessEqual(response["events"][0]["received_at_ms"], bridge.MAX_UNIX_EPOCH_MS)
+        self.assertNotIn("received_at_ms", response["events"][1])
+        self.assertNotIn("received_at_ms", response["events"][2])
         self.assertEqual([record["kind"] for record in response["events"]], ["event", "root", "command"])
         self.assertEqual(server.request("GET", "/api/events?after=1&limit=1")[0], 200)
         for query in ("after=-1", "after=1&after=2", "extra=1", "limit=0", "limit=101", "limit=one", "after=1.2"):
@@ -973,15 +1039,62 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertEqual(json.loads(body)["error"], "invalid_query")
 
+    def test_every_response_type_has_exact_anti_framing_headers(self) -> None:
+        state = bridge.Bridge([])
+        sha256 = "0" * 64
+        state.layout.open_image = lambda _sha256: bridge.layout_store.OpenImage(  # type: ignore[method-assign]
+            b"floorplan", "image/png", sha256
+        )
+        server = ServerHarness(state, self.assets)
+        self.servers.append(server)
+
+        for name, path, expected_status in (
+            ("api", "/api/health", 200),
+            ("error", "/api/events?limit=0", 400),
+            ("static", "/", 200),
+            ("floorplan", f"/api/floorplan/{sha256}", 200),
+        ):
+            with self.subTest(name=name):
+                status, headers, _ = server.request("GET", path)
+                self.assertEqual(status, expected_status)
+                self.assertEqual(
+                    (
+                        headers["Content-Security-Policy"],
+                        headers["X-Frame-Options"],
+                        headers["Connection"],
+                    ),
+                    ("frame-ancestors 'none'", "DENY", "close"),
+                )
+
+        status, headers, _ = server.request("GET", f"/api/floorplan/{sha256}")
+        self.assertEqual(
+            (status, headers["Cache-Control"], headers["X-Content-Type-Options"]),
+            (200, "private, max-age=31536000, immutable", "nosniff"),
+        )
+
+    def test_event_receipt_timestamp_is_fixed_at_host_append_not_delayed_http_delivery(self) -> None:
+        state = bridge.Bridge(["test"])
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_000.250):
+            state.devices[0].feed_bytes(EVENT)
+        server = ServerHarness(state, self.assets)
+        self.servers.append(server)
+
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_005.750):
+            status, _, body = server.request("GET", "/api/events?after=0&limit=100")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["events"][0]["received_at_ms"], 1_700_000_000_250)
+
     def test_empty_health_keeps_explicit_initial_cursor_pair(self) -> None:
         server = ServerHarness(bridge.Bridge([]), self.assets)
         self.servers.append(server)
         status, _, body = server.request("GET", "/api/health")
         self.assertEqual(status, 200)
+        response = json.loads(body)
         self.assertEqual(
-            json.loads(body),
+            {key: value for key, value in response.items() if key != "session_id"},
             {"schema": "mind.health.v2", "oldest_cursor": 1, "current_cursor": 0, "devices": []},
         )
+        self.assertEqual(response["session_id"], server.state.session_id)
 
     def test_root_post_error_matrix(self) -> None:
         state = bridge.Bridge(["/does/not/exist"])
@@ -1273,7 +1386,12 @@ class HTTPTests(unittest.TestCase):
                 clients.append(client)
             self.assertTrue(eventually(lambda: server.server.active_request_count() == bridge.HTTP_WORKER_CAPACITY))
             started = time.monotonic()
-            self.assertEqual(server.request("GET", "/api/health")[0], 503)
+            status, headers, _ = server.request("GET", "/api/health")
+            self.assertEqual(status, 503)
+            self.assertEqual(
+                (headers["Content-Security-Policy"], headers["X-Frame-Options"], headers["Connection"]),
+                ("frame-ancestors 'none'", "DENY", "close"),
+            )
             self.assertLess(time.monotonic() - started, 0.8)
             self.assertTrue(eventually(lambda: server.server.active_request_count() == 0, timeout=1.0))
             self.assertEqual(server.request("GET", "/api/health")[0], 200)

@@ -65,6 +65,9 @@ export default function App({
   const [confirmedLayout, setConfirmedLayout] = useState<LayoutReadyResponse | null>(null);
   const eventCursor = useRef(0);
   const eventEpoch = useRef(0);
+  const bridgeSessionId = useRef<string | null>(null);
+  const bridgeSessionGeneration = useRef(0);
+  const pollEffectRun = useRef(0);
   const rootRequestId = useRef(0);
   const rootRequests = useRef(new Map<number, ActiveRootRequest>());
   const collectionDeadlineTimer = useRef<number | null>(null);
@@ -96,15 +99,47 @@ export default function App({
     const controller = new AbortController();
     let timer: number | undefined;
     let stopped = false;
+    const effectRun = ++pollEffectRun.current;
+    const isCurrentEffect = () => !stopped && pollEffectRun.current === effectRun;
+
+    type SessionDisposition = 'current' | 'changed' | 'stale';
+
+    const observeSession = (
+      responseSessionId: string,
+      requestedSessionId: string | null,
+      requestedGeneration: number,
+    ): SessionDisposition => {
+      if (!isCurrentEffect()) return 'stale';
+      const currentSessionId = bridgeSessionId.current;
+      if (requestedGeneration !== bridgeSessionGeneration.current) {
+        return responseSessionId === currentSessionId ? 'current' : 'stale';
+      }
+      if (currentSessionId === responseSessionId) return 'current';
+      if (currentSessionId !== null && requestedSessionId !== currentSessionId) return 'stale';
+
+      bridgeSessionId.current = responseSessionId;
+      bridgeSessionGeneration.current += 1;
+      eventCursor.current = 0;
+      eventEpoch.current += 1;
+      dispatch({ type: 'sessionReset', sessionId: responseSessionId });
+      return 'changed';
+    };
 
     const drainEvents = async () => {
       let requestedAfter = eventCursor.current;
-      while (!stopped) {
-        const page = await fetchEvents(requestedAfter, controller.signal);
-        if (page.current_cursor < requestedAfter) {
-          eventCursor.current = 0;
-          eventEpoch.current += 1;
-          dispatch({ type: 'epochReset' });
+      while (isCurrentEffect()) {
+        const requestedSessionId = bridgeSessionId.current;
+        const requestedGeneration = bridgeSessionGeneration.current;
+        const page = await fetchEvents(
+          requestedAfter,
+          controller.signal,
+          requestedSessionId ?? undefined,
+        );
+        if (!isCurrentEffect()) return;
+        const pageSessionChanged = page.session_id !== requestedSessionId;
+        const session = observeSession(page.session_id, requestedSessionId, requestedGeneration);
+        if (session === 'stale') return;
+        if (pageSessionChanged && requestedAfter !== 0) {
           requestedAfter = 0;
           continue;
         }
@@ -123,17 +158,32 @@ export default function App({
     };
 
     const poll = async () => {
-      const requestEpoch = eventEpoch.current;
+      const eventsRequestGeneration = bridgeSessionGeneration.current;
       const events = drainEvents().catch((error: unknown) => {
-        if (!controller.signal.aborted) dispatch({ type: 'requestFailed', source: 'events', message: messageFor(error) });
+        if (isCurrentEffect() && eventsRequestGeneration === bridgeSessionGeneration.current) {
+          dispatch({ type: 'requestFailed', source: 'events', message: messageFor(error) });
+        }
       });
+      const healthRequestedSessionId = bridgeSessionId.current;
+      const healthRequestedGeneration = bridgeSessionGeneration.current;
       const health = fetchHealth(controller.signal)
-        .then((response) => dispatch({ type: 'healthReceived', health: response, receivedAt: Date.now(), epoch: requestEpoch }))
+        .then((response) => {
+          if (!isCurrentEffect()) return;
+          const session = observeSession(
+            response.session_id,
+            healthRequestedSessionId,
+            healthRequestedGeneration,
+          );
+          if (session === 'stale') return;
+          dispatch({ type: 'healthReceived', health: response, receivedAt: Date.now(), epoch: eventEpoch.current });
+        })
         .catch((error: unknown) => {
-          if (!controller.signal.aborted) dispatch({ type: 'requestFailed', source: 'health', message: messageFor(error) });
-        });
+          if (isCurrentEffect() && healthRequestedGeneration === bridgeSessionGeneration.current) {
+            dispatch({ type: 'requestFailed', source: 'health', message: messageFor(error) });
+          }
+      });
       await Promise.all([events, health]);
-      if (!stopped) timer = window.setTimeout(poll, pollIntervalMs);
+      if (isCurrentEffect()) timer = window.setTimeout(poll, pollIntervalMs);
     };
 
     void poll();
@@ -254,7 +304,7 @@ export default function App({
     <>
       <Header status={bridgeStatus(state, now)} />
       <main>
-        <div className="primary-column">
+        <div className="gateway-column">
           {state.lastGap && (
             <p className="notice warning gap-notice" role="alert">
               Event history gap detected. The bridge resumed from cursor {state.lastGap.oldest_cursor} and retained recovered records through {state.lastGap.current_cursor}.
@@ -273,23 +323,23 @@ export default function App({
             healthAuthoritative={healthAuthoritative}
             onSetRoot={requestRoot}
           />
-          <FloorplanPanel
-            devices={devices}
-            healthEpoch={state.healthEpoch}
-            currentEpoch={state.epoch}
-            healthCurrentCursor={state.health?.current_cursor ?? null}
-            rootRecords={state.rootRecords}
-            now={now}
-            healthAuthoritative={healthAuthoritative}
-            incidentViews={localizationViews.slice(0, 10)}
-            onLayoutChange={handleLayoutChange}
-          />
         </div>
         <IncidentFeed
           views={localizationViews}
           conflictCount={state.conflictCount}
           loading={state.eventsRequest.phase === 'loading'}
           error={state.eventsRequest.error}
+        />
+        <FloorplanPanel
+          devices={devices}
+          healthEpoch={state.healthEpoch}
+          currentEpoch={state.epoch}
+          healthCurrentCursor={state.health?.current_cursor ?? null}
+          rootRecords={state.rootRecords}
+          now={now}
+          healthAuthoritative={healthAuthoritative}
+          incidentViews={localizationViews.slice(0, 10)}
+          onLayoutChange={handleLayoutChange}
         />
       </main>
     </>

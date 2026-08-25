@@ -67,6 +67,7 @@ export interface PendingRootRequest {
 }
 
 export interface DashboardState {
+  sessionId: string | null;
   epoch: number;
   eventCursor: number;
   eventsRequest: RequestState;
@@ -91,6 +92,7 @@ export interface DashboardState {
 }
 
 export const initialState: DashboardState = {
+  sessionId: null,
   epoch: 0,
   eventCursor: 0,
   eventsRequest: { phase: 'loading' },
@@ -116,6 +118,7 @@ export const initialState: DashboardState = {
 
 export type Action =
   | { type: 'eventsReceived'; page: EventsResponse; receivedAt: number; epoch: number }
+  | { type: 'sessionReset'; sessionId: string }
   | { type: 'epochReset' }
   | { type: 'healthReceived'; health: HealthResponse; receivedAt: number; epoch: number }
   | { type: 'requestFailed'; source: 'events' | 'health'; message: string }
@@ -220,6 +223,34 @@ function activeFeed(
     if (!nextKeys.includes(existing)) delete nextLogicalEvents[existing];
   }
   return { feedKeys: nextKeys, logicalEvents: nextLogicalEvents };
+}
+
+function resetSessionState(state: DashboardState, sessionId: string | null, announcement: string): DashboardState {
+  return {
+    ...state,
+    sessionId,
+    epoch: state.epoch + 1,
+    eventCursor: 0,
+    eventsRequest: { phase: 'loading' },
+    healthRequest: { phase: 'loading' },
+    health: null,
+    healthEpoch: null,
+    logicalEvents: {},
+    tombstones: {},
+    tombstoneKeys: [],
+    processedCursors: [],
+    feedKeys: [],
+    wearables: {},
+    rootRecords: {},
+    commandRecords: {},
+    pendingRoot: {},
+    rootErrors: {},
+    rootErrorBaselines: {},
+    announcement,
+    conflictCount: 0,
+    gapCount: 0,
+    lastGap: null,
+  };
 }
 
 function advanceCursor(current: number, page: EventsResponse): number {
@@ -365,7 +396,7 @@ function applyEvent(
 
   if (!activeLogical) {
     if (!tombstone) {
-      const firstReceivedAt = receivedAt;
+      const firstReceivedAt = event.received_at_ms;
       const collectUntil = firstReceivedAt + COLLECTION_WINDOW_MS;
       const logical: LogicalEvent = {
         key,
@@ -408,11 +439,20 @@ function applyEvent(
   const baselineFingerprint = tombstone?.fingerprint ?? activeLogical.fingerprint;
   const conflict = baselineFingerprint !== fingerprint;
   const nextConflict = (tombstone?.conflict ?? activeLogical.conflict) || conflict;
-  const logical: LogicalEvent = { ...addEvidence(activeLogical, event), conflict: nextConflict };
+  const logical: LogicalEvent = {
+    ...addEvidence(activeLogical, event),
+    conflict: nextConflict,
+  };
   const active = activeFeed(state.feedKeys, state.logicalEvents, key, logical);
   return {
     ...active,
-    tombstones: tombstone ? { ...state.tombstones, [key]: { ...tombstone, conflict: nextConflict } } : state.tombstones,
+    tombstones: tombstone ? {
+      ...state.tombstones,
+      [key]: {
+        ...tombstone,
+        conflict: nextConflict,
+      },
+    } : state.tombstones,
     tombstoneKeys: state.tombstoneKeys,
     wearables,
     conflictCount: conflict ? saturatingIncrement(state.conflictCount) : state.conflictCount,
@@ -423,17 +463,19 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
   switch (action.type) {
     case 'eventsReceived': {
       if (action.epoch !== state.epoch) return state;
-      if (action.page.events.length > 0 && action.page.events.every((record) => state.processedCursors.includes(record.cursor))) {
-        return state;
+      if (state.sessionId !== null && action.page.session_id !== state.sessionId) return state;
+      const sessionState = state.sessionId === null ? { ...state, sessionId: action.page.session_id } : state;
+      if (action.page.events.length > 0 && action.page.events.every((record) => sessionState.processedCursors.includes(record.cursor))) {
+        return sessionState;
       }
       let next: DashboardState = {
-        ...state,
-        eventCursor: advanceCursor(state.eventCursor, action.page),
+        ...sessionState,
+        eventCursor: advanceCursor(sessionState.eventCursor, action.page),
         eventsRequest: { phase: 'ready', lastSuccessAt: action.receivedAt },
-        gapCount: action.page.gap ? saturatingIncrement(state.gapCount) : state.gapCount,
+        gapCount: action.page.gap ? saturatingIncrement(sessionState.gapCount) : sessionState.gapCount,
         lastGap: action.page.gap
           ? { oldest_cursor: action.page.oldest_cursor, current_cursor: action.page.current_cursor }
-          : state.lastGap,
+          : sessionState.lastGap,
       };
       let rootResolutionAnnouncement: string | undefined;
       const records = [...action.page.events].sort((left, right) => left.cursor - right.cursor);
@@ -477,41 +519,42 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
       }
       return rootResolutionAnnouncement ? { ...next, announcement: rootResolutionAnnouncement } : next;
     }
+    case 'sessionReset':
+      return state.sessionId === action.sessionId
+        ? state
+        : resetSessionState(
+          state,
+          action.sessionId,
+          'Bridge session changed; Gateway confirmations and current records are refreshing.',
+        );
     case 'epochReset':
-      return {
-        ...state,
-        epoch: state.epoch + 1,
-        eventCursor: 0,
-        processedCursors: [],
-        rootRecords: {},
-        commandRecords: {},
-        pendingRoot: {},
-        lastGap: null,
-        rootErrors: {},
-        rootErrorBaselines: {},
-        announcement: 'Bridge cursor restarted; Gateway confirmations were reset and current records are refreshing.',
-      };
+      return resetSessionState(
+        state,
+        null,
+        'Bridge cursor restarted; Gateway confirmations and current records are refreshing.',
+      );
     case 'healthReceived': {
-      const resolution = healthResolvesPending(state, action.health, action.epoch);
-      let rootErrors = state.rootErrors;
-      let rootErrorBaselines = state.rootErrorBaselines;
-      if (action.epoch === state.epoch) {
-        for (const device of action.health.devices) {
-          if (device.device !== device.owner_device || !device.connected || !device.root) continue;
-          const superseded = clearSupersededRootError(rootErrors, rootErrorBaselines, device.device, device.root.cursor);
-          rootErrors = superseded.rootErrors;
-          rootErrorBaselines = superseded.rootErrorBaselines;
-        }
+      if (action.epoch !== state.epoch) return state;
+      if (state.sessionId !== null && action.health.session_id !== state.sessionId) return state;
+      const sessionState = state.sessionId === null ? { ...state, sessionId: action.health.session_id } : state;
+      const resolution = healthResolvesPending(sessionState, action.health, action.epoch);
+      let rootErrors = sessionState.rootErrors;
+      let rootErrorBaselines = sessionState.rootErrorBaselines;
+      for (const device of action.health.devices) {
+        if (device.device !== device.owner_device || !device.connected || !device.root) continue;
+        const superseded = clearSupersededRootError(rootErrors, rootErrorBaselines, device.device, device.root.cursor);
+        rootErrors = superseded.rootErrors;
+        rootErrorBaselines = superseded.rootErrorBaselines;
       }
       return {
-        ...state,
+        ...sessionState,
         health: action.health,
         healthEpoch: action.epoch,
         healthRequest: { phase: 'ready', lastSuccessAt: action.receivedAt },
         pendingRoot: resolution.pendingRoot,
         rootErrors,
         rootErrorBaselines,
-        announcement: resolution.announcement ?? state.announcement,
+        announcement: resolution.announcement ?? sessionState.announcement,
       };
     }
     case 'requestFailed': {

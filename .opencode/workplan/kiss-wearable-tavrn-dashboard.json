@@ -214,8 +214,8 @@
     },
     {
       "id": "phase-system-validation",
-      "title": "Slice F — complete regression and competition hardware proof",
-      "status": "in_progress",
+      "title": "Slice F — completed software history; hardware work superseded",
+      "status": "completed",
       "steps": [
         {
           "id": "wave-f1-software-gates",
@@ -227,11 +227,11 @@
         },
         {
           "id": "wave-f2-hardware-proof",
-          "title": "Wave F2 — execute competition hardware proof and final handoff",
-          "target": "one wearable, at least three backbone nodes, mandatory two concurrent root UART captures",
-          "action": "Rerun the mandatory rootless, one-root, and two-root/two-UART hardware flows using current committed firmware and dashboard. Persist redacted logs, manifests, API output, screenshots, checksums, and exact artifact provenance under microbit/hardware-results before marking complete.",
-          "validation": "Persistent repository evidence—not tmpfs paths—proves rootless/one/two hardware, typed campaigns/UI/fanout/dashboard dedupe, withdrawal, and no terminal faults. Checksums and reproduction instructions pass after reboot.",
-          "status": "in_progress"
+          "title": "Wave F2 — hardware proof superseded; do not execute",
+          "target": "historical hardware acceptance only",
+          "action": "Cancelled by the dashboard-PoC scope decision. Do not perform firmware changes, firmware builds, flashing, reset, reboot, or hardware evidence collection under this plan.",
+          "validation": "No execution is required. The completed firmware integration and G glyph remain committed history; current work is limited to host/dashboard PoC verification.",
+          "status": "cancelled"
         },
         {
           "id": "wave-f2a-layer7-diagnosis",
@@ -251,11 +251,11 @@
         },
         {
           "id": "wave-f2c-remediation-validation",
-          "title": "Wave F2c — rerun software gates and competition hardware proof",
-          "target": "affected firmware gates plus pyOCD UID-targeted hardware topology",
-          "action": "Rerun current software gates and the full UID-targeted hardware acceptance after the GTT/dashboard and root-control changes, then persist the evidence bundle. Historical tmpfs observations may guide the run but cannot close acceptance.",
-          "validation": "All current software gates pass; persistent hardware evidence satisfies every competition acceptance item and remains readable/checksummed after reboot.",
-          "status": "in_progress"
+          "title": "Wave F2c — remediation validation superseded; do not execute",
+          "target": "historical firmware and hardware validation only",
+          "action": "Cancelled by the dashboard-PoC scope decision. Do not reopen D2, firmware profiles, pyOCD topology, or hardware acceptance from this plan.",
+          "validation": "No execution is required; dashboard completion is owned by mind-gateway-floorplan-localization.",
+          "status": "cancelled"
         }
       ]
     }
@@ -872,10 +872,10 @@
     },
     {
       "severity": "major",
-      "title": "Wearable hardware acceptance evidence was lost with tmpfs",
-      "detail": "The workplan previously cited only /tmp captures, builds, API output, and screenshots. Those paths were lost after reboot, so historical observations are not independently auditable and no longer close F2 hardware acceptance. Rerun and persist a checksum-bound bundle under microbit/hardware-results.",
+      "title": "Historical wearable hardware evidence was lost with tmpfs",
+      "detail": "The old tmpfs evidence remains non-auditable historical context, but F2/F2c are now cancelled by the dashboard-PoC scope decision and no rerun is required in this workplan.",
       "source": "PR-level code review before merge",
-      "status": "open"
+      "status": "resolved"
     }
   ],
   "notes": [
@@ -953,9 +953,10 @@
     "Remaining reason-11 terminal latches carry compact site subreasons in existing router padding and print as `routed router_fault reason=<n> subreason=<n>`. Fixed state remains unchanged. Phase 3/4/5/6, application, full profile, and paired D2 pass; D2 report `/tmp/opencode/d2-terminal-recovery.report`, artifacts `/tmp/tron-d2-application-incremental.jM8aPg`, replacement builds `/tmp/opencode/f6-terminal-recovery-builds`.",
     "The existing `tron-indefinite-stress` tmux session intentionally continues on the prior faulted firmware to preserve long-run evidence; replacement firmware has not been flashed.",
     "Superseding prior session note: the old faulted indefinite run stopped cleanly after 18,101.962 seconds and remains archived under `/tmp/opencode/f5-observe-only-stress/indefinite`. All five nodes were flashed with F6 terminal-recovery firmware, node 1 reached roots=1/acked=4, and a clean `tron-indefinite-stress` session started at 2026-08-16T05:01:41.799Z with evidence under `/tmp/opencode/f5-observe-only-stress/indefinite-f6`. Its initial five-node sweep has zero failures and all nodes report announced=4/acked=4.",
-    "After workstation reboot, all historical F2/F3/F5/F6 `/tmp` artifacts and live sessions were absent. Source and committed observer benchmark evidence survived, but wearable root/fanout/dashboard hardware acceptance must be rerun on current code and persisted before this workplan returns to completed."
+    "After workstation reboot, all historical F2/F3/F5/F6 `/tmp` artifacts and live sessions were absent. Source and committed observer benchmark evidence survived, but wearable root/fanout/dashboard hardware acceptance must be rerun on current code and persisted before this workplan returns to completed.",
+    "User scope decision: the KISS firmware integration is historical completed work. No further firmware work, D2 reopening, firmware build/profile work, flashing, reset, reboot, or hardware evidence is part of finishing the dashboard PoC. The already-completed 5x5 G gateway glyph remains in scope/history."
   ],
-  "status": "in_progress",
+  "status": "completed",
   "createdAt": "2026-08-13T20:28:20.424Z",
-  "updatedAt": "2026-08-24T06:35:09.973Z"
+  "updatedAt": "2026-08-25T15:20:22.884Z"
 }

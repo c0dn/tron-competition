@@ -395,11 +395,16 @@ The structured workplan defines eight waves across six slices:
 | D | D2 | one measured resource-closure writer | complete resource evidence |
 | E | E1 | serial API; dashboard | combined host wave |
 | F | F1 | firmware gates/fixes; host gates/fixes | complete software evidence |
-| F | F2 | hardware execution/evidence | final hardware wave and complete diff |
+| F | F2 | superseded hardware execution/evidence | cancelled; do not execute |
 
 Valid checker findings are fixed within the same wave and receive only the necessary consolidated recheck. There is no checker after each writer and no redundant slice-level checker after all constituent waves already passed.
 
-## Required validation gates
+## Historical validation record
+
+The gates below record completed firmware integration history. They are not
+active dashboard-PoC work. Do not reopen firmware, D2, build profiles, flashing,
+reset, reboot, or hardware evidence while finishing the dashboard. The completed
+5x5 G gateway glyph remains part of the implementation history.
 
 1. Frozen radio/scheduler hashes match `49e2ee8`; submodule URL/gitlink match the reconciliation contract.
 2. Selected routed production sources exclude old flood-node MIND relay/dedupe/pingpong and benchmark sources.
@@ -413,7 +418,10 @@ Valid checker findings are fixed within the same wave and receive only the neces
 10. Bridge parser/API cursor/reconnect/write tests and dashboard state/build/rendered accessibility checks pass with 16 mocked serial/root devices as well as the normal one/two-device flow.
 11. `git diff --check` and complete source/config review pass. Any unrelated pre-existing red gate is explicitly named.
 
-## Competition hardware acceptance
+## Historical competition hardware acceptance — superseded
+
+This section is retained only as historical context. It does not authorize or
+require current execution.
 
 Use one test-injector wearable, at least three backbone nodes, and **two concurrent root UART captures** for the recommended/mandatory competition hardware pass. Separate Layer-7 host/application/resource tests prove the independent 16-entry application registry, fanout, serial indexing, and dashboard behavior; this does not alter or claim a matching TAVRN topology capacity:
 
@@ -430,7 +438,7 @@ Use one test-injector wearable, at least three backbone nodes, and **two concurr
 
 This evidence does not claim RF coverage, RX availability under saturation, exactly-once delivery, reboot durability, security, or production readiness.
 
-## F2 hardware-remediation addendum
+## Historical F2 hardware-remediation addendum — superseded
 
 Hardware execution found three blockers after F1: later UART commands were not promoted after a successful `ROOT ON`, only heartbeat traffic was available for two-root proof, and the routed wrapper eventually reported phase-5 `AODV_STATUS_INVALID` without a terminal router fault. User approval is limited to Layer-7 diagnosis and remediation; all frozen TAVRN/protocol files remain unchanged.
 
@@ -439,13 +447,12 @@ Hardware execution found three blockers after F1: later UART commands were not p
 3. **Exact phase-5 diagnosis:** in application-owned `main.c`, latch one static first-invalid snapshot with a stable branch enum, validity bits, raw router status, FULL binding/repair statuses, mailbox take/publish status, expiry-sweep enqueue outcome/queue occupancy, and existing link-step/link-event fields. Print it once outside the mesh callback; do not add recurring phase-10 output or a mesh-stack local aggregate. Any new static symbol/formatter must enter target-ABI/ELF component accounting and rerun D2. If evidence identifies inherited expiry telemetry, FULL mailbox, maintenance/repair binding, or raw router behavior, stop and escalate; Layer-7 approval does not authorize changing those semantics.
 4. **Validation order:** seal baseline; focused UART lifecycle and injector wiring tests; default/injector builds and exact default equivalence; source-freeze; affected application/profile/resource/D2 gates; diagnostic hardware classification; then final UID-targeted pyOCD hardware with one injector wearable and exactly three active backbone radios. Retain every acceptance item at lines 420-429, wait for root-state typed ACK readiness before injector reset, and monitor all nodes continuously for at least 180 seconds after root stabilization, covering the previously observed 153-second failure window.
 
-## Historical F2 observations — unpreserved, rerun required
+## Historical F2 observations — unpreserved and superseded
 
 The paths below recorded useful observations at the time, but they were stored
-only on tmpfs and were lost after a workstation reboot. They are retained here
-as historical provenance, not as independently auditable acceptance evidence.
-Current hardware acceptance remains open until the same flows are rerun and a
-redacted, checksum-bound bundle is committed under `microbit/hardware-results/`.
+only on tmpfs and were lost after a workstation reboot. They are retained as
+historical context only. F2/F2c are cancelled; no rerun or hardware-evidence
+bundle is required while completing the dashboard PoC.
 
 - Request-driven quiet logger dispatch removed the deterministic scheduler-yield failure without modifying frozen TAVRN. Quiet production now drains but does not format valid heartbeat MIND records; command, root, incident, and terminal-fault evidence remains visible.
 - Application, scheduler, telemetry, full build/profile+D2, wearable/injector, host, and dashboard gates pass. The final D2 report is `/tmp/opencode/d2-heartbeat-filter.report`; paired artifacts are `/tmp/tron-d2-application-incremental.U7iQ10`.
@@ -474,4 +481,7 @@ The nRF52833 has one radio. Heavy TAVRN/application TX can reduce wearable RX op
 
 ## Handoff
 
-Software implementation and current host/resource gates are complete. Competition hardware validation and the five-node stress extension are not closed because their cited tmpfs evidence was lost. Rerun rootless, one-root, two-root, withdrawal, injector, fanout, dashboard-dedupe, and sustained fault checks on the current commits; persist logs, manifests, API output, screenshots, hashes, and reproduction instructions before marking Slice F or this workplan completed.
+Firmware integration is completed historical work. F2/F2c are cancelled by the
+dashboard-PoC scope decision: do not rerun firmware, D2, hardware, or stress
+validation. Current completion belongs to the host/dashboard-only Slice E in
+`mind-gateway-floorplan-localization`.

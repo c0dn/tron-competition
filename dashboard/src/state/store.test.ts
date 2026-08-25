@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventRecord, eventsResponse, healthDevice, healthResponse, rootStatus } from '../test/fixtures';
+import { eventRecord, eventsResponse, healthDevice, healthResponse, rootStatus, SESSION_ID } from '../test/fixtures';
 import {
   EVIDENCE_LIMIT,
   FEED_LIMIT,
@@ -53,6 +53,23 @@ describe('dashboard event store', () => {
     const state = receive([report], 10_000)();
 
     expect(receive([report], 11_000)(state)).toBe(state);
+  });
+
+  it('anchors collection to first host receipt and never moves it for later clock changes', () => {
+    const first = eventRecord({ cursor: 1, received_at_ms: 500 });
+    const later = eventRecord({ cursor: 2, received_at_ms: 9_000, observer: 'dc4b0a0603f9' });
+    const rollback = eventRecord({ cursor: 3, received_at_ms: 400, observer: 'dc4b0a0603fa' });
+    let state = receive([first], 10_000)();
+    expect(state.logicalEvents['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
+    expect(state.tombstones['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
+
+    state = receive([later], 20_000)(state);
+    expect(state.logicalEvents['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
+    expect(state.tombstones['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
+
+    state = receive([rollback], 30_000)(state);
+    expect(state.logicalEvents['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
+    expect(state.tombstones['7:00002a']).toMatchObject({ firstReceivedAt: 500, collectUntil: 2_500 });
   });
 
   it('aggregates samples by observer and deterministically selects canonical representatives', () => {
@@ -151,8 +168,8 @@ describe('dashboard event store', () => {
     state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 2, wearable: 1, packet: '000001', seq: 1, confidence: 76 })], 20_000)(state);
     expect(state.logicalEvents['1:000001']).toMatchObject({
       conflict: false,
-      firstReceivedAt: 20_000,
-      collectUntil: 22_000,
+      firstReceivedAt: 10_000,
+      collectUntil: 12_000,
     });
   });
 
@@ -178,8 +195,8 @@ describe('dashboard event store', () => {
     expect(canonicalTombstone).toMatchObject({
       fingerprint: '1:3:75:2400:86:1',
       conflict: false,
-      firstReceivedAt: 100,
-      collectUntil: 2_100,
+      firstReceivedAt: 10_000,
+      collectUntil: 12_000,
     });
 
     state = receive([eventRecord({ cursor: FEED_LIMIT + 2, wearable: 7, packet: '000001', seq: 1 })], 5_000)(state);
@@ -229,14 +246,14 @@ describe('dashboard event store', () => {
     state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 2, wearable: 8, packet: 'fff001', seq: 255 })], 500)(state);
     state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 3, wearable: 8, packet: 'fff002', seq: 2 })], 600)(state);
     expect(state.tombstones['7:000001']).toBeUndefined();
-    expect(state.logicalEvents['7:000001']).toMatchObject({ firstReceivedAt: 100, collectUntil: 2_100 });
+    expect(state.logicalEvents['7:000001']).toMatchObject({ firstReceivedAt: 10_000, collectUntil: 12_000 });
 
     state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 4, wearable: 7, packet: '000001', seq: 1, confidence: 76 })], 5_000)(state);
     expect(state.tombstones['7:000001']).toBeUndefined();
     expect(state.logicalEvents['7:000001']).toMatchObject({
       conflict: true,
-      firstReceivedAt: 100,
-      collectUntil: 2_100,
+      firstReceivedAt: 10_000,
+      collectUntil: 12_000,
       evidence: [expect.objectContaining({ sampleCount: 4 })],
     });
   });
@@ -292,7 +309,7 @@ describe('dashboard event store', () => {
     expect(state.feedKeys).toEqual(['7:00002a']);
   });
 
-  it('clears only epoch-local records and lets lower post-reset cursors update wearable state', () => {
+  it('clears all process-session records before accepting lower cursors from the next bridge session', () => {
     const root = {
       cursor: 5,
       kind: 'root' as const,
@@ -323,21 +340,23 @@ describe('dashboard event store', () => {
     expect(state.rootRecords).toEqual({});
     expect(state.commandRecords).toEqual({});
     expect(state.processedCursors).toEqual([]);
-    expect(state.logicalEvents['7:00002a']).toBeDefined();
+    expect(state.logicalEvents).toEqual({});
+    expect(state.tombstones).toEqual({});
+    expect(state.health).toBeNull();
 
     state = receive([eventRecord({ cursor: 1, wearable: 8, packet: '000001', seq: 1 })], 11_000, 1)(state);
     expect(state.wearables[8]).toMatchObject({ epoch: 1, record: { cursor: 1 } });
     state = receive([eventRecord({ cursor: 2, packet: '00002a', confidence: 76 })], 12_000, 1)(state);
     expect(state.wearables[7]).toMatchObject({ epoch: 1, record: { cursor: 2 } });
     expect(state.logicalEvents['7:00002a']).toMatchObject({
-      conflict: true,
+      conflict: false,
       firstReceivedAt: 10_000,
       collectUntil: 12_000,
-      evidence: [expect.objectContaining({ sampleCount: 2 })],
+      evidence: [expect.objectContaining({ sampleCount: 1 })],
     });
   });
 
-  it('tags health snapshots by epoch so stale health cannot override a new-epoch root', () => {
+  it('rejects stale health from a prior session instead of restoring its authority', () => {
     let state = reducer(initialState, {
       type: 'healthReceived',
       health: healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]),
@@ -345,7 +364,7 @@ describe('dashboard event store', () => {
       epoch: 0,
     });
     state = reducer(state, { type: 'epochReset' });
-    expect(state.healthEpoch).toBe(0);
+    expect(state.healthEpoch).toBeNull();
     state = reducer(state, { type: 'requestFailed', source: 'health', message: 'bridge unavailable' });
     state = receive([{
       device: 0,
@@ -355,12 +374,68 @@ describe('dashboard event store', () => {
     expect(state.rootRecords[0].role).toBe('root');
     state = reducer(state, {
       type: 'healthReceived',
-      health: { ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })]), oldest_cursor: 1, current_cursor: 1 },
+      health: {
+        ...healthResponse([healthDevice(0, { root: rootStatus({ role: 'leaf' }) })], 'fedcba9876543210fedcba9876543210'),
+        oldest_cursor: 1,
+        current_cursor: 1,
+      },
       receivedAt: 3_000,
       epoch: 1,
     });
-    expect(state.healthEpoch).toBe(1);
-    expect(state.health?.devices[0].root?.role).toBe('leaf');
+    expect(state.healthEpoch).toBeNull();
+    expect(state.health).toBeNull();
+    expect(state.rootRecords[0].role).toBe('root');
+  });
+
+  it('makes a changed session authoritative even when its cursor is higher and discards old authority', () => {
+    const nextSession = 'fedcba9876543210fedcba9876543210';
+    let state = reducer(initialState, { type: 'sessionReset', sessionId: SESSION_ID });
+    state = receive([{
+      cursor: 10,
+      kind: 'root',
+      device: 0,
+      now: 1,
+      local: '1842de524add',
+      node: 1,
+      role: 'root',
+      roots: 1,
+      announced: 1,
+      acked: 1,
+      rejected: 0,
+      pending: 0,
+      rootless_drop: 0,
+    }, eventRecord({ cursor: 11, wearable: 7 })], 10_000, 1)(state);
+
+    state = reducer(state, { type: 'sessionReset', sessionId: nextSession });
+    expect(state).toMatchObject({
+      sessionId: nextSession,
+      eventCursor: 0,
+      processedCursors: [],
+      health: null,
+      rootRecords: {},
+      commandRecords: {},
+      pendingRoot: {},
+      logicalEvents: {},
+    });
+
+    state = reducer(state, {
+      type: 'eventsReceived',
+      page: eventsResponse([eventRecord({ cursor: 50, wearable: 8, packet: '000008', seq: 8 })], false, nextSession),
+      receivedAt: 20_000,
+      epoch: 2,
+    });
+    expect(state).toMatchObject({ sessionId: nextSession, eventCursor: 50, processedCursors: [50] });
+    expect(state.logicalEvents).toHaveProperty('8:000008');
+    expect(state.logicalEvents).not.toHaveProperty('7:00002a');
+
+    state = reducer(state, {
+      type: 'healthReceived',
+      health: healthResponse([healthDevice(0, { root: rootStatus({ role: 'root', cursor: 50 }) })], SESSION_ID),
+      receivedAt: 21_000,
+      epoch: 2,
+    });
+    expect(state.health).toBeNull();
+    expect(state.rootRecords).toEqual({});
   });
 
   it('keeps a 202 Gateway command pending until a newer authoritative status record or health cursor confirms the desired state', () => {

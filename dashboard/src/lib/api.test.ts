@@ -14,7 +14,7 @@ import {
   postRoot,
   putLayout,
 } from './api';
-import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, layoutReady, rootStatus } from '../test/fixtures';
+import { eventRecord, eventsResponse, gttEntry, gttSnapshot, healthDevice, healthResponse, jsonResponse, layoutReady, rootStatus, SESSION_ID } from '../test/fixtures';
 import { restoreFetch, stubFetch } from '../test/runtime';
 
 afterEach(restoreFetch);
@@ -29,11 +29,11 @@ describe('frozen bridge API decoders', () => {
       'with tempfile.TemporaryDirectory() as temporary:',
       '    state = bridge.Bridge(["test"], state_dir=Path(temporary))',
       '    try:',
-      '        empty_events = state.ring.page(0, 100)',
+      '        empty_events = state.events_page(0, 100)',
       '        empty_health = state.health()',
       '        state.devices[0].feed_bytes(b"mind_event_v1 now=55 root=8081545678c0 wearable=7 packet=a1b2c3 schema=1 event=5 confidence=73 svm=6687 mic=125 seq=195 observer=0102545678c0 path=tavrn\\n")',
       '        state.devices[0].feed_bytes(b"mind_root_v1 now=99 local=8081545678c0 node=6 role=root roots=16 announced=2 acked=1 rejected=3 pending=4 rootless_drop=7\\n")',
-      '        print(json.dumps({"empty_events": empty_events, "empty_health": empty_health, "events": state.ring.page(0, 100), "health": state.health()}))',
+      '        print(json.dumps({"empty_events": empty_events, "empty_health": empty_health, "events": state.events_page(0, 100), "health": state.health()}))',
       '    finally:',
       '        state.stop()',
     ].join('\n');
@@ -55,13 +55,24 @@ describe('frozen bridge API decoders', () => {
     expect(decodeHealthResponse(healthResponse()).devices[0].device).toBe(0);
 
     expect(() => decodeEventsResponse({ ...page, unexpected: true })).toThrow(DecodeError);
+    const { session_id: _sessionId, ...withoutSession } = page;
+    expect(() => decodeEventsResponse(withoutSession)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({ ...page, session_id: 'ABC' })).toThrow(DecodeError);
     expect(() => decodeEventsResponse({ ...page, events: [{ ...page.events[0], packet: 'BAD' }] })).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({ ...page, events: [{ ...page.events[0], received_at_ms: undefined }] })).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({ ...page, events: [{ ...page.events[0], received_at_ms: 253_402_300_800_000 }] })).toThrow(DecodeError);
     expect(() => decodeEventsResponse({ ...page, events: [{ ...page.events[0], seq: 41 }] })).toThrow(DecodeError);
     expect(() => decodeHealthResponse({ ...healthResponse(), devices: [{ ...healthResponse().devices[0], connected: 'yes' }] })).toThrow(DecodeError);
+    expect(() => decodeHealthResponse({ ...healthResponse(), session_id: 'ABC' })).toThrow(DecodeError);
   });
 
   it('enforces firmware bounds, the one allowed empty ring, and page/cursor relationships', () => {
     const page = eventsResponse([eventRecord({ cursor: 1, svm: 8000 })]);
+    const recordsAt = (...cursors: number[]) => cursors.map((cursor) => eventRecord({
+      cursor,
+      packet: cursor.toString(16).padStart(6, '0'),
+      seq: cursor,
+    }));
     expect(decodeEventsResponse(page, 0).events[0]).toMatchObject({ kind: 'event', svm: 8000 });
     expect(decodeEventsResponse(eventsResponse([eventRecord({ event: 0, confidence: 0, mic: 0 })]), 0).events[0]).toMatchObject({ kind: 'event', event: 0 });
     expect(() => decodeEventsResponse({ ...page, oldest_cursor: 0 })).toThrow(DecodeError);
@@ -79,8 +90,28 @@ describe('frozen bridge API decoders', () => {
     expect(() => decodeEventsResponse({ ...page, current_cursor: 2 }, 0)).toThrow(DecodeError);
     expect(() => decodeEventsResponse(eventsResponse([eventRecord({ cursor: 2 })]), 2)).toThrow(DecodeError);
     expect(() => decodeEventsResponse({ ...eventsResponse([eventRecord({ cursor: 2 })], false), oldest_cursor: 2, current_cursor: 2 }, 0)).toThrow(DecodeError);
-    expect(decodeEventsResponse({ schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toMatchObject({ current_cursor: 4 });
-    expect(() => decodeEventsResponse({ schema: 'mind.api.v2', gap: true, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
+    expect(decodeEventsResponse({
+      schema: 'mind.api.v2', session_id: SESSION_ID, gap: true, oldest_cursor: 2, current_cursor: 3,
+      events: recordsAt(2, 3),
+    }, 0).events).toHaveLength(2);
+    expect(() => decodeEventsResponse({
+      schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 2,
+      events: recordsAt(2),
+    }, 0)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({
+      schema: 'mind.api.v2', session_id: SESSION_ID, gap: true, oldest_cursor: 2, current_cursor: 3,
+      events: recordsAt(3),
+    }, 0)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({
+      schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 3,
+      events: recordsAt(1, 3),
+    }, 0)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({
+      schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 3,
+      events: recordsAt(1, 2),
+    }, 0)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({ schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
+    expect(() => decodeEventsResponse({ schema: 'mind.api.v2', session_id: SESSION_ID, gap: true, oldest_cursor: 1, current_cursor: 4, events: [] }, 9)).toThrow(DecodeError);
   });
 
   it('accepts only exact health v2 GTT snapshots, normalized states, and physical owner references', () => {
@@ -134,21 +165,26 @@ describe('frozen bridge API decoders', () => {
   it('surfaces HTTP API errors and rejects a malformed successful response before state can consume it', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(503, { schema: 'mind.error.v1', accepted: false, error: 'disconnected' }))
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 0, events: [{}] }));
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 0, events: [{}] }));
     stubFetch(fetchMock);
 
     await expect(fetchEvents(0)).rejects.toBeInstanceOf(ApiError);
     await expect(fetchEvents(0)).rejects.toBeInstanceOf(DecodeError);
   });
 
-  it('validates fetched pages against the requested exclusive cursor while allowing a reset response', async () => {
+  it('validates zero-cursor pages even after a session change, bypassing old cursor checks only for discarded pages', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 2 })] }))
-      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 2, events: [] }));
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', session_id: SESSION_ID, gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 2 })] }))
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', session_id: 'fedcba9876543210fedcba9876543210', gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 2 })] }))
+      .mockResolvedValueOnce(jsonResponse(200, { schema: 'mind.api.v2', session_id: 'fedcba9876543210fedcba9876543210', gap: false, oldest_cursor: 1, current_cursor: 2, events: [eventRecord({ cursor: 1 }), eventRecord({ cursor: 2, packet: '000002', seq: 2 })] }));
     stubFetch(fetchMock);
 
     await expect(fetchEvents(2)).rejects.toBeInstanceOf(DecodeError);
-    await expect(fetchEvents(9)).resolves.toMatchObject({ current_cursor: 2, events: [] });
+    await expect(fetchEvents(0, undefined, SESSION_ID)).rejects.toBeInstanceOf(DecodeError);
+    await expect(fetchEvents(9, undefined, SESSION_ID)).resolves.toMatchObject({
+      session_id: 'fedcba9876543210fedcba9876543210', current_cursor: 2,
+      events: [expect.objectContaining({ cursor: 1 }), expect.objectContaining({ cursor: 2 })],
+    });
   });
 
   it('sends the exact root command body and validates the accepted command response', async () => {

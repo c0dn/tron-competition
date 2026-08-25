@@ -69,7 +69,42 @@ class Conflict(ValueError):
 
 
 class MutationCancelled(RuntimeError):
-    """The HTTP deadline elapsed before a SQLite transaction started."""
+    """The HTTP deadline elapsed before a SQLite mutation became durable."""
+
+
+class MutationCancellation:
+    """Coordinate cancellation with the atomic SQLite commit-admission boundary.
+
+    ``cancel()`` and ``admit_commit()`` share one lock.  If cancellation wins,
+    the mutation is rejected; if admission wins, the supplied SQLite commit
+    finishes before cancellation becomes observable.  The boundary is therefore
+    the active check and commit together, not a check immediately before commit.
+    """
+
+    def __init__(self, active: Callable[[], bool]) -> None:
+        self._active = active
+        self._lock = threading.Lock()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._is_active_locked()
+
+    def admit_commit(self, commit: Callable[[], None]) -> None:
+        with self._lock:
+            if not self._is_active_locked():
+                raise MutationCancelled()
+            commit()
+
+    def _is_active_locked(self) -> bool:
+        if self._cancelled or not self._active():
+            self._cancelled = True
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -406,7 +441,7 @@ class LayoutStore:
         base_revision: int,
         positions: list[dict[str, Any]],
         *,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Optional[MutationCancellation] = None,
     ) -> dict[str, Any]:
         canonical = _canonical_positions(normalize_positions(positions))
 
@@ -426,7 +461,7 @@ class LayoutStore:
         image: ImageInfo,
         data: bytes,
         *,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Optional[MutationCancellation] = None,
     ) -> dict[str, Any]:
         if inspect_image(image.mime, data) != image:
             raise StorageUnavailable("unverified image candidate")
@@ -454,7 +489,7 @@ class LayoutStore:
         self,
         base_revision: int,
         *,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Optional[MutationCancellation] = None,
     ) -> dict[str, Any]:
         def update(state: dict[str, Any]) -> Optional[tuple[str, tuple[Any, ...]]]:
             if state["floorplan"] is None:
@@ -486,38 +521,43 @@ class LayoutStore:
         self,
         base_revision: int,
         update: Callable[[dict[str, Any]], Optional[tuple[str, tuple[Any, ...]]]],
-        cancel_check: Optional[Callable[[], bool]],
+        cancel_check: Optional[MutationCancellation],
     ) -> dict[str, Any]:
-        if cancel_check is not None and not cancel_check():
-            raise MutationCancelled()
+        self._raise_if_mutation_cancelled(cancel_check)
         with self._lock:
             connection: Optional[sqlite3.Connection] = None
             transaction_started = False
             try:
                 # A deadline can expire while waiting for the RLock. Do not
                 # start a transaction after that point.
-                if cancel_check is not None and not cancel_check():
-                    raise MutationCancelled()
+                self._raise_if_mutation_cancelled(cancel_check)
                 connection = self._connection_for_use()
-                if cancel_check is not None and not cancel_check():
-                    raise MutationCancelled()
+                self._raise_if_mutation_cancelled(cancel_check)
                 connection.execute("BEGIN IMMEDIATE")
                 transaction_started = True
                 state = self._read_state(connection)
                 current = self._response(state)
+                self._raise_if_mutation_cancelled(cancel_check)
                 if base_revision != state["revision"]:
                     connection.rollback()
                     transaction_started = False
                     raise Conflict(current)
                 statement = update(state)
+                self._raise_if_mutation_cancelled(cancel_check)
                 if statement is None:
                     # No-op is read-only from the durable state perspective.
                     connection.rollback()
                     transaction_started = False
                     return current
                 sql, parameters = statement
+                self._raise_if_mutation_cancelled(cancel_check)
                 connection.execute(sql, parameters)
-                connection.commit()
+                if cancel_check is None:
+                    connection.commit()
+                else:
+                    # Keep the last active check and SQLite durability in the
+                    # cancellation coordinator's indivisible admission boundary.
+                    cancel_check.admit_commit(connection.commit)
                 transaction_started = False
                 return self._response(self._read_state(connection))
             except (Conflict, MutationCancelled):
@@ -528,6 +568,11 @@ class LayoutStore:
                 if transaction_started and connection is not None:
                     self._rollback(connection)
                 raise StorageUnavailable("SQLite layout mutation failed") from error
+
+    @staticmethod
+    def _raise_if_mutation_cancelled(cancel_check: Optional[MutationCancellation]) -> None:
+        if cancel_check is not None and not cancel_check.is_active():
+            raise MutationCancelled()
 
     def _connection_for_use(self) -> sqlite3.Connection:
         if self._closed:

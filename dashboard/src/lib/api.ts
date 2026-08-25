@@ -8,6 +8,7 @@ export type GttDeparted = 'not_applicable' | 'false' | 'true' | 'unknown';
 
 export interface EventRecord {
   cursor: number;
+  received_at_ms: number;
   kind: 'event';
   device: number;
   now: number;
@@ -63,6 +64,7 @@ export type StreamRecord = EventRecord | RootRecord | CommandRecord;
 
 export interface EventsResponse {
   schema: 'mind.api.v2';
+  session_id: string;
   gap: boolean;
   oldest_cursor: number;
   current_cursor: number;
@@ -84,6 +86,7 @@ export interface HealthDevice {
 
 export interface HealthResponse {
   schema: 'mind.health.v2';
+  session_id: string;
   oldest_cursor: number;
   current_cursor: number;
   devices: HealthDevice[];
@@ -198,6 +201,9 @@ export interface LayoutConflictResponse {
 
 type JsonObject = Record<string, unknown>;
 
+const SESSION_ID_HEX_LENGTH = 32;
+const MAX_UNIX_EPOCH_MS = 253_402_300_799_999;
+
 export class DecodeError extends Error {
   constructor(message: string) {
     super(message);
@@ -298,9 +304,10 @@ function rootStatus(value: unknown, context: string): RootStatus {
 
 function eventRecord(value: unknown): EventRecord {
   const input = object(value, 'event record');
-  exactKeys(input, ['cursor', 'kind', 'device', 'now', 'root', 'wearable', 'packet', 'schema', 'event', 'confidence', 'svm', 'mic', 'seq', 'observer', 'observer_rssi_dbm', 'path'], 'event record');
+  exactKeys(input, ['cursor', 'kind', 'device', 'now', 'root', 'wearable', 'packet', 'schema', 'event', 'confidence', 'svm', 'mic', 'seq', 'observer', 'observer_rssi_dbm', 'path', 'received_at_ms'], 'event record');
   const record: EventRecord = {
     cursor: integer(input.cursor, 'event.cursor', 1),
+    received_at_ms: integer(input.received_at_ms, 'event.received_at_ms', 0, MAX_UNIX_EPOCH_MS),
     kind: enumValue(input.kind, ['event'], 'event.kind'),
     device: integer(input.device, 'event.device'),
     now: integer(input.now, 'event.now', 0, 0xffffffff),
@@ -411,21 +418,18 @@ function validateRingCursors(oldest: number, current: number, context: string): 
   }
 }
 
-export function decodeEventsResponse(value: unknown, requestedAfter = 0): EventsResponse {
+export function decodeEventsResponse(value: unknown, requestedAfter = 0, expectedSessionId?: string): EventsResponse {
   integer(requestedAfter, 'requested after');
+  if (expectedSessionId !== undefined) hex(expectedSessionId, SESSION_ID_HEX_LENGTH, 'expected session ID');
   const input = object(value, 'events response');
-  exactKeys(input, ['schema', 'gap', 'oldest_cursor', 'current_cursor', 'events'], 'events response');
+  exactKeys(input, ['schema', 'session_id', 'gap', 'oldest_cursor', 'current_cursor', 'events'], 'events response');
   if (input.schema !== 'mind.api.v2') throw new DecodeError('events response.schema is invalid.');
   if (!Array.isArray(input.events)) throw new DecodeError('events response.events must be an array.');
   if (input.events.length > 100) throw new DecodeError('events response exceeds the maximum page size.');
   const records = input.events.map(streamRecord);
-  for (let index = 1; index < records.length; index += 1) {
-    if (records[index - 1].cursor >= records[index].cursor) {
-      throw new DecodeError('events response.events must have strictly increasing cursors.');
-    }
-  }
   const oldest = integer(input.oldest_cursor, 'events response.oldest_cursor');
   const current = integer(input.current_cursor, 'events response.current_cursor');
+  const sessionId = hex(input.session_id, SESSION_ID_HEX_LENGTH, 'events response.session_id');
   const gap = boolean(input.gap, 'events response.gap');
   validateRingCursors(oldest, current, 'events response');
   if (hasEmptyRingCursors(oldest, current)) {
@@ -434,25 +438,42 @@ export function decodeEventsResponse(value: unknown, requestedAfter = 0): Events
     if (records.some((record) => record.cursor < oldest || record.cursor > current)) {
       throw new DecodeError('events response records are outside the cursor range.');
     }
-    const epochReset = current < requestedAfter;
-    if (epochReset) {
-      if (gap || records.length !== 0) throw new DecodeError('an epoch reset response must be an empty non-gap page.');
-    } else {
+    // App discards a changed-session response only when it was requested from
+    // an old nonzero cursor. Every zero-cursor page remains a normal page and
+    // must prove its own cursor-window consistency before state can use it.
+    const discardedOldCursorPage = expectedSessionId !== undefined
+      && sessionId !== expectedSessionId
+      && requestedAfter !== 0;
+    if (!discardedOldCursorPage) {
+      if (current < requestedAfter) {
+        throw new DecodeError('events response cursor regressed within one bridge session.');
+      }
       const expectedGap = requestedAfter < oldest - 1;
       if (gap !== expectedGap) throw new DecodeError('events response gap does not match the requested cursor.');
-      if (records.some((record) => record.cursor <= requestedAfter)) {
-        throw new DecodeError('events response replayed a cursor outside gap recovery.');
-      }
-      if (records.length === 0 && current > requestedAfter) {
-        throw new DecodeError('events response omitted available records.');
-      }
-      if (records.length > 0 && records.length < 100 && records[records.length - 1].cursor !== current) {
-        throw new DecodeError('events response did not drain through its current cursor.');
+      if (records.length === 0) {
+        if (current > requestedAfter) {
+          throw new DecodeError('events response omitted available records.');
+        }
+      } else {
+        const firstCursor = records[0].cursor;
+        const expectedFirstCursor = gap ? oldest : requestedAfter + 1;
+        if (firstCursor !== expectedFirstCursor) {
+          throw new DecodeError('events response did not begin at its requested cursor window.');
+        }
+        for (let index = 1; index < records.length; index += 1) {
+          if (records[index].cursor !== records[index - 1].cursor + 1) {
+            throw new DecodeError('events response.events must have contiguous cursors.');
+          }
+        }
+        if (records.length < 100 && records[records.length - 1].cursor !== current) {
+          throw new DecodeError('events response did not drain through its current cursor.');
+        }
       }
     }
   }
   return {
     schema: 'mind.api.v2',
+    session_id: sessionId,
     gap,
     oldest_cursor: oldest,
     current_cursor: current,
@@ -515,7 +536,7 @@ function gttSnapshot(value: unknown, context: string): GttSnapshot {
 
 export function decodeHealthResponse(value: unknown): HealthResponse {
   const input = object(value, 'health response');
-  exactKeys(input, ['schema', 'oldest_cursor', 'current_cursor', 'devices'], 'health response');
+  exactKeys(input, ['schema', 'session_id', 'oldest_cursor', 'current_cursor', 'devices'], 'health response');
   if (input.schema !== 'mind.health.v2') throw new DecodeError('health response.schema is invalid.');
   if (!Array.isArray(input.devices)) throw new DecodeError('health response.devices must be an array.');
   const devices = input.devices.map((value, index): HealthDevice => {
@@ -544,6 +565,7 @@ export function decodeHealthResponse(value: unknown): HealthResponse {
   }
   const oldest = integer(input.oldest_cursor, 'health response.oldest_cursor');
   const current = integer(input.current_cursor, 'health response.current_cursor');
+  const sessionId = hex(input.session_id, SESSION_ID_HEX_LENGTH, 'health response.session_id');
   validateRingCursors(oldest, current, 'health response');
   if (devices.some((device) => device.last_record_cursor > current)) {
     throw new DecodeError('health response device cursor exceeds the ring cursor.');
@@ -551,7 +573,7 @@ export function decodeHealthResponse(value: unknown): HealthResponse {
   if (devices.some((device) => device.root !== null && device.root.cursor > current)) {
     throw new DecodeError('health response root cursor exceeds the ring cursor.');
   }
-  return { schema: 'mind.health.v2', oldest_cursor: oldest, current_cursor: current, devices };
+  return { schema: 'mind.health.v2', session_id: sessionId, oldest_cursor: oldest, current_cursor: current, devices };
 }
 
 function layoutPosition(value: unknown, context: string): LayoutPosition {
@@ -737,8 +759,8 @@ async function layoutMutation(path: string, body: object, signal?: AbortSignal):
   }
 }
 
-export async function fetchEvents(after: number, signal?: AbortSignal): Promise<EventsResponse> {
-  return decodeEventsResponse(await get(`/api/events?after=${after}&limit=100`, signal), after);
+export async function fetchEvents(after: number, signal?: AbortSignal, expectedSessionId?: string): Promise<EventsResponse> {
+  return decodeEventsResponse(await get(`/api/events?after=${after}&limit=100`, signal), after, expectedSessionId);
 }
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {

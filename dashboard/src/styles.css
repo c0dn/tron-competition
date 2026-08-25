@@ -36,8 +36,9 @@ code { color: #c6d4e4; font: 0.9em ui-monospace, SFMono-Regular, Consolas, monos
 .status-chip.info { color: var(--info); border-color: var(--info); }
 .status-chip.muted { color: var(--muted); }
 
-main { display: grid; grid-template-columns: minmax(0, 2.6fr) minmax(20rem, 0.9fr); gap: 1rem; max-width: 1600px; margin: 0 auto; padding: 1rem; align-items: start; }
-.primary-column { display: grid; gap: 1rem; min-width: 0; }
+main { display: grid; grid-template-areas: "gateway feed" "floorplan feed"; grid-template-columns: minmax(0, 2.6fr) minmax(20rem, 0.9fr); gap: 1rem; max-width: 1600px; margin: 0 auto; padding: 1rem; align-items: start; }
+.gateway-column { display: grid; grid-area: gateway; gap: 1rem; min-width: 0; }
+.floorplan-panel { grid-area: floorplan; }
 .panel { min-width: 0; padding: 0.85rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--panel); }
 .section-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; margin-bottom: 0.75rem; }
 .section-heading h2 { margin-bottom: 0; font-size: 0.9rem; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -127,13 +128,17 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
 .floorplan-content { position: relative; width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 0.45rem; background: repeating-linear-gradient(45deg, var(--card), var(--card) 12px, color-mix(in srgb, var(--card) 88%, var(--line)) 12px, color-mix(in srgb, var(--card) 88%, var(--line)) 24px); touch-action: none; }
 .floorplan-content.placement-active { cursor: crosshair; outline: 2px dashed var(--focus); outline-offset: 3px; }
 .floorplan-content > img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; }
-.floorplan-node { position: absolute; z-index: 1; display: grid; width: 44px; height: 44px; place-items: center; padding: 0; transform: translate(-50%, -50%); border: 2px solid var(--info); border-radius: 50%; background: var(--panel); color: var(--text); font: 700 0.72rem ui-monospace, SFMono-Regular, Consolas, monospace; touch-action: none; }
+.floorplan-node-point { position: absolute; z-index: 1; width: 12px; height: 12px; transform: translate(-50%, -50%); border: 2px solid currentColor; border-radius: 50%; background: var(--panel); color: var(--info); pointer-events: none; }
+.floorplan-node-point::after { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: currentColor; }
+.floorplan-node-point.freshness-soft_stale { color: var(--warning); }
+.floorplan-node-point.freshness-hard_expired, .floorplan-node-point.freshness-departed { color: var(--danger); }
+.floorplan-node { position: absolute; z-index: 3; display: grid; width: 44px; height: 44px; place-items: center; padding: 0; transform: translate(-50%, -50%); border: 2px solid var(--info); border-radius: 50%; background: var(--panel); color: var(--text); font: 700 0.72rem ui-monospace, SFMono-Regular, Consolas, monospace; touch-action: none; }
 .floorplan-node.freshness-soft_stale { border-color: var(--warning); }
 .floorplan-node.freshness-hard_expired, .floorplan-node.freshness-departed { border-color: var(--danger); }
 .floorplan-node:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
-.floorplan-marker { position: absolute; z-index: 2; width: 0; height: 0; pointer-events: none; }
-.floorplan-marker-point { position: absolute; width: 10px; height: 10px; transform: translate(-50%, -50%) rotate(45deg); border: 2px solid var(--warning); background: var(--panel); }
-.floorplan-marker-label { position: absolute; display: grid; width: 44px; height: 44px; place-items: center; border: 2px solid var(--warning); border-radius: 0.35rem; background: var(--panel); color: var(--text); font: 700 0.68rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.floorplan-marker { position: absolute; width: 0; height: 0; pointer-events: none; }
+.floorplan-marker-point { position: absolute; z-index: 4; width: 10px; height: 10px; transform: translate(-50%, -50%) rotate(45deg); border: 2px solid var(--warning); background: var(--panel); }
+.floorplan-marker-label { position: absolute; z-index: 2; display: grid; width: 44px; height: 44px; place-items: center; border: 2px solid var(--warning); border-radius: 0.35rem; background: var(--panel); color: var(--text); font: 700 0.68rem ui-monospace, SFMono-Regular, Consolas, monospace; }
 .floorplan-marker-label.marker-east { left: 26px; }
 .floorplan-marker-label.marker-west { right: 26px; }
 .floorplan-marker-label.marker-south { top: 26px; }
@@ -163,7 +168,7 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
 .location-status { margin: 0.5rem 0; padding: 0.35rem; border-inline-start: 0.25rem solid var(--warning); background: var(--panel); font-weight: 700; }
 .wearable-card footer, .event-record footer { color: var(--muted); display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.75rem; }
 
-.feed-panel { max-height: calc(100vh - 6rem); overflow: auto; border-left: 3px solid var(--warning); }
+.feed-panel { grid-area: feed; max-height: calc(100vh - 6rem); overflow: auto; border-left: 3px solid var(--warning); }
 .event-feed { display: grid; gap: 0.6rem; }
 .event-record { padding: 0.75rem; border-left-color: var(--info); }
 .event-record.conflict { border-left-color: var(--warning); }
@@ -175,7 +180,7 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
 .event-record footer { margin-top: 0.65rem; }
 
 @media (max-width: 900px) {
-  main { grid-template-columns: 1fr; }
+  main { grid-template-areas: "gateway" "feed" "floorplan"; grid-template-columns: 1fr; }
   .feed-panel { max-height: none; }
 }
 

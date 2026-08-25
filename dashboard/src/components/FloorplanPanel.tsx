@@ -788,75 +788,81 @@ export function FloorplanPanel({
             const name = gatewayEntryLabel(entry, local);
             const instructions = `Use arrow keys to move ${name} by 0.01. Hold Shift for 0.05. Drag to move, then release to save.`;
             return (
-              <button
-                key={entry.adva}
-                type="button"
-                className={`floorplan-node freshness-${entry.freshness}`}
-                style={{ left: nodeCssCoordinate(position.x), top: nodeCssCoordinate(position.y) }}
-                disabled={!canEditPositions}
-                aria-label={`${name}, positioned at x ${position.x.toFixed(2)}, y ${position.y.toFixed(2)}, ${freshnessText(entry)}, ${departureText(entry)}`}
-                aria-describedby={`node-instructions-${entry.adva}`}
-                onPointerDown={(event) => {
-                  if (!canEditPositions) return;
-                  event.stopPropagation();
-                  event.currentTarget.focus();
-                  event.currentTarget.setPointerCapture?.(event.pointerId);
-                  dragRef.current = { adva: entry.adva, pointerId: event.pointerId };
-                  draftPositionsRef.current = layout.positions;
-                  setDraftPositions(layout.positions);
-                }}
-                onPointerMove={(event) => {
-                  const drag = dragRef.current;
-                  if (!drag || drag.pointerId !== event.pointerId) return;
-                  event.stopPropagation();
-                  const content = contentRef.current;
-                  if (!content) return;
-                  const point = pointAt(event, content);
-                  setDraftPositions((current) => {
-                    const next = setPosition(current ?? layout.positions, { ...point, adva: drag.adva });
-                    draftPositionsRef.current = next;
-                    return next;
-                  });
-                }}
-                onPointerUp={(event) => {
-                  if (dragRef.current?.pointerId !== event.pointerId) return;
-                  event.stopPropagation();
-                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
-                  finishDrag(event.currentTarget);
-                }}
-                onPointerCancel={(event) => {
-                  if (dragRef.current?.pointerId !== event.pointerId) return;
-                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
-                  draftPositionsRef.current = null;
-                  setDraftPositions(null);
-                  dragRef.current = null;
-                }}
-                onKeyDown={(event) => {
-                  const delta = event.shiftKey ? LARGE_KEYBOARD_STEP : SMALL_KEYBOARD_STEP;
-                  const current = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
-                  if (!current) return;
-                  let next: LayoutPosition | null = null;
-                  if (event.key === 'ArrowLeft') next = { ...current, x: clampCoordinate(current.x - delta) };
-                  if (event.key === 'ArrowRight') next = { ...current, x: clampCoordinate(current.x + delta) };
-                  if (event.key === 'ArrowUp') next = { ...current, y: clampCoordinate(current.y - delta) };
-                  if (event.key === 'ArrowDown') next = { ...current, y: clampCoordinate(current.y + delta) };
-                  if (!next) return;
-                  event.preventDefault();
-                  setDraftPositions((currentPositions) => {
-                    const updated = setPosition(currentPositions ?? layout.positions, next);
-                    draftPositionsRef.current = updated;
-                    return updated;
-                  });
-                }}
-                onKeyUp={(event) => {
-                  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-                  const next = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
-                  if (next) void savePositions((current) => setPosition(current, next), 'Node position saved.', event.currentTarget, entry.adva);
-                }}
-              >
-                {name === 'Gateway' ? 'G' : entry.adva.slice(-4)}
-                <span id={`node-instructions-${entry.adva}`} className="sr-only">{instructions}</span>
-              </button>
+              <span key={entry.adva} className="floorplan-node-anchor">
+                <span
+                  className={`floorplan-node-point freshness-${entry.freshness}`}
+                  style={{ left: `${position.x * 100}%`, top: `${position.y * 100}%` }}
+                  aria-hidden="true"
+                />
+                <button
+                  type="button"
+                  className={`floorplan-node freshness-${entry.freshness}`}
+                  style={{ left: nodeCssCoordinate(position.x), top: nodeCssCoordinate(position.y) }}
+                  disabled={!canEditPositions}
+                  aria-label={`${name}, positioned at x ${position.x.toFixed(2)}, y ${position.y.toFixed(2)}, ${freshnessText(entry)}, ${departureText(entry)}`}
+                  aria-describedby={`node-instructions-${entry.adva}`}
+                  onPointerDown={(event) => {
+                    if (!canEditPositions) return;
+                    event.stopPropagation();
+                    event.currentTarget.focus();
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                    dragRef.current = { adva: entry.adva, pointerId: event.pointerId };
+                    draftPositionsRef.current = layout.positions;
+                    setDraftPositions(layout.positions);
+                  }}
+                  onPointerMove={(event) => {
+                    const drag = dragRef.current;
+                    if (!drag || drag.pointerId !== event.pointerId) return;
+                    event.stopPropagation();
+                    const content = contentRef.current;
+                    if (!content) return;
+                    const point = pointAt(event, content);
+                    setDraftPositions((current) => {
+                      const next = setPosition(current ?? layout.positions, { ...point, adva: drag.adva });
+                      draftPositionsRef.current = next;
+                      return next;
+                    });
+                  }}
+                  onPointerUp={(event) => {
+                    if (dragRef.current?.pointerId !== event.pointerId) return;
+                    event.stopPropagation();
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                    finishDrag(event.currentTarget);
+                  }}
+                  onPointerCancel={(event) => {
+                    if (dragRef.current?.pointerId !== event.pointerId) return;
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                    draftPositionsRef.current = null;
+                    setDraftPositions(null);
+                    dragRef.current = null;
+                  }}
+                  onKeyDown={(event) => {
+                    const delta = event.shiftKey ? LARGE_KEYBOARD_STEP : SMALL_KEYBOARD_STEP;
+                    const current = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
+                    if (!current) return;
+                    let next: LayoutPosition | null = null;
+                    if (event.key === 'ArrowLeft') next = { ...current, x: clampCoordinate(current.x - delta) };
+                    if (event.key === 'ArrowRight') next = { ...current, x: clampCoordinate(current.x + delta) };
+                    if (event.key === 'ArrowUp') next = { ...current, y: clampCoordinate(current.y - delta) };
+                    if (event.key === 'ArrowDown') next = { ...current, y: clampCoordinate(current.y + delta) };
+                    if (!next) return;
+                    event.preventDefault();
+                    setDraftPositions((currentPositions) => {
+                      const updated = setPosition(currentPositions ?? layout.positions, next);
+                      draftPositionsRef.current = updated;
+                      return updated;
+                    });
+                  }}
+                  onKeyUp={(event) => {
+                    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+                    const next = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
+                    if (next) void savePositions((current) => setPosition(current, next), 'Node position saved.', event.currentTarget, entry.adva);
+                  }}
+                >
+                  {name === 'Gateway' ? 'G' : entry.adva.slice(-4)}
+                  <span id={`node-instructions-${entry.adva}`} className="sr-only">{instructions}</span>
+                </button>
+              </span>
             );
           })}
           {recentIncidentViews.filter((view) => view.status === 'ballpark').map((view) => (

@@ -313,7 +313,7 @@ no suitable hallway/ground-truth dataset is currently available.
 ## HCI cleanup
 
 - Visible `ROOT` becomes `GATEWAY`; internal/API names remain unchanged.
-- The micro:bit local-root framebuffer becomes a recognizable five-row G, proposed rows: `0x0e, 0x10, 0x17, 0x11, 0x0e`, subject to rendered hardware review.
+- The completed micro:bit local-root framebuffer is the recognizable five-row G: `0x0e, 0x10, 0x17, 0x11, 0x0e`. No further firmware or hardware review is part of Slice E.
 - Remove redundant explanatory paragraphs and machine-centric metrics from primary cards. Keep short labels, statuses, direct actions, accessible names, and errors with recovery.
 - Gateway control is one truthful toggle. Node roster/map prioritizes AdvA identity, freshness, and position; diagnostics remain details-on-demand.
 
@@ -325,33 +325,29 @@ Execution must use the required sequence:
 2. **Slice B:** host persistence/API code-writer -> Slice B code-checker -> correction writer if needed.
 3. **Slice C:** dashboard gateway/floorplan code-writer -> Slice C code-checker -> correction writer if needed.
 4. **Slice D:** localization code-writer -> Slice D code-checker -> correction writer if needed.
-5. **Slice E:** clean committed software/resource review -> separately approved
-   fleet flash/reset and PC-reboot gate -> persistent HIL evidence commit ->
-   final PR-level code-checker -> push/PR update with no post-checker mutation.
+5. **Slice E:** review the remaining host/dashboard correction -> run host and
+   dashboard tests/build -> inspect wide and narrow dashboard renders -> commit
+   the accepted dashboard-only correction -> stop.
 
 Do not launch dependent slices in parallel: B depends on A schemas; C depends on
 B APIs; D depends on A/C evidence and map state. Within Slice A, RSSI wire work
 and the isolated G glyph may proceed in parallel with disjoint files. After
 plan approval, commit this plan first. Each Slice A-D follows writer(s) ->
-combined checker -> correction writer/recheck -> reviewed slice commit. E1 runs
-from that clean committed source. E2 requires separate approval covering both
-fleet hardware actions and the planned reboot. E3 commits evidence/docs, then
-the final checker reviews `origin/master...HEAD`; findings loop through scoped
-fix/recheck/affected gates. Push once only after the clean final checker.
+combined checker -> correction writer/recheck -> reviewed slice commit. Slice A,
+including the observer-RSSI path and recognizable 5x5 G glyph, is completed and
+must not be reopened. Slice E changes no firmware and runs no firmware build,
+D2, profile, flash/reset/reboot, hardware-evidence, push, or PR workflow.
 
 ## Acceptance summary
 
-Software acceptance requires exact wire vectors, legacy decode, allocation/resource closure, durable/revisioned host storage, security matrices, GTT-only roster, accessible floorplan drag, deterministic dedup/estimator tests, rendered wide/narrow HCI, and a clean full-range review.
+Dashboard-PoC acceptance requires the host tests and Python compilation,
+dashboard tests/typecheck/production build, durable/revisioned host storage,
+GTT-only roster, accessible floorplan controls, deterministic dedup/estimator
+tests, wide and narrow visual smoke checks, workplan validation, and a reviewed
+dashboard-only commit containing no `microbit/` changes.
 
-Hardware acceptance requires explicit user approval and a persistent repository
-evidence bundle proving one serial gateway, exact self identity, remote GTT
-roster, gateway toggle, floorplan survival across reboot, and zero critical
-faults. One incident must have four positioned RSSI contributors to exercise
-leave-one-out spread; one must have three contributors with spread unavailable
-or a geometry warning; a fewer-than-three composition case must show
-`insufficient`. Every case remains one deduplicated logical marker. The first
-dataset records normalized error and body-orientation sensitivity but has no
-numeric pass threshold; calibration is deferred.
+Hardware acceptance, firmware validation, push, and PR updates are deferred
+outside this workplan and require a separate future request.
 
 ## Open questions
 

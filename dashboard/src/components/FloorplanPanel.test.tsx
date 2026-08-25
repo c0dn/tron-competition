@@ -655,10 +655,10 @@ describe('floorplan interactions', () => {
     expect(ui.getByRole('button', { name: /Gateway, positioned at x 0.80, y 0.70/i })).not.toBeNull();
   });
 
-  it('continuously clamps node hit targets inside the floorplan without changing stored coordinates', async () => {
+  it('renders exact node coordinate points while keeping node hit targets clamped at edges', async () => {
     const boundary = layoutReady({ positions: [
-      { adva: '0102545678c1', x: 0.999, y: 0.001 },
-      { adva: '1842de524add', x: 0.001, y: 0.999 },
+      { adva: '0102545678c1', x: 1, y: 0 },
+      { adva: '1842de524add', x: 0, y: 1 },
     ] });
     stubFetch(vi.fn((input: string) => {
       if (input === '/api/layout') return Promise.resolve(jsonResponse(200, boundary));
@@ -667,11 +667,19 @@ describe('floorplan interactions', () => {
     render(panel());
     const gateway = await within(document.body).findByRole('button', { name: /Gateway, positioned at x 0.00, y 1.00/i });
     const remote = within(document.body).getByRole('button', { name: /0102545678c1, positioned at x 1.00, y 0.00/i });
-    expect((gateway as HTMLElement).style.left).toBe('clamp(28px, 0.1%, 100% - 28px)');
-    expect((gateway as HTMLElement).style.top).toBe('clamp(28px, 99.9%, 100% - 28px)');
-    expect((remote as HTMLElement).style.left).toBe('clamp(28px, 99.9%, 100% - 28px)');
-    expect((remote as HTMLElement).style.top).toBe('clamp(28px, 0.1%, 100% - 28px)');
+    const gatewayPoint = gateway.parentElement?.querySelector('.floorplan-node-point');
+    const remotePoint = remote.parentElement?.querySelector('.floorplan-node-point');
+    if (!(gatewayPoint instanceof HTMLElement) || !(remotePoint instanceof HTMLElement)) throw new Error('Expected exact node coordinate points.');
+    expect(gateway.style.left).toBe('clamp(28px, 0%, 100% - 28px)');
+    expect(gateway.style.top).toBe('clamp(28px, 100%, 100% - 28px)');
+    expect(remote.style.left).toBe('clamp(28px, 100%, 100% - 28px)');
+    expect(remote.style.top).toBe('clamp(28px, 0%, 100% - 28px)');
+    expect(gatewayPoint.style.left).toBe('0%');
+    expect(gatewayPoint.style.top).toBe('100%');
+    expect(remotePoint.style.left).toBe('100%');
+    expect(remotePoint.style.top).toBe('0%');
     expect(gateway.className).toContain('floorplan-node');
+    expect(gatewayPoint.className).toContain('floorplan-node-point');
   });
 
   it('shows stored off-roster positions for individual unplacement and announces capacity exhaustion', async () => {
@@ -955,7 +963,7 @@ describe('floorplan interactions', () => {
       },
     ];
     stubFetch(vi.fn((input: string) => {
-      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ positions: [{ adva: '1842de524add', x: 0.5, y: 0.5 }] })));
       throw new Error(`Unexpected ${input}`);
     }));
 
@@ -965,6 +973,13 @@ describe('floorplan interactions', () => {
     expect((marker as HTMLElement).style.top).toBe('100%');
     expect(marker.querySelector('.floorplan-marker-label')?.className).toContain('marker-east');
     expect(marker.querySelector('.floorplan-marker-label')?.className).toContain('marker-north');
+    const node = within(document.body).getByRole('button', { name: /Gateway, positioned at x 0.50, y 0.50/i });
+    const nodePoint = node.parentElement?.querySelector('.floorplan-node-point');
+    const incidentPoint = marker.querySelector('.floorplan-marker-point');
+    expect(nodePoint?.className).toContain('floorplan-node-point');
+    expect(nodePoint?.className).not.toContain('floorplan-marker-point');
+    expect(incidentPoint?.className).toContain('floorplan-marker-point');
+    expect(incidentPoint?.className).not.toContain('floorplan-node-point');
     expect(within(document.body).getByText('2 of 3 required')).not.toBeNull();
   });
 });

@@ -11,8 +11,7 @@
     "Add host-disk persisted floorplan image and normalized AdvA-keyed node positions with blank-canvas fallback and restart-safe APIs.",
     "Carry each observing backbone's original wearable RX RSSI through a new bounded MIND observed-report record, UART event schema, host API, and dashboard evidence model.",
     "Preserve global event deduplication by wearable plus packet_id24 and derive one rough RSSI-weighted centroid estimate from unique positioned observers.",
-    "Render draggable GTT nodes and bounded recent incident estimates on a responsive, keyboard-operable floorplan.",
-    "Persist current-code hardware acceptance evidence under microbit/hardware-results instead of tmpfs."
+    "Render draggable GTT nodes and bounded recent incident estimates on a responsive, keyboard-operable floorplan."
   ],
   "nonGoals": [
     "Rename internal ROOT_STATE, ROOT_ACK, ROOT ON/OFF/STATUS, /api/root, mind_root_v1, or TAVRN/MIND root-plane symbols.",
@@ -30,7 +29,7 @@
     "Internal ROOT semantics remain unchanged; GATEWAY is presentation language only, and gateway activation still uses the existing root toggle/command targeted to physical owner device 0.",
     "The new forwarded observed-report record remains exactly 10 application bytes and uses distinct kind 0x05; homogeneous backbone upgrade is required, legacy kind 0x02 remains accepted with RSSI unavailable, and real SID8 DATA vectors must pass while 10-byte SID16 submission remains rejected.",
     "The observed-report packer validates the original seven-byte schema including seq before omission; unpack reconstructs seq from packet_id24 and exposes RSSI separately. Magnitude 0 is unavailable; 1..127 converts to signed -1..-127 dBm in UART/API.",
-    "Firmware remains allocation-free and bounded; MIND logger/incident priority and current resource/stack gates must remain green with reviewed measured deltas.",
+    "Completed Slice A firmware remains allocation-free and bounded with its reviewed resource/stack evidence; Slice E does not reopen or rerun firmware work.",
     "Final gateway identity fails closed unless health has exactly one physical owner device 0, the GTT has exactly one self entry matching gtt.local, and any authoritative root.local equals gtt.local. No gateway entry is synthesized.",
     "Layout state uses explicit absolute --state-dir or absolute nonempty XDG_DATA_HOME/tron-dashboard, otherwise HOME/.local/share/tron-dashboard; directory0700 and dashboard.sqlite3 file0600. SQLite owns atomicity, transactions, and crash recovery; no custom filesystem journal/rollback protocol.",
     "The SQLite database has one singleton layout row: revision, canonical positions JSON, nullable floorplan SHA-256/MIME/width/height/blob. BEGIN IMMEDIATE under one process lock serializes CAS; mutations commit revision and blob atomically. Busy/database errors return storage_unavailable.",
@@ -44,7 +43,7 @@
     "Two-second collection starts at first host receipt; late evidence may recompute. Persisted positions, not current GTT freshness, determine eligibility.",
     "Floorplan controls require pointer/keyboard plus semantic node/estimate tables and announcements.",
     "No hardware flash/reset, fleet rollout, PC reboot, or further dependency/config change without explicit approval.",
-    "Implementation stays on feat/kiss-wearable-tavrn-dashboard and PR #2. No source mutation after final full-range checker."
+    "Implementation stays on feat/kiss-wearable-tavrn-dashboard and PR #2. After the accepted dashboard-only correction commit, make no further source mutation in this workplan."
   ],
   "relevantFiles": [
     "shared/schema.h",
@@ -203,32 +202,32 @@
     },
     {
       "id": "phase-validation-deployment",
-      "title": "Slice E — full regression, persistent hardware proof, and PR handoff",
-      "status": "draft",
+      "title": "Slice E — dashboard PoC verification and handoff",
+      "status": "completed",
       "steps": [
         {
           "id": "step-e1-software-gates",
-          "title": "E1 — run complete software, build, resource, and security gates",
-          "target": "entire branch and PR range",
-          "action": "After the approved workplan and each reviewed Slice A-D are committed separately, run complete MIND/wearable/protocol/benchmark suites, host security/persistence tests, dashboard Bun/npm/typecheck/build, standard firmware entrypoints, FULL+repair+wearable builds, exact paired D2 report mode from one clean committed source, toolchain fixtures, diff hygiene, workplan validation, and a pre-HIL full-range code-checker. Measure/update only reviewed resource contracts; no uncommitted source enters D2 artifacts.",
-          "validation": "Every suite passes from clean committed HEAD; exact OFF/ON D2 artifacts share source/build state and bind the supported toolchain; no blocker/critical/major pre-HIL finding remains; branch is not pushed yet.",
-          "status": "draft"
+          "title": "E1 — verify and commit the dashboard PoC",
+          "target": "host bridge, dashboard, README, and active workplan",
+          "action": "Review only the remaining host/dashboard correction diff, resolve valid host/dashboard findings, run the complete host test suite and Python compilation, run dashboard tests/typecheck/production build, inspect wide and narrow rendered dashboard states, validate the workplan, and commit the accepted dashboard-only correction. Do not run or modify firmware, D2, firmware profiles, or hardware.",
+          "validation": "Host tests and Python compilation pass; dashboard tests, typecheck, and production build pass; wide and narrow visual smoke evidence has no blocking defect; diff hygiene and workplan validation pass; the committed correction contains no microbit/firmware changes.",
+          "status": "completed"
         },
         {
           "id": "step-e2-hardware-proof",
-          "title": "E2 — execute and persist one-gateway floorplan/RSSI PoC evidence",
-          "target": "one PC, one serial gateway, at least four additional backbone observers, wearable injector/production wearable, persistent hardware-results bundle",
-          "action": "After separate explicit approval covering homogeneous fleet flash/reset and PC reboot, connect only gateway UART, activate GATEWAY, validate self/GTT roster, explicitly position at least four observers, and prove disk restoration. Trigger four/three/<three contributor cases. At known points/orientations record raw RSSIs, contributors, estimates, and descriptive error using d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), with no pass threshold. Persist redacted logs, APIs, layout/image, manifests, screenshots, commands, checksums, and caveats.",
-          "validation": "Persistent evidence survives reboot and proves gateway identity, GTT roster, explicit positions, restored floorplan, one marker per logical event, four-contributor spread, three-contributor spread-null/geometry warning, insufficient below three, zero critical faults, and descriptive d_norm error tables.",
-          "status": "draft"
+          "title": "E2 — hardware proof deferred outside this PoC",
+          "target": "no current execution",
+          "action": "Cancelled for the dashboard-PoC handoff. Hardware flashing, reset, reboot, fleet work, and persistent HIL evidence require a separate future request and explicit approval.",
+          "validation": "No hardware action occurs while finishing this workplan.",
+          "status": "cancelled"
         },
         {
           "id": "step-e3-handoff",
-          "title": "E3 — final documentation, workplan closure decision, commit/push/PR update",
-          "target": "docs, workplans, branch, PR #2",
-          "action": "Commit the persistent E2 evidence and final docs/workplan updates, then run the final full-range code-checker over origin/master...HEAD. Any finding loops through a scoped correction writer, checker re-review, and all affected gates before another commit. After a clean final checker, make no source mutation; verify checksums/workplans/status, push once, and update PR #2 with scope, tests, evidence, and deferred calibration.",
-          "validation": "Final documentation matches behavior; evidence checksums pass; workplans validate; no post-checker mutation exists; git status is clean; upstream equals HEAD; PR includes all commits and avoids precision claims.",
-          "status": "draft"
+          "title": "E3 — push and PR update deferred",
+          "target": "no current execution",
+          "action": "Cancelled for this local dashboard-PoC completion. Do not push or update the PR unless separately requested.",
+          "validation": "Stop after the local dashboard correction commit and completion report.",
+          "status": "cancelled"
         }
       ]
     }
@@ -280,9 +279,11 @@
     "Slice D completed on 2026-08-25. Added the pure synchronous LocalizationProvider contract, WeightedCentroidProvider(2.0), aspect-normalized geometry/spread, confirmed-layout composition, exact two-second collection timer, bounded dedup/evidence/tombstone/cursor state, saturating counters, persisted-position joins independent of current GTT, and Collecting/Insufficient/Ballpark presentation.",
     "Slice D correction review resolved active-feed tombstone reactivation: tombstone-only late reports remain inactive and cannot reconstruct corrupted aggregate evidence; same-payload/conflicting late-report tests preserve feed/FIFO/timing/wearable/conflict behavior.",
     "Final Slice D dashboard verification passed 10 test files / 102 tests, TypeScript no-emit typecheck, Vite production build, and git diff hygiene. Final adversarial code review accepted with zero blocker/critical/major/high findings.",
-    "Real Bridge/PTTY/SQLite/Chromium rendered acceptance covered uploaded and image-less floorplans, wide and complete narrow Ballpark, fewer-than-three Insufficient with contributor threshold, and invalid-GTT persisted Ballpark with fail-closed roster editing. Final visual review accepted with zero blocker/high findings. Representative final artifacts are under /tmp/opencode/tron-d-*-final.png and are intentionally not repository evidence; persistent hardware proof remains Slice E."
+    "Real Bridge/PTTY/SQLite/Chromium rendered acceptance covered uploaded and image-less floorplans, wide and complete narrow Ballpark, fewer-than-three Insufficient with contributor threshold, and invalid-GTT persisted Ballpark with fail-closed roster editing. Final visual review accepted with zero blocker/high findings. Representative final artifacts are under /tmp/opencode/tron-d-*-final.png and are intentionally not repository evidence; persistent hardware proof remains Slice E.",
+    "User scope decision: finish the host/dashboard PoC only. No further firmware source, D2, firmware build/profile, flash/reset/reboot, hardware evidence, push, or PR work. The firmware observed-RSSI path and 5x5 G gateway glyph are already completed in Slice A and must not be reopened.",
+    "Dashboard-only Slice E verification passed: 67 host tests plus Python compilation; 107 dashboard tests plus TypeScript/Vite production build; wide `/tmp/opencode/tron-dashboard-final2-wide.png` and narrow `/tmp/opencode/tron-dashboard-final2-narrow.png` real Bridge/PTTY/SQLite/Chromium renders approved with no blocker/high/medium visual findings; workplans and diff hygiene passed; no `microbit/` file is modified. E2 hardware and E3 push/PR remain cancelled."
   ],
-  "status": "in_progress",
+  "status": "completed",
   "createdAt": "2026-08-24T11:43:32.405Z",
-  "updatedAt": "2026-08-25T06:48:32.762Z"
+  "updatedAt": "2026-08-25T15:48:00.154Z"
 }

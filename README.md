@@ -44,11 +44,17 @@ they send JSON with no Origin or fetch-metadata headers.
 
 ## Dashboard bridge deployment
 
-Install the bridge image validator before launch:
+Install the bridge image validator, then install the frozen dashboard
+dependencies and build the production assets before launch:
 
 ```bash
 uv venv .venv
 uv pip install --python .venv/bin/python -r host/requirements.txt
+(
+  cd dashboard
+  bun install --frozen-lockfile
+  bun run build
+)
 ```
 
 Run the dashboard bridge with exactly one serial-connected Gateway:

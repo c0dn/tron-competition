@@ -1,8 +1,11 @@
 import type { EventRecord, EventsResponse, GttEntry, GttSnapshot, HealthDevice, HealthResponse, HealthRoot, LayoutReadyResponse } from '../lib/api';
 
+export const SESSION_ID = '0123456789abcdef0123456789abcdef';
+
 export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
   return {
     cursor: 1,
+    received_at_ms: 10_000,
     kind: 'event',
     device: 0,
     now: 1234,
@@ -22,10 +25,15 @@ export function eventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
   };
 }
 
-export function eventsResponse(events: EventsResponse['events'] = [], gap = false): EventsResponse {
+export function eventsResponse(
+  events: EventsResponse['events'] = [],
+  gap = false,
+  sessionId = SESSION_ID,
+): EventsResponse {
   const current = events.length === 0 ? 0 : events[events.length - 1].cursor;
   return {
     schema: 'mind.api.v2',
+    session_id: sessionId,
     gap,
     oldest_cursor: events.length === 0 ? 1 : events[0].cursor,
     current_cursor: current,
@@ -99,10 +107,11 @@ export function healthDevice(device: number, overrides: Partial<HealthDevice> = 
   };
 }
 
-export function healthResponse(devices: HealthDevice[] = [healthDevice(0)]): HealthResponse {
+export function healthResponse(devices: HealthDevice[] = [healthDevice(0)], sessionId = SESSION_ID): HealthResponse {
   const current = Math.max(0, ...devices.map((device) => device.root?.cursor ?? 0));
   return {
     schema: 'mind.health.v2',
+    session_id: sessionId,
     oldest_cursor: 1,
     current_cursor: current,
     devices,

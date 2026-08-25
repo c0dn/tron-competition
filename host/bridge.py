@@ -38,6 +38,8 @@ ERROR_SCHEMA = "mind.error.v1"
 
 RING_CAPACITY = 256
 MAX_PAGE_SIZE = 100
+SESSION_ID_BYTES = 16
+MAX_UNIX_EPOCH_MS = 253_402_300_799_999
 MAX_LINE_BYTES = 512
 MAX_REQUEST_BYTES = 4096
 MAX_LAYOUT_REQUEST_BYTES = 65536
@@ -48,6 +50,7 @@ HTTP_WORKER_CAPACITY = 16
 MAX_STATIC_FILE_BYTES = 16 * 1024 * 1024
 INITIAL_RECONNECT_SECONDS = 0.05
 MAX_RECONNECT_SECONDS = 1.0
+FRAME_ANCESTORS_POLICY = "frame-ancestors 'none'"
 
 KNOWN_PREFIXES = (
     b"mind_event_v1",
@@ -332,6 +335,9 @@ class CursorRing:
     def append(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             committed = {"cursor": self._next_cursor, **record}
+            if committed["kind"] == "event":
+                # Host/API metadata only; this does not alter UART data.
+                committed["received_at_ms"] = _bounded_unix_epoch_ms()
             self._records.append(committed)
             self._next_cursor += 1
             return committed
@@ -609,12 +615,21 @@ class SerialTransport:
 
     def _invalidate_gtt(self) -> None:
         with self._state_lock:
+            # A malformed record only revokes an exposed roster when it
+            # interrupts a newer response being assembled. Stray records with
+            # no active response cannot supersede existing authority.
+            if self._partial_gtt is not None:
+                self._latest_gtt = None
             self._partial_gtt = None
 
     def _record_gtt(self, record: dict[str, Any]) -> None:
         with self._state_lock:
             kind = record["kind"]
             if kind == "gtt_begin":
+                # A nested begin proves the in-flight response cannot complete;
+                # it also supersedes any roster that was valid before it began.
+                if self._partial_gtt is not None:
+                    self._latest_gtt = None
                 self._partial_gtt = PartialGTT(
                     query=record["query"],
                     local=record["local"],
@@ -633,12 +648,14 @@ class SerialTransport:
                     or record["index"] != len(partial.entries)
                     or len(partial.entries) >= partial.entry_count
                 ):
+                    self._latest_gtt = None
                     self._partial_gtt = None
                     return
                 partial.entries.append(record)
                 return
 
             if kind != "gtt_end":
+                self._latest_gtt = None
                 self._partial_gtt = None
                 return
             if (
@@ -934,6 +951,8 @@ class Bridge:
         transport_factory: Callable[["Bridge", int, str, tuple[str, ...], Timing], SerialTransport] = SerialTransport,
     ) -> None:
         self.timing = timing
+        # A process-lifetime opaque epoch from operating-system random bytes.
+        self.session_id = os.urandom(SESSION_ID_BYTES).hex()
         self.ring = CursorRing()
         self.layout = layout_store.LayoutStore(state_dir or layout_store.default_state_dir())
         # Lock order is bridge snapshot -> ring -> transport state.  Transport
@@ -971,6 +990,11 @@ class Bridge:
             committed = self.ring.append({"device": transport.owner_index, **record})
             transport._note_record(committed)
 
+    def events_page(self, after: int, limit: int) -> dict[str, Any]:
+        """Return one session-qualified API page from the event ring."""
+
+        return {**self.ring.page(after, limit), "session_id": self.session_id}
+
     def health(self) -> dict[str, Any]:
         with self._snapshot_lock:
             oldest, current = self.ring.cursors()
@@ -981,6 +1005,7 @@ class Bridge:
             ]
         return {
             "schema": HEALTH_SCHEMA,
+            "session_id": self.session_id,
             "oldest_cursor": oldest,
             "current_cursor": current,
             "devices": devices,
@@ -1060,6 +1085,8 @@ class BoundedThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             request.sendall(
                 b"HTTP/1.1 503 Service Unavailable\r\n"
                 b"Connection: close\r\n"
+                b"Content-Security-Policy: frame-ancestors 'none'\r\n"
+                b"X-Frame-Options: DENY\r\n"
                 b"Content-Length: 0\r\n\r\n"
             )
         except OSError:
@@ -1181,6 +1208,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._request_host: Optional[str] = None
         self._request_expired = threading.Event()
         self._request_deadline = time.monotonic() + self.bridge_server.timing.http_request_deadline
+        self._mutation_cancellation = layout_store.MutationCancellation(
+            lambda: time.monotonic() < self._request_deadline
+        )
         # Socket timeouts restart when a peer drips bytes. This bounded timer
         # shuts the socket at one absolute deadline; there can be no more than
         # HTTP_WORKER_CAPACITY live handlers/timers.
@@ -1191,6 +1221,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._deadline_timer.start()
 
     def _expire_request(self) -> None:
+        # This shares the store's commit-admission boundary.  Expiry either
+        # wins before SQLite is admitted or waits until an admitted commit is
+        # durable; it cannot land between a final check and ``commit()``.
+        self._mutation_cancellation.cancel()
         self._request_expired.set()
         try:
             self.request.shutdown(socket.SHUT_RDWR)
@@ -1198,9 +1232,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def _mutation_is_active(self) -> bool:
-        """Prevent a queued handler from starting SQLite after its deadline."""
+        """Check mutation activity; durable admission is coordinated by the store."""
 
-        if self._request_expired.is_set() or time.monotonic() >= self._request_deadline:
+        if not self._mutation_cancellation.is_active():
             self._request_expired.set()
             return False
         return True
@@ -1218,6 +1252,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._deadline_timer.cancel()
 
     def end_headers(self) -> None:
+        self.send_header("Content-Security-Policy", FRAME_ANCESTORS_POLICY)
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Connection", "close")
         super().end_headers()
         self.close_connection = True
@@ -1304,7 +1340,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, "invalid_query")
                 return
             after, limit = query
-            self._send_json(200, self.bridge_server.bridge.ring.page(after, limit))
+            self._send_json(200, self.bridge_server.bridge.events_page(after, limit))
             return
         if parsed.path == "/api/health" and not parsed.query:
             self._send_json(200, self.bridge_server.bridge.health())
@@ -1339,7 +1375,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             response = self.bridge_server.bridge.layout.replace_positions(
-                base_revision, positions, cancel_check=self._mutation_is_active
+                base_revision, positions, cancel_check=self._mutation_cancellation
             )
         except layout_store.Conflict as error:
             self._send_json(
@@ -1462,7 +1498,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             response = self.bridge_server.bridge.layout.upload(
-                base_revision, image, decoded, cancel_check=self._mutation_is_active
+                base_revision, image, decoded, cancel_check=self._mutation_cancellation
             )
         except layout_store.Conflict as error:
             self._send_json(
@@ -1491,7 +1527,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             response = self.bridge_server.bridge.layout.remove(
-                base_revision, cancel_check=self._mutation_is_active
+                base_revision, cancel_check=self._mutation_cancellation
             )
         except layout_store.Conflict as error:
             self._send_json(
@@ -1787,6 +1823,12 @@ def _mime_type(path: Path) -> str:
         ".woff2": "font/woff2",
     }
     return fixed.get(path.suffix.lower(), mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+
+def _bounded_unix_epoch_ms() -> int:
+    """Return a JSON-safe Unix epoch timestamp within the API contract range."""
+
+    return min(MAX_UNIX_EPOCH_MS, max(0, int(time.time() * 1000)))
 
 
 def _port(value: str) -> int:
