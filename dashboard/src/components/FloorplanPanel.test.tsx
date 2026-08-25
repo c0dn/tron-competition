@@ -3,8 +3,10 @@ import { StrictMode, type ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FloorplanPanel } from './FloorplanPanel';
-import { gttEntry, gttSnapshot, healthDevice, jsonResponse, layoutReady, rootStatus } from '../test/fixtures';
+import { eventRecord, gttEntry, gttSnapshot, healthDevice, jsonResponse, layoutReady, rootStatus } from '../test/fixtures';
 import { restoreFetch, stubFetch } from '../test/runtime';
+import type { IncidentLocalizationView } from '../localization/IncidentLocalization';
+import type { LogicalEvent } from '../state/store';
 
 afterEach(() => {
   cleanup();
@@ -71,6 +73,27 @@ describe('floorplan interactions', () => {
     expect(within(document.body).getByRole('button', { name: /Gateway, positioned at x 0.20, y 0.30/i })).not.toBeNull();
   });
 
+  it('applies numeric blank and uploaded floorplan aspects to the confirmed map content', async () => {
+    const blankFetch = vi.fn((input: string) => {
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(blankFetch);
+    const { unmount } = render(panel({ healthAuthoritative: false }));
+    await within(document.body).findByText('Floorplan coordinates loaded. No image uploaded.');
+    expect((document.querySelector('.floorplan-content') as HTMLElement).style.aspectRatio).toBe(`${16 / 9} / 1`);
+    unmount();
+
+    const image = { sha256: 'a'.repeat(64), mime: 'image/png' as const, width: 1200, height: 800, url: `/api/floorplan/${'a'.repeat(64)}` };
+    stubFetch(vi.fn((input: string) => {
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ floorplan: image })));
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(panel({ healthAuthoritative: false }));
+    await within(document.body).findByAltText('Uploaded floorplan');
+    expect((document.querySelector('.floorplan-content') as HTMLElement).style.aspectRatio).toBe('1.5 / 1');
+  });
+
   it('bootstraps only from current authoritative health, bounds the request, and permits retry', async () => {
     vi.useFakeTimers();
     const missing = [healthDevice(0, { root: rootStatus(), gtt: null })];
@@ -118,7 +141,7 @@ describe('floorplan interactions', () => {
     const { rerender } = render(panel({ devices: oldGeneration, gttRefreshIntervalMs: 60_000 }));
     const ui = within(document.body);
     await ui.findByRole('button', { name: 'Refresh GTT' });
-    await ui.findByText('Floorplan loaded.');
+    await ui.findByText('Floorplan coordinates loaded. No image uploaded.');
     fireEvent.click(ui.getByRole('button', { name: 'Refresh GTT' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/gtt', expect.anything()));
     rerender(panel({ devices: oldGeneration.map((device) => ({ ...device })), gttRefreshIntervalMs: 60_000 }));
@@ -175,7 +198,7 @@ describe('floorplan interactions', () => {
     }) })];
     const { rerender } = render(panel({ devices: beforeReset, gttRefreshIntervalMs: 60_000 }));
     const ui = within(document.body);
-    await ui.findByText('Floorplan loaded.');
+    await ui.findByText('Floorplan coordinates loaded. No image uploaded.');
     fireEvent.click(ui.getByRole('button', { name: 'Refresh GTT' }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => input === '/api/gtt')).toHaveLength(1));
     rerender(panel({ devices: beforeReset, currentEpoch: 1, healthEpoch: 0, gttRefreshIntervalMs: 60_000 }));
@@ -221,7 +244,7 @@ describe('floorplan interactions', () => {
     const { rerender } = render(panel());
     const ui = within(document.body);
     const staging = await ui.findByRole('region', { name: /Unpositioned nodes/i });
-    await ui.findByText('Floorplan loaded.');
+    await ui.findByText('Floorplan coordinates loaded. No image uploaded.');
     fireEvent.click(within(staging).getAllByRole('button', { name: 'Place on map' })[0]!);
     expect(document.querySelector('.placement-active')).not.toBeNull();
     rerender(panel({ healthAuthoritative: false }));
@@ -273,9 +296,95 @@ describe('floorplan interactions', () => {
     render(panel());
     const ui = within(document.body);
     const staging = await ui.findByRole('region', { name: /Unpositioned nodes/i });
-    fireEvent.click(within(staging).getAllByRole('button', { name: 'Place at center' })[0]!);
+    const placeAtCenter = within(staging).getAllByRole('button', { name: 'Place at center' })[0]!;
+    await waitFor(() => expect(placeAtCenter).toHaveProperty('disabled', false));
+    fireEvent.click(placeAtCenter);
     await ui.findByText('Node placed at center. Reapplied after a concurrent update.');
     expect(fetchMock.mock.calls.filter(([input]) => input === '/api/layout')).toHaveLength(3);
+  });
+
+  it('does not retry a roster-bound conflict after the affected GTT entry leaves the current roster', async () => {
+    let resolveConflict: ((response: Response) => void) | undefined;
+    let layoutReads = 0;
+    const initial = layoutReady();
+    const concurrent = layoutReady({ revision: 1, positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const onLayoutChange = vi.fn();
+    const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method) {
+        return Promise.resolve(jsonResponse(200, layoutReads++ === 0 ? initial : concurrent));
+      }
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        return new Promise<Response>((resolve) => { resolveConflict = resolve; });
+      }
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    const { rerender } = render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    const staging = await ui.findByRole('region', { name: /Unpositioned nodes/i });
+    onLayoutChange.mockClear();
+    const remote = within(staging).getByText('0102545678c1').closest('li');
+    if (!remote) throw new Error('Expected current remote node.');
+    fireEvent.click(within(remote).getByRole('button', { name: 'Place at center' }));
+    await waitFor(() => expect(resolveConflict).toBeDefined());
+
+    const local = '1842de524add';
+    rerender(panel({
+      devices: [healthDevice(0, {
+        root: rootStatus({ local }),
+        gtt: gttSnapshot({ local, entries: [gttEntry({ adva: local })] }),
+      })],
+      onLayoutChange,
+    }));
+    await act(async () => { resolveConflict?.(jsonResponse(409, { schema: 'mind.dashboard.layout.conflict.v1', error: 'revision_conflict', current: concurrent })); });
+
+    await waitFor(() => expect(onLayoutChange).toHaveBeenLastCalledWith(concurrent));
+    expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/layout' && (options as RequestInit).method === 'PUT')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/layout' && !(options as RequestInit).method)).toHaveLength(2);
+    expect(onLayoutChange).not.toHaveBeenCalledWith(expect.objectContaining({ positions: expect.arrayContaining([
+      expect.objectContaining({ adva: '0102545678c1', x: 0.5, y: 0.5 }),
+    ]) }));
+  });
+
+  it('does not retry an off-roster unplace after GTT authority becomes invalid', async () => {
+    let resolveConflict: ((response: Response) => void) | undefined;
+    let layoutReads = 0;
+    const orphan = { adva: 'ffffffffffff', x: 0.1, y: 0.2 };
+    const initial = layoutReady({ positions: [orphan] });
+    const concurrent = layoutReady({ revision: 1, positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const onLayoutChange = vi.fn();
+    const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method) {
+        return Promise.resolve(jsonResponse(200, layoutReads++ === 0 ? initial : concurrent));
+      }
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        return new Promise<Response>((resolve) => { resolveConflict = resolve; });
+      }
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    const { rerender } = render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    const orphanRow = (await ui.findByText('ffffffffffff')).closest('tr');
+    if (!orphanRow) throw new Error('Expected stored orphan row.');
+    onLayoutChange.mockClear();
+    fireEvent.click(within(orphanRow).getByRole('button', { name: 'Unplace' }));
+    await waitFor(() => expect(resolveConflict).toBeDefined());
+
+    const local = '1842de524add';
+    rerender(panel({
+      devices: [healthDevice(0, {
+        root: rootStatus({ local }),
+        gtt: gttSnapshot({ local, entries: [gttEntry({ adva: '0102545678ff' })] }),
+      })],
+      onLayoutChange,
+    }));
+    await act(async () => { resolveConflict?.(jsonResponse(409, { schema: 'mind.dashboard.layout.conflict.v1', error: 'revision_conflict', current: concurrent })); });
+
+    await waitFor(() => expect(onLayoutChange).toHaveBeenLastCalledWith(concurrent));
+    expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/layout' && (options as RequestInit).method === 'PUT')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/layout' && !(options as RequestInit).method)).toHaveLength(2);
+    expect(onLayoutChange).not.toHaveBeenCalledWith(expect.objectContaining({ positions: [] }));
   });
 
   it('disables layout editing while a failed mutation recovers and does not retain its optimistic result', async () => {
@@ -401,7 +510,9 @@ describe('floorplan interactions', () => {
     render(panel());
     const ui = within(document.body);
     const staging = await ui.findByRole('region', { name: /Unpositioned nodes/i });
-    fireEvent.click(within(staging).getAllByRole('button', { name: 'Place at center' })[0]!);
+    const placeAtCenter = within(staging).getAllByRole('button', { name: 'Place at center' })[0]!;
+    await waitFor(() => expect(placeAtCenter).toHaveProperty('disabled', false));
+    fireEvent.click(placeAtCenter);
     await waitFor(() => expect(fetchMock.mock.calls.filter(([path]) => path === '/api/layout')).toHaveLength(4));
     const rolledBack = ui.getByRole('button', { name: /Gateway, positioned at x 0.70, y 0.60/i });
     expect(rolledBack).toHaveProperty('disabled', true);
@@ -660,5 +771,200 @@ describe('floorplan interactions', () => {
     fireEvent.keyUp(node, { key: 'ArrowRight' });
     await ui.findByText('Node position saved.');
     await waitFor(() => expect(document.activeElement).toBe(upload));
+  });
+
+  it('publishes only decoded server coordinates after a deferred position save succeeds', async () => {
+    let resolveSave: ((response: Response) => void) | undefined;
+    const initial = layoutReady({ positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const committed = layoutReady({ revision: 1, positions: [{ adva: '1842de524add', x: 0.8, y: 0.7 }] });
+    const onLayoutChange = vi.fn();
+    stubFetch(vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method) return Promise.resolve(jsonResponse(200, initial));
+      if (input === '/api/layout' && init?.method === 'PUT') return new Promise<Response>((resolve) => { resolveSave = resolve; });
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    const node = await ui.findByRole('button', { name: /Gateway, positioned at x 0.20, y 0.30/i });
+    expect(onLayoutChange).toHaveBeenLastCalledWith(initial);
+    onLayoutChange.mockClear();
+
+    fireEvent.keyDown(node, { key: 'ArrowRight' });
+    fireEvent.keyUp(node, { key: 'ArrowRight' });
+    await waitFor(() => expect(resolveSave).toBeDefined());
+    expect(onLayoutChange).not.toHaveBeenCalled();
+
+    await act(async () => { resolveSave?.(jsonResponse(200, committed)); });
+    await waitFor(() => expect(onLayoutChange).toHaveBeenLastCalledWith(committed));
+    expect(onLayoutChange).not.toHaveBeenCalledWith(expect.objectContaining({ positions: [{ adva: '1842de524add', x: 0.21, y: 0.3 }] }));
+  });
+
+  it('never publishes double-conflict optimistic positions', async () => {
+    let layoutReads = 0;
+    let recovery: ((response: Response) => void) | undefined;
+    const initial = layoutReady({ positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const firstCurrent = layoutReady({ revision: 1, positions: [{ adva: '1842de524add', x: 0.4, y: 0.4 }] });
+    const secondCurrent = layoutReady({ revision: 2, positions: [{ adva: '1842de524add', x: 0.7, y: 0.6 }] });
+    const onLayoutChange = vi.fn();
+    const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method && layoutReads++ === 0) return Promise.resolve(jsonResponse(200, initial));
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        const puts = fetchMock.mock.calls.filter(([path, options]) => path === '/api/layout' && (options as RequestInit).method === 'PUT').length;
+        const current = puts === 1 ? firstCurrent : secondCurrent;
+        return Promise.resolve(jsonResponse(409, { schema: 'mind.dashboard.layout.conflict.v1', error: 'revision_conflict', current }));
+      }
+      if (input === '/api/layout') return new Promise<Response>((resolve) => { recovery = resolve; });
+      throw new Error(`Unexpected ${input}`);
+    });
+    stubFetch(fetchMock);
+    render(panel({ onLayoutChange, layoutMutationTimeoutMs: 5 }));
+    const ui = within(document.body);
+    const staging = await ui.findByRole('region', { name: /Unpositioned nodes/i });
+    await ui.findByText('Floorplan coordinates loaded. No image uploaded.');
+    onLayoutChange.mockClear();
+    fireEvent.click(within(staging).getAllByRole('button', { name: 'Place at center' })[0]!);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([path]) => path === '/api/layout')).toHaveLength(4));
+    expect(onLayoutChange).not.toHaveBeenCalled();
+    if (!recovery) throw new Error('Expected a recovery GET.');
+    await act(async () => { recovery?.(jsonResponse(200, secondCurrent)); });
+    await waitFor(() => expect(onLayoutChange).toHaveBeenLastCalledWith(secondCurrent));
+    expect(onLayoutChange.mock.calls.flat()).not.toContainEqual(expect.objectContaining({ positions: expect.arrayContaining([
+      expect.objectContaining({ adva: '0102545678c1', x: 0.5, y: 0.5 }),
+    ]) }));
+  });
+
+  it("does not publish a failed mutation's optimistic coordinates before recovery commits", async () => {
+    let reads = 0;
+    let recover: ((response: Response) => void) | undefined;
+    const initial = layoutReady({ positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const onLayoutChange = vi.fn();
+    stubFetch(vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method && reads++ === 0) return Promise.resolve(jsonResponse(200, initial));
+      if (input === '/api/layout' && init?.method === 'PUT') return Promise.resolve(jsonResponse(503, { schema: 'mind.dashboard.error.v1', accepted: false, error: 'storage_unavailable' }));
+      if (input === '/api/layout') return new Promise<Response>((resolve) => { recover = resolve; });
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    fireEvent.click(await ui.findByRole('button', { name: 'Unplace' }));
+    onLayoutChange.mockClear();
+    await ui.findByText(/Floorplan save failed: Layout request failed: storage_unavailable/i);
+    expect(onLayoutChange).not.toHaveBeenCalled();
+    if (!recover) throw new Error('Expected a recovery GET.');
+    await act(async () => { recover?.(jsonResponse(200, initial)); });
+    await waitFor(() => expect(onLayoutChange).toHaveBeenLastCalledWith(initial));
+    expect(onLayoutChange).not.toHaveBeenCalledWith(expect.objectContaining({ positions: [] }));
+  });
+
+  it('revokes the confirmed layout when a current recovery GET decodes corrupt state', async () => {
+    let layoutReads = 0;
+    const initial = layoutReady({ positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const corrupt = {
+      schema: 'mind.dashboard.layout.v1', status: 'corrupt', error: 'corrupt_state', revision: 1, floorplan: null, positions: [],
+    } as const;
+    const onLayoutChange = vi.fn();
+    stubFetch(vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method) {
+        return Promise.resolve(jsonResponse(200, layoutReads++ === 0 ? initial : corrupt));
+      }
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse(503, { schema: 'mind.dashboard.error.v1', accepted: false, error: 'storage_unavailable' }));
+      }
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    await ui.findByRole('button', { name: 'Unplace' });
+    onLayoutChange.mockClear();
+    fireEvent.click(ui.getByRole('button', { name: 'Unplace' }));
+
+    await ui.findByText('Floorplan state is corrupt. Recover storage before editing.');
+    expect(onLayoutChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it('does not publish an aborted mutation', async () => {
+    let signal: AbortSignal | undefined;
+    const initial = layoutReady({ positions: [{ adva: '1842de524add', x: 0.2, y: 0.3 }] });
+    const onLayoutChange = vi.fn();
+    stubFetch(vi.fn((input: string, init?: RequestInit) => {
+      if (input === '/api/layout' && !init?.method) return Promise.resolve(jsonResponse(200, initial));
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      }
+      throw new Error(`Unexpected ${input}`);
+    }));
+    const { unmount } = render(panel({ onLayoutChange }));
+    const ui = within(document.body);
+    fireEvent.click(await ui.findByRole('button', { name: 'Unplace' }));
+    await waitFor(() => expect(signal).toBeDefined());
+    onLayoutChange.mockClear();
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    expect(onLayoutChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale StrictMode reads without creating a layout callback loop', async () => {
+    const resolveReads: Array<(response: Response) => void> = [];
+    const onLayoutChange = vi.fn();
+    stubFetch(vi.fn((input: string) => {
+      if (input !== '/api/layout') throw new Error(`Unexpected ${input}`);
+      return new Promise<Response>((resolve) => { resolveReads.push(resolve); });
+    }));
+    render(<StrictMode>{panel({ onLayoutChange })}</StrictMode>);
+    await waitFor(() => expect(resolveReads).toHaveLength(2));
+    const committed = layoutReady({ revision: 2, positions: [{ adva: '1842de524add', x: 0.8, y: 0.7 }] });
+    const stale = layoutReady({ revision: 1, positions: [{ adva: '1842de524add', x: 0.1, y: 0.2 }] });
+
+    await act(async () => { resolveReads[1]?.(jsonResponse(200, committed)); });
+    await waitFor(() => expect(onLayoutChange).toHaveBeenCalledTimes(1));
+    await act(async () => { resolveReads[0]?.(jsonResponse(200, stale)); });
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onLayoutChange).toHaveBeenLastCalledWith(committed);
+  });
+
+  it('anchors incident points at exact normalized edges while offsetting only their labels', async () => {
+    const record = eventRecord({ wearable: 7, packet: '000007' });
+    const logicalEvent: LogicalEvent = {
+      key: '7:000007',
+      fingerprint: '1:3:75:2400:86:42',
+      record,
+      evidence: [],
+      evidenceOverflowCount: 0,
+      evidenceSaturated: false,
+      conflict: false,
+      firstReceivedAt: 0,
+      collectUntil: 2_000,
+    };
+    const views: readonly IncidentLocalizationView[] = [
+      {
+        logicalEvent,
+        status: 'ballpark',
+        contributorIds: ['a', 'b', 'c'],
+        contributorCount: 3,
+        geometryWarning: false,
+        normalizedSpread: null,
+        x: 0,
+        y: 1,
+      },
+      {
+        logicalEvent: { ...logicalEvent, key: '8:000008', record: eventRecord({ wearable: 8, packet: '000008' }) },
+        status: 'insufficient',
+        contributorIds: ['a', 'b'],
+        contributorCount: 2,
+      },
+    ];
+    stubFetch(vi.fn((input: string) => {
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady()));
+      throw new Error(`Unexpected ${input}`);
+    }));
+
+    render(panel({ incidentViews: views }));
+    const marker = await within(document.body).findByRole('img', { name: /Wearable 7, packet 000007: Ballpark at normalized x 0.00, y 1.00/i });
+    expect((marker as HTMLElement).style.left).toBe('0%');
+    expect((marker as HTMLElement).style.top).toBe('100%');
+    expect(marker.querySelector('.floorplan-marker-label')?.className).toContain('marker-east');
+    expect(marker.querySelector('.floorplan-marker-label')?.className).toContain('marker-north');
+    expect(within(document.body).getByText('2 of 3 required')).not.toBeNull();
   });
 });

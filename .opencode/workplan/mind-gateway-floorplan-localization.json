@@ -158,7 +158,7 @@
     {
       "id": "phase-dashboard-floorplan",
       "title": "Slice C — gateway/GTT roster and deployable floorplan HCI",
-      "status": "in_progress",
+      "status": "completed",
       "steps": [
         {
           "id": "step-c1-gateway-roster-map",
@@ -166,7 +166,7 @@
           "target": "dashboard API/state/components/styles/tests",
           "action": "A frontend code-writer decodes exact mind.api.v2 and layout contracts, treats only physical owner device0 as Gateway, keeps /api/root but changes every visible ROOT string to GATEWAY, removes explanatory copy, and requests only device0 GTT. Roster derives only from a valid complete gateway GTT. Unpositioned GTT entries remain in an explicit staging list outside the map; only pointer/keyboard placement creates persisted coordinates. Add blank/image content-rectangle floorplan, upload/remove, positioned-node drag, unplace/clear controls, optimistic CAS with conflict refetch/reapply, stable refresh, and semantic coordinate/estimate tables. Image replacement retains coordinates and clearly announces the retained mapping.",
           "validation": "Tests cover exact schemas, no visible ROOT copy, one gateway unknown/disconnected/off/on/pending, device0-only commands, missing/duplicate/mismatched self fail-closed, no source selector, GTT-only roster, unpositioned staging, three unplaced nodes cannot localize, reordered/stale/departed entries, blank/image frames, upload/remove/replacement, restart, drag/clamp/unplace/clear, keyboard instructions and coordinate values, focus/status announcements, 409 reapply/rollback, stable refresh, responsive semantics, reduced motion, no fabricated edges/numbers/positions, Bun/npm/typecheck/build, and wide/narrow rendered review.",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "step-c2-review",
@@ -174,22 +174,22 @@
           "target": "complete dashboard floorplan diff",
           "action": "A code-checker reviews human-computer interaction, gateway authority, GTT-only identity, floorplan persistence races, drag/keyboard accessibility, responsive behavior, state continuity, exact decoder security, and explanation removal before localization integration.",
           "validation": "No blocker/critical/major findings remain; visual evidence covers blank map, uploaded map, gateway unknown/active, node drag, stale/departed GTT, and restart-restored state.",
-          "status": "draft"
+          "status": "completed"
         }
       ]
     },
     {
       "id": "phase-localization",
       "title": "Slice D — deduplicated bounded RSSI location estimate",
-      "status": "draft",
+      "status": "completed",
       "steps": [
         {
           "id": "step-d1-estimator-integration",
           "title": "D1 — add provider-based weighted-centroid localization and event overlays",
           "target": "dashboard event evidence/store, localization module, floorplan integration and tests",
-          "action": "A frontend code-writer defines the pure discriminated LocalizationProvider contract and WeightedCentroidProvider configured with path-loss exponent 2.0. It validates finite positive aspect ratio; geometry, spread, and all error reporting use d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), and normalized doubled area abs(cross(aspect*x,y))/aspect with degeneracy <=1e-6. Store owns collecting/GTT/persistence and uses 0xffffffff as the ceiling for every saturating counter. Dedup retains strongest valid RSSI per observer with canonical ties, bounded state, persisted-position joins, and ten markers.",
+          "action": "A frontend code-writer defines the pure discriminated LocalizationProvider contract and WeightedCentroidProvider configured with path-loss exponent 2.0. The provider validates finite positive aspect ratio; geometry, spread, and all error reporting use d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), and normalized doubled area abs(cross(aspect*x,y))/aspect with degeneracy <=1e-6. The reducer owns bounded logical-event deduplication, unique-observer strongest-RSSI evidence, saturating counters, FIFO tombstones, and first-receipt collection deadlines. FloorplanPanel remains the sole layout persistence/mutation owner and publishes only decoded, stale-guarded GET/200 committed snapshots—never draft, optimistic, aborted, or conflicted intended coordinates. App retains only the latest confirmed layout projection and synchronously derives localization through the provider; persisted-position joins remain independent of current GTT authority. At most ten newest floorplan views are shown and only ballpark views render map markers.",
           "validation": "Tests freeze discriminated statuses, aspect rejection, exact normalized distance/area/spread bounds [0,1], geometry epsilon, weighted estimate, strongest-four tie-break, current-GTT disappearance, all capacities, and counter ceiling-1/ceiling/repeated overflow semantics. Components expose collecting/insufficient/ballpark and never branch by provider.",
-          "status": "draft"
+          "status": "completed"
         },
         {
           "id": "step-d2-review",
@@ -197,7 +197,7 @@
           "target": "complete localization and cross-layer schema diff",
           "action": "A code-checker traces one wearable observation from radio RSSI through wire, gateway UART/API, global dedup, coordinate join, and map output. Review numerical stability, overclaiming, body/multipath limitations, bounded state, and late/duplicate evidence behavior.",
           "validation": "No blocker/critical/major findings remain; replay fixtures and all cross-layer suites pass, and UI consistently labels estimates as rough/ballpark.",
-          "status": "draft"
+          "status": "completed"
         }
       ]
     },
@@ -274,9 +274,15 @@
     "Slice B code review found one critical and six major implementation/test issues. No Slice B commit will be created until the correction pass and re-review are clean.",
     "User explicitly approved adding Pillow for complete PNG/JPEG/WebP validation after Slice B review. External verification found Pillow 12.3.0 is the latest stable release (2026-07-01); official docs support Image.verify, n_frames/is_animated, and decompression-bomb controls. Pin Pillow==12.3.0 in host/requirements.txt.",
     "After three failed review cycles, user rejected the overengineered bespoke filesystem journal/rollback design and explicitly approved pivoting to built-in SQLite. Slice B must be rewritten, not incrementally patched. The exact external HTTP API remains unchanged.",
-    "Slice B final architecture: one dashboard.sqlite3 singleton row atomically stores revision, positions JSON, and floorplan blob/metadata under BEGIN IMMEDIATE CAS. Pillow==12.3.0 is pinned. Host suite: 60 tests plus pycompile/diff check. Final independent review is clean. Slice C dashboard/floorplan begins from this reviewed API."
+    "Slice B final architecture: one dashboard.sqlite3 singleton row atomically stores revision, positions JSON, and floorplan blob/metadata under BEGIN IMMEDIATE CAS. Pillow==12.3.0 is pinned. Host suite: 60 tests plus pycompile/diff check. Final independent review is clean. Slice C dashboard/floorplan begins from this reviewed API.",
+    "Slice C committed as a3c2d9c after 67 dashboard tests, typecheck/build/diff hygiene, real Bridge/PTy/SQLite/Chromium wide+narrow rendering, restart restoration, and persisted browser drag; final acceptance review reported zero blocker/critical/major/high findings.",
+    "Slice D ownership clarification: 'store owns collecting/GTT/persistence' means provider ownership is prohibited, not that the reducer absorbs Slice C's layout controller. Reducer owns event evidence/deadlines; FloorplanPanel owns SQLite API mutations; App composes only confirmed layout snapshots with pure provider results. Provider invalid_input remains internal and maps fail-closed to the approved insufficient UI state with no coordinates. Floorplan views use feed order, capped at ten before marker filtering; only ballpark views render markers.",
+    "Slice D completed on 2026-08-25. Added the pure synchronous LocalizationProvider contract, WeightedCentroidProvider(2.0), aspect-normalized geometry/spread, confirmed-layout composition, exact two-second collection timer, bounded dedup/evidence/tombstone/cursor state, saturating counters, persisted-position joins independent of current GTT, and Collecting/Insufficient/Ballpark presentation.",
+    "Slice D correction review resolved active-feed tombstone reactivation: tombstone-only late reports remain inactive and cannot reconstruct corrupted aggregate evidence; same-payload/conflicting late-report tests preserve feed/FIFO/timing/wearable/conflict behavior.",
+    "Final Slice D dashboard verification passed 10 test files / 102 tests, TypeScript no-emit typecheck, Vite production build, and git diff hygiene. Final adversarial code review accepted with zero blocker/critical/major/high findings.",
+    "Real Bridge/PTTY/SQLite/Chromium rendered acceptance covered uploaded and image-less floorplans, wide and complete narrow Ballpark, fewer-than-three Insufficient with contributor threshold, and invalid-GTT persisted Ballpark with fail-closed roster editing. Final visual review accepted with zero blocker/high findings. Representative final artifacts are under /tmp/opencode/tron-d-*-final.png and are intentionally not repository evidence; persistent hardware proof remains Slice E."
   ],
   "status": "in_progress",
   "createdAt": "2026-08-24T11:43:32.405Z",
-  "updatedAt": "2026-08-24T17:14:43.675Z"
+  "updatedAt": "2026-08-25T06:48:32.762Z"
 }

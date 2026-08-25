@@ -20,8 +20,11 @@ Internal firmware and API root semantics remain `ROOT`; only visible product lan
 - Gateway identity fails closed unless the complete GTT contains exactly one
   self entry matching `gtt.local`. If current root status exists,
   `root.local` must also equal `gtt.local`. Missing/duplicate/mismatched self
-  identity makes the gateway roster and localization unavailable; no self node
-  is synthesized.
+  identity makes the GTT roster and every roster-driven placement/editing
+  action unavailable; no self node or coordinate is synthesized. Confirmed
+  persisted positions remain eligible for localization, and the existing
+  floorplan, incident estimate table, and ballpark markers remain visible.
+  Current GTT may annotate freshness only; it cannot remove a contributor.
 - Every displayed backbone node comes from that validated complete gateway GTT.
 - GTT AdvA is the stable identity. The local entry is labeled **Gateway**. Remote entries use compact/full AdvA and freshness; GTT indices and serial values are never presented as invented node numbers.
 - Positions remain persisted by AdvA when a node temporarily disappears, but current roster/status comes only from GTT.

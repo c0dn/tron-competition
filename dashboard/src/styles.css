@@ -131,6 +131,13 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
 .floorplan-node.freshness-soft_stale { border-color: var(--warning); }
 .floorplan-node.freshness-hard_expired, .floorplan-node.freshness-departed { border-color: var(--danger); }
 .floorplan-node:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.floorplan-marker { position: absolute; z-index: 2; width: 0; height: 0; pointer-events: none; }
+.floorplan-marker-point { position: absolute; width: 10px; height: 10px; transform: translate(-50%, -50%) rotate(45deg); border: 2px solid var(--warning); background: var(--panel); }
+.floorplan-marker-label { position: absolute; display: grid; width: 44px; height: 44px; place-items: center; border: 2px solid var(--warning); border-radius: 0.35rem; background: var(--panel); color: var(--text); font: 700 0.68rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.floorplan-marker-label.marker-east { left: 26px; }
+.floorplan-marker-label.marker-west { right: 26px; }
+.floorplan-marker-label.marker-south { top: 26px; }
+.floorplan-marker-label.marker-north { bottom: 26px; }
 .staging-roster { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--line); }
 .staging-roster .section-heading { margin-bottom: 0.5rem; }
 .staging-roster h3 { margin: 0; font-size: 0.82rem; letter-spacing: 0.05em; text-transform: uppercase; }
@@ -142,13 +149,18 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
 .node-table caption { padding-bottom: 0.65rem; color: var(--muted); text-align: start; }
 .node-table th, .node-table td { padding: 0.6rem; border-top: 1px solid var(--line); vertical-align: middle; }
 .node-table thead th { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.estimate-table { width: 100%; min-width: 46rem; margin-top: 0.85rem; border-collapse: collapse; text-align: start; }
+.estimate-table caption { padding-bottom: 0.65rem; color: var(--muted); text-align: start; }
+.estimate-table th, .estimate-table td { padding: 0.6rem; border-top: 1px solid var(--line); vertical-align: middle; }
+.estimate-table thead th { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; }
 .clear-positions { margin-top: 0.75rem; border-color: var(--warning); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 .wearable-card { padding: 0.75rem; border-left-color: var(--info); }
 .wearable-card.stale { border-left-color: var(--warning); border-style: dashed; color: var(--muted); }
-.measurements, .event-data { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.4rem; margin: 0.75rem 0; }
-.measurements div, .event-data div { padding: 0.35rem; border-radius: 0.3rem; background: var(--panel); }
+.measurements, .event-data, .localization-data { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.4rem; margin: 0.75rem 0; }
+.measurements div, .event-data div, .localization-data div { padding: 0.35rem; border-radius: 0.3rem; background: var(--panel); }
+.location-status { margin: 0.5rem 0; padding: 0.35rem; border-inline-start: 0.25rem solid var(--warning); background: var(--panel); font-weight: 700; }
 .wearable-card footer, .event-record footer { color: var(--muted); display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.75rem; }
 
 .feed-panel { max-height: calc(100vh - 6rem); overflow: auto; border-left: 3px solid var(--warning); }
@@ -174,7 +186,7 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
   .panel { padding: 0.75rem; }
   .topology-grid, .wearable-grid { grid-template-columns: 1fr; }
   .root-switch { width: 100%; }
-  .metric-row, .topology-metrics, .measurements, .event-data { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-row, .topology-metrics, .measurements, .event-data, .localization-data { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .card-foot, .wearable-card footer, .event-record footer { align-items: start; flex-direction: column; }
   .secondary { width: 100%; }
   .floorplan-actions, .floorplan-toolbar { align-items: stretch; flex-direction: column; }
@@ -189,6 +201,13 @@ dd { margin: 0.12rem 0 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weig
   .node-table tr { display: block; border: 1px solid var(--line); border-radius: 0.4rem; background: var(--card); }
   .node-table th, .node-table td { display: block; border: 0; padding: 0.55rem 0.65rem; }
   .node-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 0.2rem; color: var(--muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .estimate-table { min-width: 0; display: block; }
+  .estimate-table caption { display: block; width: 100%; }
+  .estimate-table thead { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .estimate-table tbody { display: grid; gap: 0.6rem; }
+  .estimate-table tr { display: block; border: 1px solid var(--line); border-radius: 0.4rem; background: var(--card); }
+  .estimate-table th, .estimate-table td { display: block; border: 0; padding: 0.55rem 0.65rem; }
+  .estimate-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 0.2rem; color: var(--muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
   .table-wrap { overflow: visible; }
   .device-table { min-width: 0; display: block; }
   .device-table caption { display: block; }

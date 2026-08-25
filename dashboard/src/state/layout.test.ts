@@ -18,10 +18,10 @@ describe('floorplan layout state', () => {
   });
 
   it('uses a fixed blank frame and an uploaded image intrinsic aspect ratio', () => {
-    expect(floorplanAspect(layoutReady())).toBe('16 / 9');
+    expect(floorplanAspect(layoutReady())).toBe(16 / 9);
     expect(floorplanAspect(layoutReady({ floorplan: {
       sha256: 'a'.repeat(64), mime: 'image/webp', width: 2000, height: 1000, url: `/api/floorplan/${'a'.repeat(64)}`,
-    } }))).toBe('2000 / 1000');
+    } }))).toBe(2);
     expect(isAcceptedFloorplan({ type: 'image/png', size: MAX_FLOORPLAN_BYTES })).toBe(true);
     expect(isAcceptedFloorplan({ type: 'image/svg+xml', size: 10 })).toBe(false);
     expect(isAcceptedFloorplan({ type: 'image/jpeg', size: MAX_FLOORPLAN_BYTES + 1 })).toBe(false);

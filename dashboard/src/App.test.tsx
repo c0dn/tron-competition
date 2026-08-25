@@ -210,4 +210,209 @@ describe('Gateway floorplan dashboard', () => {
     await ui.findByText(/Bridge offline — retrying/i);
     expect(ui.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).not.toMatch(/ROOT STATUS/i);
   });
+
+  it('transitions to Ballpark at two seconds and recomputes late evidence without remounting its marker', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const observers = ['0102545678c1', '0102545678c2', '0102545678c3', '0102545678c4'];
+    const initialEvents = observers.slice(0, 3).map((observer, index) => eventRecord({
+      cursor: index + 1, observer, observer_rssi_dbm: -60, packet: '000007', seq: 7,
+    }));
+    const lateEvent = eventRecord({ cursor: 4, observer: observers[3], observer_rssi_dbm: -40, packet: '000007', seq: 7 });
+    const layout = layoutReady({ positions: observers.map((adva, index) => ({
+      adva,
+      x: index === 1 || index === 3 ? 1 : 0,
+      y: index > 1 ? 1 : 0,
+    })) });
+    let lateEnabled = false;
+    let lateDelivered = false;
+    stubFetch(vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) {
+        if (input.includes('after=0')) return Promise.resolve(jsonResponse(200, {
+          schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 3, events: initialEvents,
+        }));
+        if (lateEnabled && !lateDelivered) {
+          lateDelivered = true;
+          return Promise.resolve(jsonResponse(200, {
+            schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 4, events: [lateEvent],
+          }));
+        }
+        return Promise.resolve(jsonResponse(200, {
+          schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: lateDelivered ? 4 : 3, events: [],
+        }));
+      }
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layout));
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(<App pollIntervalMs={1_000} />);
+    const ui = within(document.body);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(ui.getAllByText('Collecting').length).toBeGreaterThan(0);
+    expect(ui.queryByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    const marker = ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i });
+    const before = marker.getAttribute('aria-label');
+    expect(ui.getAllByText('Ballpark').length).toBeGreaterThan(0);
+
+    lateEnabled = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    const recomputedMarker = ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i });
+    expect(recomputedMarker).toBe(marker);
+    expect(recomputedMarker.getAttribute('aria-label')).not.toBe(before);
+  });
+
+  it('schedules a collection transition at its exact deadline after an off-heartbeat event receipt', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
+    const events = observers.map((observer, index) => eventRecord({
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+    }));
+    const layout = layoutReady({ positions: [
+      { adva: observers[0], x: 0, y: 0 },
+      { adva: observers[1], x: 1, y: 0 },
+      { adva: observers[2], x: 0, y: 1 },
+    ] });
+    stubFetch(vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) {
+        return new Promise<Response>((resolve) => {
+          window.setTimeout(() => resolve(jsonResponse(200, eventsResponse(events))), 250);
+        });
+      }
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layout));
+      throw new Error(`Unexpected ${input}`);
+    }));
+
+    render(<App pollIntervalMs={60_000} />);
+    const ui = within(document.body);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(ui.getAllByText('Collecting').length).toBeGreaterThan(0);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+    expect(ui.getAllByText('Collecting').length).toBeGreaterThan(0);
+    expect(ui.queryByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).not.toBeNull();
+  });
+
+  it('removes a prior Ballpark marker when a current recovery read reports corrupt layout state', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const local = '1842de524add';
+    const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
+    const events = observers.map((observer, index) => eventRecord({
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+    }));
+    const layout = layoutReady({ positions: [
+      { adva: observers[0], x: 0, y: 0 },
+      { adva: observers[1], x: 1, y: 0 },
+      { adva: observers[2], x: 0, y: 1 },
+      { adva: local, x: 1, y: 1 },
+    ] });
+    const corrupt = {
+      schema: 'mind.dashboard.layout.v1', status: 'corrupt', error: 'corrupt_state', revision: 1, floorplan: null, positions: [],
+    } as const;
+    const health = healthResponse([healthDevice(0, {
+      root: rootStatus({ cursor: 3, local }),
+      gtt: gttSnapshot({ local, entries: [
+        gttEntry({ index: 0, adva: local }),
+        ...observers.map((adva, index) => gttEntry({ index: index + 1, adva })),
+      ] }),
+    })]);
+    let layoutReads = 0;
+    stubFetch(vi.fn((input: string, init?: RequestInit) => {
+      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, eventsResponse(events)));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, health));
+      if (input === '/api/layout' && !init?.method) {
+        return Promise.resolve(jsonResponse(200, layoutReads++ === 0 ? layout : corrupt));
+      }
+      if (input === '/api/layout' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse(503, { schema: 'mind.dashboard.error.v1', accepted: false, error: 'storage_unavailable' }));
+      }
+      throw new Error(`Unexpected ${input}`);
+    }));
+
+    render(<App pollIntervalMs={60_000} />);
+    const ui = within(document.body);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).not.toBeNull();
+
+    const unplace = ui.getAllByRole('button', { name: 'Unplace' })[0]!;
+    expect(unplace).toHaveProperty('disabled', false);
+    fireEvent.click(unplace);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(ui.getByText('Floorplan state is corrupt. Recover storage before editing.')).not.toBeNull();
+    expect(ui.queryByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).toBeNull();
+  });
+
+  it('keeps persisted Ballpark views visible while a mismatched GTT disables placement', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
+    const events = observers.map((observer, index) => eventRecord({
+      cursor: index + 1, observer, observer_rssi_dbm: -55, packet: '000007', seq: 7,
+    }));
+    const mismatchedHealth = healthResponse([healthDevice(0, {
+      root: rootStatus({ local: '1842de524add' }),
+      gtt: gttSnapshot({
+        local: '1842de524add',
+        entries: [gttEntry({ adva: '0102545678ff' })],
+      }),
+    })]);
+    stubFetch(vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, {
+        schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: 3, events: input.includes('after=0') ? events : [],
+      }));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, mismatchedHealth));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ positions: [
+        { adva: observers[0], x: 0, y: 0 }, { adva: observers[1], x: 1, y: 0 }, { adva: observers[2], x: 0, y: 1 },
+      ] })));
+      if (input === '/api/gtt') return Promise.resolve(jsonResponse(202, { schema: 'mind.command.v1', accepted: true, device: 0, command: 'gtt' }));
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(<App pollIntervalMs={60_000} />);
+    const ui = within(document.body);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i })).not.toBeNull();
+    expect(ui.getByText('Recent incident location states')).not.toBeNull();
+    expect(document.querySelector('.floorplan-content')).not.toBeNull();
+    expect(ui.queryByRole('button', { name: 'Place at center' })).toBeNull();
+    expect(ui.queryByText('Unpositioned nodes')).toBeNull();
+  });
+
+  it('caps the first ten feed-order views before filtering map markers', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    const observers = ['0102545678c1', '0102545678c2', '0102545678c3'];
+    let cursor = 1;
+    const records = Array.from({ length: 11 }, (_, wearableIndex) => {
+      const wearable = wearableIndex + 1;
+      const packet = wearable.toString(16).padStart(6, '0');
+      const evidenceCount = wearable === 11 ? 2 : 3;
+      return observers.slice(0, evidenceCount).map((observer) => eventRecord({
+        cursor: cursor++, wearable, packet, seq: wearable, observer, observer_rssi_dbm: -55,
+      }));
+    }).flat();
+    stubFetch(vi.fn((input: string) => {
+      if (input.startsWith('/api/events')) return Promise.resolve(jsonResponse(200, {
+        schema: 'mind.api.v2', gap: false, oldest_cursor: 1, current_cursor: records.length, events: input.includes('after=0') ? records : [],
+      }));
+      if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
+      if (input === '/api/layout') return Promise.resolve(jsonResponse(200, layoutReady({ positions: [
+        { adva: observers[0], x: 0, y: 0 }, { adva: observers[1], x: 1, y: 0 }, { adva: observers[2], x: 0, y: 1 },
+      ] })));
+      throw new Error(`Unexpected ${input}`);
+    }));
+    render(<App pollIntervalMs={60_000} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    const ui = within(document.body);
+    expect(ui.getByText('11 logical events')).not.toBeNull();
+    expect(document.querySelectorAll('.estimate-table tbody tr')).toHaveLength(10);
+    expect(ui.getAllByRole('img', { name: /Ballpark/i })).toHaveLength(9);
+    expect(document.body.textContent).not.toMatch(/estimated|invalid_input|meters|precision/i);
+  });
 });

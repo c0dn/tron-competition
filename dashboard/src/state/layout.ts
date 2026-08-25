@@ -45,8 +45,10 @@ export function coordinateText(position: LayoutPosition | undefined): string {
   return position ? `${position.x.toFixed(2)}, ${position.y.toFixed(2)}` : 'Unpositioned';
 }
 
-export function floorplanAspect(layout: LayoutReadyResponse | null): string {
-  return layout?.floorplan ? `${layout.floorplan.width} / ${layout.floorplan.height}` : '16 / 9';
+export function floorplanAspect(layout: LayoutReadyResponse | null): number {
+  return layout?.floorplan
+    ? layout.floorplan.width / layout.floorplan.height
+    : 16 / 9;
 }
 
 export function isAcceptedFloorplan(file: Pick<File, 'type' | 'size'>): file is File & { type: 'image/png' | 'image/jpeg' | 'image/webp' } {

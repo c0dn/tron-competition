@@ -1,23 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { eventRecord, eventsResponse, healthDevice, healthResponse, rootStatus } from '../test/fixtures';
-import { EVIDENCE_LIMIT, FEED_LIMIT, PROCESSED_CURSOR_LIMIT, bridgeStatus, initialState, reducer } from './store';
+import {
+  EVIDENCE_LIMIT,
+  FEED_LIMIT,
+  PROCESSED_CURSOR_LIMIT,
+  TOMBSTONE_LIMIT,
+  UINT32_MAX,
+  bridgeStatus,
+  initialState,
+  reducer,
+  saturatingIncrement,
+} from './store';
 
-function receive(events = eventsResponse().events, at = 10_000, epoch = 0) {
+function receive(events = eventsResponse().events, at = 10_000, epoch = 0, gap = false) {
   return (state = initialState) => reducer(state, {
     type: 'eventsReceived',
-    page: eventsResponse(events),
+    page: eventsResponse(events, gap),
     receivedAt: at,
     epoch,
   });
 }
 
+function receivePages(
+  events: ReturnType<typeof eventsResponse>['events'],
+  state = initialState,
+  firstReceivedAt = 10_000,
+  epoch = 0,
+) {
+  let next = state;
+  for (let offset = 0; offset < events.length; offset += 100) {
+    const page = events.slice(offset, offset + 100);
+    next = receive(page, firstReceivedAt + (offset / 100), epoch)(next);
+  }
+  return next;
+}
+
 describe('dashboard event store', () => {
-  it('globally deduplicates reports across roots, observers, and reconnect cursor overlap', () => {
+  it('globally deduplicates by wearable and packet across roots and observers', () => {
     const first = eventRecord({ cursor: 10, root: '1842de524add', observer: 'dc4b0a0603f8', observer_rssi_dbm: null });
     const secondRoot = eventRecord({ cursor: 11, device: 1, root: '1842de524aee', observer: 'dc4b0a0603f9', observer_rssi_dbm: -68, path: 'local' });
     let state = receive([first])();
     state = receive([secondRoot])(state);
-    state = receive([first], 11_000)(state);
 
     expect(state.feedKeys).toHaveLength(1);
     expect(state.logicalEvents['7:00002a'].evidence).toHaveLength(2);
@@ -25,70 +48,240 @@ describe('dashboard event store', () => {
     expect(state.wearables[7].record.cursor).toBe(11);
   });
 
-  it('saturates evidence truthfully, counts fresh conflicts, and ignores replayed cursors', () => {
-    const reports = Array.from({ length: EVIDENCE_LIMIT + 2 }, (_, index) => eventRecord({
+  it('makes a replayed processed cursor a total no-op', () => {
+    const report = eventRecord({ cursor: 10 });
+    const state = receive([report], 10_000)();
+
+    expect(receive([report], 11_000)(state)).toBe(state);
+  });
+
+  it('aggregates samples by observer and deterministically selects canonical representatives', () => {
+    const observer = 'dc4b0a0603f8';
+    let state = receive([
+      eventRecord({ cursor: 1, observer, root: 'ffffffffffff', path: 'tavrn', device: 9, observer_rssi_dbm: null }),
+      eventRecord({ cursor: 2, observer, root: '000000000000', path: 'local', device: 1, observer_rssi_dbm: null }),
+    ])();
+    expect(state.logicalEvents['7:00002a'].evidence).toEqual([{
+      observer,
+      root: '000000000000',
+      path: 'local',
+      device: 1,
+      observerRssiDbm: null,
+      sampleCount: 2,
+    }]);
+
+    state = receive([
+      eventRecord({ cursor: 3, observer, root: 'ffffffffffff', path: 'tavrn', device: 9, observer_rssi_dbm: -80 }),
+      eventRecord({ cursor: 4, observer, root: '000000000000', path: 'local', device: 1, observer_rssi_dbm: -90 }),
+    ])(state);
+    expect(state.logicalEvents['7:00002a'].evidence).toEqual([{
+      observer,
+      root: 'ffffffffffff',
+      path: 'tavrn',
+      device: 9,
+      observerRssiDbm: -80,
+      sampleCount: 4,
+    }]);
+
+    state = receive([
+      eventRecord({ cursor: 5, observer, root: 'ffffffffffff', path: 'tavrn', device: 9, observer_rssi_dbm: -70 }),
+      eventRecord({ cursor: 6, observer, root: '000000000001', path: 'tavrn', device: 9, observer_rssi_dbm: -70 }),
+      eventRecord({ cursor: 7, observer, root: '000000000001', path: 'local', device: 9, observer_rssi_dbm: -70 }),
+      eventRecord({ cursor: 8, observer, root: '000000000001', path: 'local', device: 1, observer_rssi_dbm: -70 }),
+    ])(state);
+
+    expect(state.logicalEvents['7:00002a'].evidence).toEqual([{
+      observer,
+      root: '000000000001',
+      path: 'local',
+      device: 1,
+      observerRssiDbm: -70,
+      sampleCount: 8,
+    }]);
+  });
+
+  it('rejects new observers beyond capacity while retained observers continue aggregating', () => {
+    const reports = Array.from({ length: EVIDENCE_LIMIT }, (_, index) => eventRecord({
       cursor: index + 1,
       device: index,
       root: `${index.toString(16).padStart(12, '0')}`,
       observer: `${(index + 20).toString(16).padStart(12, '0')}`,
+      observer_rssi_dbm: -100 + index,
     }));
     let state = receive(reports)();
+    state = receive([
+      eventRecord({ ...reports[0], cursor: 17, root: 'ffffffffffff', observer_rssi_dbm: -20 }),
+      eventRecord({ cursor: 18, observer: 'dc4b0a0603ff' }),
+      eventRecord({ cursor: 19, observer: 'dc4b0a0603fe' }),
+      eventRecord({ ...reports[0], cursor: 20, root: '000000000000', observer_rssi_dbm: -10 }),
+    ])(state);
+
     const logical = state.logicalEvents['7:00002a'];
     expect(logical.evidence).toHaveLength(EVIDENCE_LIMIT);
+    expect(logical.evidence.find((evidence) => evidence.observer === reports[0].observer)).toMatchObject({
+      root: '000000000000', observerRssiDbm: -10, sampleCount: 3,
+    });
+    expect(logical.evidence.some((evidence) => evidence.observer === 'dc4b0a0603ff')).toBe(false);
+    expect(logical.evidenceOverflowCount).toBe(2);
     expect(logical.evidenceSaturated).toBe(true);
-
-    state = receive([reports[reports.length - 1]])(state);
-    expect(state.logicalEvents['7:00002a'].evidence).toHaveLength(EVIDENCE_LIMIT);
-    expect(state.logicalEvents['7:00002a'].evidenceSaturated).toBe(true);
-
-    state = receive([eventRecord({ cursor: 20, root: '1842de524aff', observer: 'dc4b0a0603f9' })])(state);
-    expect(state.logicalEvents['7:00002a'].evidence).toHaveLength(EVIDENCE_LIMIT);
-    expect(state.logicalEvents['7:00002a'].evidenceSaturated).toBe(true);
-
-    state = receive([
-      eventRecord({ cursor: 30, confidence: 76 }),
-      eventRecord({ cursor: 31, packet: '00002b' }),
-      eventRecord({ cursor: 32, wearable: 8 }),
-    ])(state);
-    expect(state.logicalEvents['7:00002a'].conflict).toBe(true);
-    expect(state.conflictCount).toBe(1);
-    expect(state.feedKeys).toHaveLength(3);
-
-    const replay = eventRecord({ cursor: 30, confidence: 76 });
-    state = receive([replay])(state);
-    expect(state.conflictCount).toBe(1);
-    expect(state.logicalEvents['7:00002a'].evidenceSaturated).toBe(true);
-
-    state = receive([eventRecord({ cursor: 33, confidence: 77, root: '1842de524aff', observer: 'dc4b0a0603f9' })])(state);
-    expect(state.conflictCount).toBe(2);
   });
 
-  it('bounds active state and cursor ledger after 756 events while minimal tombstones rehydrate conflicts', () => {
-    const initial = eventRecord({ cursor: 1, wearable: 7, packet: '000001', seq: 1, confidence: 75 });
-    const initialConflict = eventRecord({ cursor: 2, wearable: 7, packet: '000001', seq: 1, confidence: 76 });
-    const records = Array.from({ length: 756 }, (_, index) => {
-      const value = index + 1_000;
+  it('bounds active, tombstone, and cursor state with FIFO tombstone eviction at 513 identities', () => {
+    const records = Array.from({ length: TOMBSTONE_LIMIT + 1 }, (_, index) => {
+      const value = index + 1;
       return eventRecord({
-        cursor: index + 3,
+        cursor: value,
         wearable: (index % 254) + 1,
         packet: value.toString(16).padStart(6, '0'),
         seq: value & 0xff,
       });
     });
-    let state = receive([initial, initialConflict, ...records])();
+    expect(FEED_LIMIT).toBe(256);
+    expect(TOMBSTONE_LIMIT).toBe(512);
+    expect(records).toHaveLength(513);
+    let state = receivePages(records);
     expect(state.feedKeys).toHaveLength(FEED_LIMIT);
     expect(Object.keys(state.logicalEvents)).toHaveLength(FEED_LIMIT);
     expect(state.processedCursors).toHaveLength(PROCESSED_CURSOR_LIMIT);
-    expect(state.feedKeys).not.toContain('7:000001');
-    expect(state.logicalEvents['7:000001']).toBeUndefined();
-    expect(state.tombstones['7:000001']).toEqual({ fingerprint: '1:3:75:2400:86:1', conflict: true });
+    expect(Object.keys(state.tombstones)).toHaveLength(TOMBSTONE_LIMIT);
+    expect(state.tombstoneKeys).toHaveLength(TOMBSTONE_LIMIT);
+    expect(state.tombstones['1:000001']).toBeUndefined();
+    expect(state.tombstoneKeys[0]).toBe('2:000002');
 
-    state = receive([eventRecord({ cursor: 759, wearable: 7, packet: '000001', seq: 1, confidence: 75 })])(state);
-    expect(state.feedKeys[0]).toBe('7:000001');
-    expect(Object.keys(state.logicalEvents)).toHaveLength(FEED_LIMIT);
-    expect(state.logicalEvents['7:000001']).toMatchObject({ conflict: true, evidenceSaturated: false });
-    expect(state.logicalEvents['7:000001'].evidence).toHaveLength(1);
-    expect(state.processedCursors).toHaveLength(PROCESSED_CURSOR_LIMIT);
+    state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 2, wearable: 1, packet: '000001', seq: 1, confidence: 76 })], 20_000)(state);
+    expect(state.logicalEvents['1:000001']).toMatchObject({
+      conflict: false,
+      firstReceivedAt: 20_000,
+      collectUntil: 22_000,
+    });
+  });
+
+  it('keeps active-feed-evicted late reports tombstoned without corrupting active feed order', () => {
+    const first = eventRecord({ cursor: 1, wearable: 7, packet: '000001', seq: 1 });
+    const fillers = Array.from({ length: FEED_LIMIT }, (_, index) => {
+      const value = index + 100;
+      return eventRecord({
+        cursor: index + 2,
+        wearable: (index % 254) + 1,
+        packet: value.toString(16).padStart(6, '0'),
+        seq: value & 0xff,
+      });
+    });
+    expect(fillers).toHaveLength(256);
+    let state = receivePages([first, ...fillers], initialState, 100);
+    const key = '7:000001';
+    const activeFeedKeys = state.feedKeys;
+    const activeLogicalEvents = state.logicalEvents;
+    const tombstoneKeys = state.tombstoneKeys;
+    const canonicalTombstone = state.tombstones[key];
+    expect(state.logicalEvents[key]).toBeUndefined();
+    expect(canonicalTombstone).toMatchObject({
+      fingerprint: '1:3:75:2400:86:1',
+      conflict: false,
+      firstReceivedAt: 100,
+      collectUntil: 2_100,
+    });
+
+    state = receive([eventRecord({ cursor: FEED_LIMIT + 2, wearable: 7, packet: '000001', seq: 1 })], 5_000)(state);
+    expect(state.logicalEvents).toBe(activeLogicalEvents);
+    expect(state.feedKeys).toBe(activeFeedKeys);
+    expect(state.tombstoneKeys).toBe(tombstoneKeys);
+    expect(state.tombstones[key]).toEqual(canonicalTombstone);
+    expect(state.wearables[7].record.cursor).toBe(FEED_LIMIT + 2);
+
+    state = receive([eventRecord({
+      cursor: FEED_LIMIT + 3, wearable: 7, packet: '000001', seq: 1, confidence: 76,
+    })], 5_001)(state);
+    expect(state.logicalEvents).toBe(activeLogicalEvents);
+    expect(state.feedKeys).toBe(activeFeedKeys);
+    expect(state.tombstoneKeys).toBe(tombstoneKeys);
+    expect(state.tombstones[key]).toEqual({ ...canonicalTombstone, conflict: true });
+    expect(state.wearables[7].record.cursor).toBe(FEED_LIMIT + 3);
+    expect(state.conflictCount).toBe(1);
+  });
+
+  it('keeps an active event authoritative after its non-refreshed tombstone FIFO entry is evicted', () => {
+    const first = eventRecord({ cursor: 1, wearable: 7, packet: '000001', seq: 1 });
+    const initialFillers = Array.from({ length: FEED_LIMIT - 1 }, (_, index) => {
+      const value = index + 100;
+      return eventRecord({
+        cursor: index + 2,
+        wearable: (index % 254) + 1,
+        packet: value.toString(16).padStart(6, '0'),
+        seq: value & 0xff,
+      });
+    });
+    const laterFillers = Array.from({ length: TOMBSTONE_LIMIT - FEED_LIMIT - 1 }, (_, index) => {
+      const value = index + 1_000;
+      return eventRecord({
+        cursor: FEED_LIMIT + index + 2,
+        wearable: (index % 254) + 1,
+        packet: value.toString(16).padStart(6, '0'),
+        seq: value & 0xff,
+      });
+    });
+    expect(initialFillers).toHaveLength(255);
+    expect(laterFillers).toHaveLength(255);
+    let state = receivePages([first, ...initialFillers], initialState, 100);
+    state = receive([eventRecord({ cursor: FEED_LIMIT + 1, wearable: 7, packet: '000001', seq: 1 })], 200)(state);
+    state = receivePages(laterFillers, state, 300);
+    state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 1, wearable: 7, packet: '000001', seq: 1 })], 400)(state);
+    state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 2, wearable: 8, packet: 'fff001', seq: 255 })], 500)(state);
+    state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 3, wearable: 8, packet: 'fff002', seq: 2 })], 600)(state);
+    expect(state.tombstones['7:000001']).toBeUndefined();
+    expect(state.logicalEvents['7:000001']).toMatchObject({ firstReceivedAt: 100, collectUntil: 2_100 });
+
+    state = receive([eventRecord({ cursor: TOMBSTONE_LIMIT + 4, wearable: 7, packet: '000001', seq: 1, confidence: 76 })], 5_000)(state);
+    expect(state.tombstones['7:000001']).toBeUndefined();
+    expect(state.logicalEvents['7:000001']).toMatchObject({
+      conflict: true,
+      firstReceivedAt: 100,
+      collectUntil: 2_100,
+      evidence: [expect.objectContaining({ sampleCount: 4 })],
+    });
+  });
+
+  it('saturates sample, evidence-overflow, conflict, and gap counters at uint32 maximum', () => {
+    let state = receive([eventRecord({ cursor: 1 })])();
+    const key = '7:00002a';
+    const logical = state.logicalEvents[key];
+    state = {
+      ...state,
+      logicalEvents: {
+        ...state.logicalEvents,
+        [key]: { ...logical, evidence: [{ ...logical.evidence[0], sampleCount: UINT32_MAX - 1 }] },
+      },
+    };
+    state = receive([eventRecord({ cursor: 2 })])(state);
+    state = receive([eventRecord({ cursor: 3 })])(state);
+    expect(state.logicalEvents[key].evidence[0]?.sampleCount).toBe(UINT32_MAX);
+
+    const fullEvidence = Array.from({ length: EVIDENCE_LIMIT }, (_, index) => ({
+      ...eventRecord({ cursor: index + 10, observer: `${(index + 20).toString(16).padStart(12, '0')}` }),
+    }));
+    state = receive(fullEvidence)();
+    state = {
+      ...state,
+      logicalEvents: {
+        ...state.logicalEvents,
+        [key]: { ...state.logicalEvents[key], evidenceOverflowCount: UINT32_MAX - 1, evidenceSaturated: true },
+      },
+    };
+    state = receive([eventRecord({ cursor: 30, observer: 'dc4b0a0603ff' })])(state);
+    state = receive([eventRecord({ cursor: 31, observer: 'dc4b0a0603fe' })])(state);
+    expect(state.logicalEvents[key].evidenceOverflowCount).toBe(UINT32_MAX);
+
+    state = receive([eventRecord({ cursor: 1 })])();
+    state = { ...state, conflictCount: UINT32_MAX - 1 };
+    state = receive([eventRecord({ cursor: 2, confidence: 76 })])(state);
+    state = receive([eventRecord({ cursor: 3, confidence: 77 })])(state);
+    expect(state.conflictCount).toBe(UINT32_MAX);
+
+    state = { ...initialState, gapCount: UINT32_MAX - 1 };
+    state = receive([eventRecord({ cursor: 1 })], 10_000, 0, true)(state);
+    state = receive([eventRecord({ cursor: 2, packet: '00002b', seq: 43 })], 10_001, 0, true)(state);
+    expect(state.gapCount).toBe(UINT32_MAX);
+    expect(saturatingIncrement(UINT32_MAX)).toBe(UINT32_MAX);
   });
 
   it('marks a cursor gap while continuing from the records supplied by the bridge', () => {
@@ -136,6 +329,12 @@ describe('dashboard event store', () => {
     expect(state.wearables[8]).toMatchObject({ epoch: 1, record: { cursor: 1 } });
     state = receive([eventRecord({ cursor: 2, packet: '00002a', confidence: 76 })], 12_000, 1)(state);
     expect(state.wearables[7]).toMatchObject({ epoch: 1, record: { cursor: 2 } });
+    expect(state.logicalEvents['7:00002a']).toMatchObject({
+      conflict: true,
+      firstReceivedAt: 10_000,
+      collectUntil: 12_000,
+      evidence: [expect.objectContaining({ sampleCount: 2 })],
+    });
   });
 
   it('tags health snapshots by epoch so stale health cannot override a new-epoch root', () => {

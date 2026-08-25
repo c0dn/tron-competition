@@ -11,6 +11,7 @@ import {
 } from '../lib/api';
 import { formatAge } from '../lib/format';
 import { gatewayDevice, gatewayEntryLabel, gatewayTopology, type GatewayTopologyIssue } from '../state/devices';
+import type { IncidentLocalizationView } from '../localization/IncidentLocalization';
 import {
   clampCoordinate,
   coordinateText,
@@ -46,6 +47,8 @@ interface FloorplanPanelProps {
   gttConfirmationTimeoutMs?: number;
   layoutReadTimeoutMs?: number;
   layoutMutationTimeoutMs?: number;
+  incidentViews?: readonly IncidentLocalizationView[];
+  onLayoutChange?: (layout: LayoutReadyResponse | null) => void;
 }
 
 type PositionTransform = (positions: readonly LayoutPosition[]) => LayoutPosition[];
@@ -127,6 +130,10 @@ function nodeCssCoordinate(value: number): string {
   return `clamp(${FLOORPLAN_NODE_EDGE_INSET_PX}px, ${value * 100}%, calc(100% - ${FLOORPLAN_NODE_EDGE_INSET_PX}px))`;
 }
 
+function markerLabelClasses(x: number, y: number): string {
+  return `floorplan-marker-label marker-${x < 0.5 ? 'east' : 'west'} marker-${y < 0.5 ? 'south' : 'north'}`;
+}
+
 function dataBase64(file: File, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -175,6 +182,8 @@ export function FloorplanPanel({
   gttConfirmationTimeoutMs = GTT_CONFIRMATION_TIMEOUT_MS,
   layoutReadTimeoutMs = LAYOUT_READ_TIMEOUT_MS,
   layoutMutationTimeoutMs = LAYOUT_MUTATION_TIMEOUT_MS,
+  incidentViews = [],
+  onLayoutChange,
 }: FloorplanPanelProps) {
   const topology = gatewayTopology(devices, healthEpoch, currentEpoch, healthCurrentCursor, rootRecords, healthAuthoritative);
   const gateway = gatewayDevice(devices);
@@ -218,6 +227,12 @@ export function FloorplanPanel({
     layoutRef.current = layout;
     setLayoutState((current) => ({ ...current, layout }));
   }, []);
+
+  const commitReadyLayout = useCallback((layout: LayoutReadyResponse, message: string) => {
+    layoutRef.current = layout;
+    setLayoutState({ phase: 'ready', layout, message });
+    onLayoutChange?.(layout);
+  }, [onLayoutChange]);
 
   const finishLayoutRead = useCallback((read: ActiveLayoutRead): boolean => {
     if (layoutReadRef.current !== read) return false;
@@ -269,15 +284,18 @@ export function FloorplanPanel({
       const layout = readyLayout(response);
       if (!layout) {
         layoutRef.current = null;
+        onLayoutChange?.(null);
         setLayoutSynchronized(false);
         setLayoutState({ phase: 'error', layout: null, message: 'Floorplan state is corrupt. Recover storage before editing.' });
         return;
       }
-      layoutRef.current = layout;
       setLayoutSynchronized(true);
       draftPositionsRef.current = null;
       setDraftPositions(null);
-      setLayoutState({ phase: 'ready', layout, message });
+      const committedMessage = message === 'Floorplan loaded.' && !layout.floorplan
+        ? 'Floorplan coordinates loaded. No image uploaded.'
+        : message;
+      commitReadyLayout(layout, committedMessage);
     } catch (error) {
       if (controller.signal.aborted || !finishLayoutRead(read) || layoutMutationId.current !== read.mutationId) return;
       setLayoutSynchronized(false);
@@ -287,7 +305,7 @@ export function FloorplanPanel({
         message: `Floorplan unavailable: ${messageFor(error)}`,
       }));
     }
-  }, [cancelLayoutRead, finishLayoutRead, layoutReadTimeoutMs]);
+  }, [cancelLayoutRead, commitReadyLayout, finishLayoutRead, layoutReadTimeoutMs, onLayoutChange]);
 
   useEffect(() => {
     void loadLayout();
@@ -365,9 +383,10 @@ export function FloorplanPanel({
     savingRef.current = false;
   }, []);
 
-  const placementIsCurrent = useCallback((adva: string): boolean => {
+  const positionRetryIsAuthorized = useCallback((requiredRosterAdva?: string): boolean => {
     const current = topologyRef.current;
-    return current.available && current.topology.entries.some((entry) => entry.adva === adva);
+    return current.available
+      && (requiredRosterAdva === undefined || current.topology.entries.some((entry) => entry.adva === requiredRosterAdva));
   }, []);
 
   const isCurrentLayoutMutation = useCallback((mutation: ActiveLayoutMutation): boolean => {
@@ -411,14 +430,16 @@ export function FloorplanPanel({
     transform: PositionTransform,
     success: string,
     focus?: HTMLElement | null,
-    placementAdva?: string,
+    requiredRosterAdva?: string,
   ) => {
     const baseline = layoutRef.current;
     if (!baseline || !currentHealthIsAuthoritative || savingRef.current || layoutReadRef.current || layoutMutationRef.current) return;
-    if (placementAdva && !placementIsCurrent(placementAdva)) {
-      setSelectedForPlacement((selected) => selected === placementAdva ? null : selected);
-      setLayoutState((current) => ({ ...current, phase: 'error', message: 'Placement canceled because the node is no longer in the authoritative Gateway roster.' }));
-      queueFocus(focus ?? null);
+    if (!positionRetryIsAuthorized(requiredRosterAdva)) {
+      if (requiredRosterAdva) {
+        setSelectedForPlacement((selected) => selected === requiredRosterAdva ? null : selected);
+        setLayoutState((current) => ({ ...current, phase: 'error', message: 'Placement canceled because the node is no longer in the authoritative Gateway roster.' }));
+        queueFocus(focus ?? null);
+      }
       return;
     }
     const intended = sortedPositions(transform(baseline.positions));
@@ -442,14 +463,18 @@ export function FloorplanPanel({
     try {
       const saved = await persist(baseline, intended);
       if (!finishLayoutMutation(mutation)) return;
-      layoutRef.current = saved;
-      setLayoutState({ phase: 'ready', layout: saved, message: success });
+      commitReadyLayout(saved, success);
       queueFocus(focus ?? null);
     } catch (error) {
       if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
       if (error instanceof LayoutConflictError) {
         const current = readyLayout(error.current);
         if (current) {
+          if (!positionRetryIsAuthorized(requiredRosterAdva)) {
+            recoverFailedMutation(mutation, current, 'Floorplan save was not retried because Gateway roster authority changed.', 'Floorplan recovered after save conflict.');
+            queueFocus(focus ?? null);
+            return;
+          }
           const reapplied = sortedPositions(transform(current.positions));
           if (reapplied.length > 16) {
             recoverFailedMutation(mutation, current, 'Floorplan save could not be reapplied: position capacity reached.', 'Floorplan recovered after save conflict.');
@@ -460,8 +485,7 @@ export function FloorplanPanel({
           try {
             const saved = await persist(current, reapplied);
             if (!finishLayoutMutation(mutation)) return;
-            layoutRef.current = saved;
-            setLayoutState({ phase: 'ready', layout: saved, message: `${success} Reapplied after a concurrent update.` });
+            commitReadyLayout(saved, `${success} Reapplied after a concurrent update.`);
             queueFocus(focus ?? null);
           } catch (retryError) {
             if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
@@ -478,7 +502,7 @@ export function FloorplanPanel({
         queueFocus(focus ?? null);
       }
     }
-  }, [claimLayoutMutation, currentHealthIsAuthoritative, finishLayoutMutation, isCurrentLayoutMutation, placementIsCurrent, queueFocus, recoverFailedMutation, setReadyLayout]);
+  }, [claimLayoutMutation, commitReadyLayout, currentHealthIsAuthoritative, finishLayoutMutation, isCurrentLayoutMutation, positionRetryIsAuthorized, queueFocus, recoverFailedMutation, setReadyLayout]);
 
   const saveImage = useCallback(async (file: File, focus: HTMLElement | null) => {
     const baseline = layoutRef.current;
@@ -498,8 +522,7 @@ export function FloorplanPanel({
       try {
         const saved = await persist(baseline);
         if (!finishLayoutMutation(mutation)) return;
-        layoutRef.current = saved;
-        setLayoutState({ phase: 'ready', layout: saved, message: 'Floorplan updated; node positions retained.' });
+        commitReadyLayout(saved, 'Floorplan updated; node positions retained.');
         queueFocus(focus);
       } catch (error) {
         if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
@@ -510,8 +533,7 @@ export function FloorplanPanel({
         try {
           const saved = await persist(current);
           if (!finishLayoutMutation(mutation)) return;
-          layoutRef.current = saved;
-          setLayoutState({ phase: 'ready', layout: saved, message: 'Floorplan updated; node positions retained after a concurrent update.' });
+          commitReadyLayout(saved, 'Floorplan updated; node positions retained after a concurrent update.');
           queueFocus(focus);
         } catch (retryError) {
           if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
@@ -525,7 +547,7 @@ export function FloorplanPanel({
       recoverFailedMutation(mutation, baseline, `Floorplan upload failed: ${messageFor(error)}`, 'Floorplan recovered after upload failure.');
       queueFocus(focus);
     }
-  }, [claimLayoutMutation, finishLayoutMutation, isCurrentLayoutMutation, queueFocus, recoverFailedMutation, setReadyLayout]);
+  }, [claimLayoutMutation, commitReadyLayout, finishLayoutMutation, isCurrentLayoutMutation, queueFocus, recoverFailedMutation, setReadyLayout]);
 
   const removeImage = useCallback(async (focus: HTMLElement | null) => {
     const baseline = layoutRef.current;
@@ -543,8 +565,7 @@ export function FloorplanPanel({
       try {
         const saved = await persist(baseline);
         if (!finishLayoutMutation(mutation)) return;
-        layoutRef.current = saved;
-        setLayoutState({ phase: 'ready', layout: saved, message: 'Floorplan removed; node positions retained.' });
+        commitReadyLayout(saved, 'Floorplan removed; node positions retained.');
         queueFocus(focus);
       } catch (error) {
         if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
@@ -555,8 +576,7 @@ export function FloorplanPanel({
         try {
           const saved = await persist(current);
           if (!finishLayoutMutation(mutation)) return;
-          layoutRef.current = saved;
-          setLayoutState({ phase: 'ready', layout: saved, message: 'Floorplan removed; node positions retained after a concurrent update.' });
+          commitReadyLayout(saved, 'Floorplan removed; node positions retained after a concurrent update.');
           queueFocus(focus);
         } catch (retryError) {
           if (!isCurrentLayoutMutation(mutation) || mutation.timedOut) return;
@@ -570,7 +590,7 @@ export function FloorplanPanel({
       recoverFailedMutation(mutation, baseline, `Floorplan removal failed: ${messageFor(error)}`, 'Floorplan recovered after removal failure.');
       queueFocus(focus);
     }
-  }, [claimLayoutMutation, finishLayoutMutation, isCurrentLayoutMutation, queueFocus, recoverFailedMutation, setReadyLayout]);
+  }, [claimLayoutMutation, commitReadyLayout, finishLayoutMutation, isCurrentLayoutMutation, queueFocus, recoverFailedMutation, setReadyLayout]);
 
   const completeGttRequest = useCallback((request: ActiveGttRequest): boolean => {
     const authority = gttAuthorityRef.current;
@@ -687,8 +707,9 @@ export function FloorplanPanel({
   const storedOutsideRoster = positions.filter((position) => !entries.some((entry) => entry.adva === position.adva));
   const isSaving = layoutState.phase === 'saving';
   const isEditing = !layoutSynchronized || isSaving || layoutState.phase === 'loading';
-  const canEditPositions = !isEditing && currentHealthIsAuthoritative;
+  const canEditPositions = !isEditing && currentHealthIsAuthoritative && topology.available;
   const canRequestGtt = canAuthorizeGtt;
+  const recentIncidentViews = incidentViews.slice(0, 10);
 
   const finishDrag = (element: HTMLElement | null) => {
     const drag = dragRef.current;
@@ -697,7 +718,7 @@ export function FloorplanPanel({
     const draft = draftPositionsRef.current;
     const position = draft && positionFor(draft, drag.adva);
     if (position) {
-      void savePositions((current) => setPosition(current, position), 'Node position saved.', element);
+      void savePositions((current) => setPosition(current, position), 'Node position saved.', element, drag.adva);
     }
   };
 
@@ -740,106 +761,138 @@ export function FloorplanPanel({
           {canRequestGtt && <button type="button" className="secondary" onClick={() => void requestGtt()} disabled={gttPending}>Request Gateway GTT</button>}
         </div>
       ) : (
-        <>
-          <div className="floorplan-toolbar">
-            <span className={`status-chip ${gttPending ? 'warning' : 'good'}`}>{gttPending ? 'Refreshing GTT' : 'GTT ready'}</span>
-            <span className="floorplan-freshness">Updated {formatAge(Math.max(0, now - topology.topology.gtt.completed_at_ms))}</span>
-            <button type="button" className="secondary" disabled={gttPending || isEditing} onClick={() => void requestGtt()}>{gttPending ? 'Refreshing GTT' : 'Refresh GTT'}</button>
-          </div>
-          {layout ? (
-            <div
-              ref={contentRef}
-              className={`floorplan-content${selectedForPlacement ? ' placement-active' : ''}`}
-              style={{ aspectRatio: floorplanAspect(layout) }}
-              onClick={(event) => {
-                if (!selectedForPlacement || !canEditPositions) return;
-                const point = pointAt(event);
-                const selected = selectedForPlacement;
-                setSelectedForPlacement(null);
-                void savePositions((current) => setPosition(current, { ...point, adva: selected }), 'Node placed on floorplan.', event.currentTarget, selected);
-              }}
-              aria-label={selectedForPlacement ? 'Floorplan placement target' : 'Floorplan'}
+        <div className="floorplan-toolbar">
+          <span className={`status-chip ${gttPending ? 'warning' : 'good'}`}>{gttPending ? 'Refreshing GTT' : 'GTT ready'}</span>
+          <span className="floorplan-freshness">Updated {formatAge(Math.max(0, now - topology.topology.gtt.completed_at_ms))}</span>
+          <button type="button" className="secondary" disabled={gttPending || isEditing} onClick={() => void requestGtt()}>{gttPending ? 'Refreshing GTT' : 'Refresh GTT'}</button>
+        </div>
+      )}
+      {layout ? (
+        <div
+          ref={contentRef}
+          className={`floorplan-content${selectedForPlacement && topology.available ? ' placement-active' : ''}`}
+          style={{ aspectRatio: floorplanAspect(layout) }}
+          onClick={(event) => {
+            if (!selectedForPlacement || !canEditPositions) return;
+            const point = pointAt(event);
+            const selected = selectedForPlacement;
+            setSelectedForPlacement(null);
+            void savePositions((current) => setPosition(current, { ...point, adva: selected }), 'Node placed on floorplan.', event.currentTarget, selected);
+          }}
+          aria-label={selectedForPlacement && topology.available ? 'Floorplan placement target' : 'Floorplan'}
+        >
+          {layout.floorplan && <img src={layout.floorplan.url} alt="Uploaded floorplan" draggable={false} />}
+          {entries.map((entry) => {
+            const position = positionFor(positions, entry.adva);
+            if (!position) return null;
+            const name = gatewayEntryLabel(entry, local);
+            const instructions = `Use arrow keys to move ${name} by 0.01. Hold Shift for 0.05. Drag to move, then release to save.`;
+            return (
+              <button
+                key={entry.adva}
+                type="button"
+                className={`floorplan-node freshness-${entry.freshness}`}
+                style={{ left: nodeCssCoordinate(position.x), top: nodeCssCoordinate(position.y) }}
+                disabled={!canEditPositions}
+                aria-label={`${name}, positioned at x ${position.x.toFixed(2)}, y ${position.y.toFixed(2)}, ${freshnessText(entry)}, ${departureText(entry)}`}
+                aria-describedby={`node-instructions-${entry.adva}`}
+                onPointerDown={(event) => {
+                  if (!canEditPositions) return;
+                  event.stopPropagation();
+                  event.currentTarget.focus();
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                  dragRef.current = { adva: entry.adva, pointerId: event.pointerId };
+                  draftPositionsRef.current = layout.positions;
+                  setDraftPositions(layout.positions);
+                }}
+                onPointerMove={(event) => {
+                  const drag = dragRef.current;
+                  if (!drag || drag.pointerId !== event.pointerId) return;
+                  event.stopPropagation();
+                  const content = contentRef.current;
+                  if (!content) return;
+                  const point = pointAt(event, content);
+                  setDraftPositions((current) => {
+                    const next = setPosition(current ?? layout.positions, { ...point, adva: drag.adva });
+                    draftPositionsRef.current = next;
+                    return next;
+                  });
+                }}
+                onPointerUp={(event) => {
+                  if (dragRef.current?.pointerId !== event.pointerId) return;
+                  event.stopPropagation();
+                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                  finishDrag(event.currentTarget);
+                }}
+                onPointerCancel={(event) => {
+                  if (dragRef.current?.pointerId !== event.pointerId) return;
+                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                  draftPositionsRef.current = null;
+                  setDraftPositions(null);
+                  dragRef.current = null;
+                }}
+                onKeyDown={(event) => {
+                  const delta = event.shiftKey ? LARGE_KEYBOARD_STEP : SMALL_KEYBOARD_STEP;
+                  const current = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
+                  if (!current) return;
+                  let next: LayoutPosition | null = null;
+                  if (event.key === 'ArrowLeft') next = { ...current, x: clampCoordinate(current.x - delta) };
+                  if (event.key === 'ArrowRight') next = { ...current, x: clampCoordinate(current.x + delta) };
+                  if (event.key === 'ArrowUp') next = { ...current, y: clampCoordinate(current.y - delta) };
+                  if (event.key === 'ArrowDown') next = { ...current, y: clampCoordinate(current.y + delta) };
+                  if (!next) return;
+                  event.preventDefault();
+                  setDraftPositions((currentPositions) => {
+                    const updated = setPosition(currentPositions ?? layout.positions, next);
+                    draftPositionsRef.current = updated;
+                    return updated;
+                  });
+                }}
+                onKeyUp={(event) => {
+                  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+                  const next = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
+                  if (next) void savePositions((current) => setPosition(current, next), 'Node position saved.', event.currentTarget, entry.adva);
+                }}
+              >
+                {name === 'Gateway' ? 'G' : entry.adva.slice(-4)}
+                <span id={`node-instructions-${entry.adva}`} className="sr-only">{instructions}</span>
+              </button>
+            );
+          })}
+          {recentIncidentViews.filter((view) => view.status === 'ballpark').map((view) => (
+            <span
+              key={view.logicalEvent.key}
+              className="floorplan-marker"
+              role="img"
+              style={{ left: `${view.x * 100}%`, top: `${view.y * 100}%` }}
+              aria-label={`Wearable ${view.logicalEvent.record.wearable}, packet ${view.logicalEvent.record.packet}: Ballpark at normalized x ${view.x.toFixed(2)}, y ${view.y.toFixed(2)}`}
             >
-              {layout.floorplan && <img src={layout.floorplan.url} alt="Uploaded floorplan" draggable={false} />}
-              {entries.map((entry) => {
-                const position = positionFor(positions, entry.adva);
-                if (!position) return null;
-                const name = gatewayEntryLabel(entry, local);
-                const instructions = `Use arrow keys to move ${name} by 0.01. Hold Shift for 0.05. Drag to move, then release to save.`;
-                return (
-                  <button
-                    key={entry.adva}
-                    type="button"
-                    className={`floorplan-node freshness-${entry.freshness}`}
-                    style={{ left: nodeCssCoordinate(position.x), top: nodeCssCoordinate(position.y) }}
-                    disabled={!canEditPositions}
-                    aria-label={`${name}, positioned at x ${position.x.toFixed(2)}, y ${position.y.toFixed(2)}, ${freshnessText(entry)}, ${departureText(entry)}`}
-                    aria-describedby={`node-instructions-${entry.adva}`}
-                    onPointerDown={(event) => {
-                      if (!canEditPositions) return;
-                      event.stopPropagation();
-                      event.currentTarget.focus();
-                      event.currentTarget.setPointerCapture?.(event.pointerId);
-                      dragRef.current = { adva: entry.adva, pointerId: event.pointerId };
-                      draftPositionsRef.current = layout.positions;
-                      setDraftPositions(layout.positions);
-                    }}
-                    onPointerMove={(event) => {
-                      const drag = dragRef.current;
-                      if (!drag || drag.pointerId !== event.pointerId) return;
-                      event.stopPropagation();
-                      const content = contentRef.current;
-                      if (!content) return;
-                      const point = pointAt(event, content);
-                      setDraftPositions((current) => {
-                        const next = setPosition(current ?? layout.positions, { ...point, adva: drag.adva });
-                        draftPositionsRef.current = next;
-                        return next;
-                      });
-                    }}
-                    onPointerUp={(event) => {
-                      if (dragRef.current?.pointerId !== event.pointerId) return;
-                      event.stopPropagation();
-                      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
-                      finishDrag(event.currentTarget);
-                    }}
-                    onPointerCancel={(event) => {
-                      if (dragRef.current?.pointerId !== event.pointerId) return;
-                      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
-                      draftPositionsRef.current = null;
-                      setDraftPositions(null);
-                      dragRef.current = null;
-                    }}
-                    onKeyDown={(event) => {
-                      const delta = event.shiftKey ? LARGE_KEYBOARD_STEP : SMALL_KEYBOARD_STEP;
-                      const current = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
-                      if (!current) return;
-                      let next: LayoutPosition | null = null;
-                      if (event.key === 'ArrowLeft') next = { ...current, x: clampCoordinate(current.x - delta) };
-                      if (event.key === 'ArrowRight') next = { ...current, x: clampCoordinate(current.x + delta) };
-                      if (event.key === 'ArrowUp') next = { ...current, y: clampCoordinate(current.y - delta) };
-                      if (event.key === 'ArrowDown') next = { ...current, y: clampCoordinate(current.y + delta) };
-                      if (!next) return;
-                      event.preventDefault();
-                      setDraftPositions((currentPositions) => {
-                        const updated = setPosition(currentPositions ?? layout.positions, next);
-                        draftPositionsRef.current = updated;
-                        return updated;
-                      });
-                    }}
-                    onKeyUp={(event) => {
-                      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-                      const next = positionFor(draftPositionsRef.current ?? layout.positions, entry.adva);
-                      if (next) void savePositions((current) => setPosition(current, next), 'Node position saved.', event.currentTarget);
-                    }}
-                  >
-                    {name === 'Gateway' ? 'G' : entry.adva.slice(-4)}
-                    <span id={`node-instructions-${entry.adva}`} className="sr-only">{instructions}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : <p className="empty">Floorplan is loading.</p>}
+              <span className="floorplan-marker-point" aria-hidden="true" />
+              <span className={markerLabelClasses(view.x, view.y)} aria-hidden="true">W{view.logicalEvent.record.wearable}</span>
+            </span>
+          ))}
+        </div>
+      ) : <p className="empty">Floorplan is loading.</p>}
+      <div className="table-wrap">
+        <table className="estimate-table">
+          <caption>Recent incident location states</caption>
+          <thead><tr><th scope="col">Incident</th><th scope="col">Location</th><th scope="col">Contributors</th><th scope="col">Geometry</th><th scope="col">Normalized spread</th><th scope="col">Normalized coordinates</th></tr></thead>
+          <tbody>
+            {recentIncidentViews.length === 0 ? <tr><td colSpan={6} className="empty">No recent incident location states.</td></tr> : recentIncidentViews.map((view) => (
+              <tr key={view.logicalEvent.key}>
+                <th scope="row">Wearable {view.logicalEvent.record.wearable} <code>{view.logicalEvent.record.packet}</code></th>
+                <td data-label="Location"><span>{view.status === 'collecting' ? 'Collecting' : view.status === 'insufficient' ? 'Insufficient' : 'Ballpark'}</span></td>
+                <td data-label="Contributors">{view.status === 'collecting' ? '—' : view.status === 'insufficient' ? `${view.contributorCount} of 3 required` : view.contributorCount}</td>
+                <td data-label="Geometry">{view.status === 'ballpark' ? (view.geometryWarning ? 'Warning' : 'No warning') : '—'}</td>
+                <td data-label="Normalized spread">{view.status === 'ballpark' ? (view.normalizedSpread === null ? 'Not available' : view.normalizedSpread.toFixed(2)) : '—'}</td>
+                <td data-label="Normalized coordinates">{view.status === 'ballpark' ? `${view.x.toFixed(2)}, ${view.y.toFixed(2)}` : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {topology.available && (
+        <>
           <section className="staging-roster" aria-labelledby="staging-heading">
             <div className="section-heading">
               <h3 id="staging-heading">Unpositioned nodes <span className="count">{unpositioned.length}</span> <span className="count">{positions.length}/16 stored</span></h3>
@@ -877,7 +930,7 @@ export function FloorplanPanel({
                       <td data-label="Freshness">{freshnessText(entry)}</td>
                       <td data-label="Departure">{departureText(entry)}</td>
                       <td data-label="Actions">
-                        {position ? <button type="button" className="secondary" disabled={!canEditPositions} onClick={(event) => void savePositions((current) => removePosition(current, entry.adva), 'Node unplaced.', event.currentTarget)}>Unplace</button>
+                         {position ? <button type="button" className="secondary" disabled={!canEditPositions} onClick={(event) => void savePositions((current) => removePosition(current, entry.adva), 'Node unplaced.', event.currentTarget, entry.adva)}>Unplace</button>
                           : <button type="button" className="secondary" disabled={!canEditPositions} onClick={(event) => void savePositions((current) => setPosition(current, { adva: entry.adva, x: 0.5, y: 0.5 }), 'Node placed at center.', event.currentTarget, entry.adva)}>Place at center</button>}
                       </td>
                     </tr>

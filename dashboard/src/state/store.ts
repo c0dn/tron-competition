@@ -9,7 +9,14 @@ import type {
 export const EVIDENCE_LIMIT = 16;
 export const FEED_LIMIT = 256;
 export const PROCESSED_CURSOR_LIMIT = 256;
+export const TOMBSTONE_LIMIT = 512;
+export const COLLECTION_WINDOW_MS = 2_000;
+export const UINT32_MAX = 0xffffffff;
 export const STALE_AFTER_MS = 15_000;
+
+export function saturatingIncrement(value: number): number {
+  return value >= UINT32_MAX ? UINT32_MAX : value + 1;
+}
 
 export interface RequestState {
   phase: 'loading' | 'ready' | 'error';
@@ -23,19 +30,26 @@ export interface Evidence {
   path: EventRecord['path'];
   device: number;
   observerRssiDbm: number | null;
+  sampleCount: number;
 }
 
 export interface LogicalEvent {
   key: string;
+  fingerprint: string;
   record: EventRecord;
   evidence: Evidence[];
+  evidenceOverflowCount: number;
   evidenceSaturated: boolean;
   conflict: boolean;
+  firstReceivedAt: number;
+  collectUntil: number;
 }
 
 export interface LogicalTombstone {
   fingerprint: string;
   conflict: boolean;
+  firstReceivedAt: number;
+  collectUntil: number;
 }
 
 export interface LatestWearable {
@@ -61,6 +75,7 @@ export interface DashboardState {
   healthEpoch: number | null;
   logicalEvents: Record<string, LogicalEvent>;
   tombstones: Record<string, LogicalTombstone>;
+  tombstoneKeys: string[];
   processedCursors: number[];
   feedKeys: string[];
   wearables: Record<number, LatestWearable>;
@@ -84,6 +99,7 @@ export const initialState: DashboardState = {
   healthEpoch: null,
   logicalEvents: {},
   tombstones: {},
+  tombstoneKeys: [],
   processedCursors: [],
   feedKeys: [],
   wearables: {},
@@ -116,32 +132,80 @@ function payloadFingerprint(event: EventRecord): string {
   return [event.schema, event.event, event.confidence, event.svm, event.mic, event.seq].join(':');
 }
 
-function sameEvidence(left: Evidence, right: Evidence): boolean {
-  return left.root === right.root
-    && left.observer === right.observer
-    && left.path === right.path
-    && left.device === right.device
-    && left.observerRssiDbm === right.observerRssiDbm;
-}
-
-function addEvidence(logical: LogicalEvent, event: EventRecord): LogicalEvent {
-  const evidence: Evidence = {
+function eventEvidence(event: EventRecord): Evidence {
+  return {
     root: event.root,
     observer: event.observer,
     path: event.path,
     device: event.device,
     observerRssiDbm: event.observer_rssi_dbm,
+    sampleCount: 1,
   };
-  if (logical.evidence.some((item) => sameEvidence(item, evidence))) return logical;
-  if (logical.evidence.length >= EVIDENCE_LIMIT) {
-    return { ...logical, evidenceSaturated: true };
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function compareRepresentatives(left: Evidence, right: Evidence): number {
+  const leftRssi = left.observerRssiDbm;
+  const rightRssi = right.observerRssiDbm;
+  const leftHasRssi = leftRssi !== null;
+  const rightHasRssi = rightRssi !== null;
+  if (leftHasRssi !== rightHasRssi) return leftHasRssi ? -1 : 1;
+  if (leftRssi !== null && rightRssi !== null && leftRssi !== rightRssi) {
+    return leftRssi > rightRssi ? -1 : 1;
   }
-  return { ...logical, evidence: [...logical.evidence, evidence] };
+  const root = compareCodeUnits(left.root, right.root);
+  if (root !== 0) return root;
+  const path = compareCodeUnits(left.path, right.path);
+  if (path !== 0) return path;
+  return left.device - right.device;
+}
+
+function addEvidence(logical: LogicalEvent, event: EventRecord): LogicalEvent {
+  const incoming = eventEvidence(event);
+  const existingIndex = logical.evidence.findIndex((item) => item.observer === incoming.observer);
+  if (existingIndex >= 0) {
+    const existing = logical.evidence[existingIndex];
+    const representative = compareRepresentatives(incoming, existing) < 0 ? incoming : existing;
+    const evidence = [...logical.evidence];
+    evidence[existingIndex] = { ...representative, sampleCount: saturatingIncrement(existing.sampleCount) };
+    return {
+      ...logical,
+      evidence,
+      evidenceSaturated: logical.evidenceOverflowCount > 0,
+    };
+  }
+  if (logical.evidence.length >= EVIDENCE_LIMIT) {
+    const evidenceOverflowCount = saturatingIncrement(logical.evidenceOverflowCount);
+    return { ...logical, evidenceOverflowCount, evidenceSaturated: evidenceOverflowCount > 0 };
+  }
+  return {
+    ...logical,
+    evidence: [...logical.evidence, incoming],
+    evidenceSaturated: logical.evidenceOverflowCount > 0,
+  };
 }
 
 function rememberCursor(cursors: number[], cursor: number): number[] {
   if (cursors.includes(cursor)) return cursors;
   return [...cursors, cursor].slice(-PROCESSED_CURSOR_LIMIT);
+}
+
+function rememberTombstone(
+  tombstones: Record<string, LogicalTombstone>,
+  tombstoneKeys: string[],
+  key: string,
+  tombstone: LogicalTombstone,
+): Pick<DashboardState, 'tombstones' | 'tombstoneKeys'> {
+  if (tombstones[key]) return { tombstones: { ...tombstones, [key]: tombstone }, tombstoneKeys };
+  const nextTombstones = { ...tombstones, [key]: tombstone };
+  const nextTombstoneKeys = [...tombstoneKeys, key];
+  const evictedKey = nextTombstoneKeys.length > TOMBSTONE_LIMIT ? nextTombstoneKeys.shift() : undefined;
+  if (evictedKey) delete nextTombstones[evictedKey];
+  return { tombstones: nextTombstones, tombstoneKeys: nextTombstoneKeys };
 }
 
 function activeFeed(
@@ -292,47 +356,66 @@ function applyEvent(
   event: EventRecord,
   receivedAt: number,
   epoch: number,
-): Pick<DashboardState, 'logicalEvents' | 'tombstones' | 'feedKeys' | 'wearables' | 'conflictCount'> {
+): Pick<DashboardState, 'logicalEvents' | 'tombstones' | 'tombstoneKeys' | 'feedKeys' | 'wearables' | 'conflictCount'> {
   const key = logicalKey(event);
   const fingerprint = payloadFingerprint(event);
   const tombstone = state.tombstones[key];
+  const activeLogical = state.logicalEvents[key];
   const wearables = updateWearable(state.wearables, event, receivedAt, epoch);
 
-  if (!tombstone) {
-    const logical: LogicalEvent = {
-      key,
-      record: event,
-      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device, observerRssiDbm: event.observer_rssi_dbm }],
-      evidenceSaturated: false,
-      conflict: false,
-    };
-    const active = activeFeed(state.feedKeys, state.logicalEvents, key, logical);
+  if (!activeLogical) {
+    if (!tombstone) {
+      const firstReceivedAt = receivedAt;
+      const collectUntil = firstReceivedAt + COLLECTION_WINDOW_MS;
+      const logical: LogicalEvent = {
+        key,
+        fingerprint,
+        record: event,
+        evidence: [eventEvidence(event)],
+        evidenceOverflowCount: 0,
+        evidenceSaturated: false,
+        conflict: false,
+        firstReceivedAt,
+        collectUntil,
+      };
+      const active = activeFeed(state.feedKeys, state.logicalEvents, key, logical);
+      return {
+        ...active,
+        ...rememberTombstone(state.tombstones, state.tombstoneKeys, key, {
+          fingerprint,
+          conflict: false,
+          firstReceivedAt,
+          collectUntil,
+        }),
+        wearables,
+        conflictCount: state.conflictCount,
+      };
+    }
+
+    const conflict = tombstone.fingerprint !== fingerprint;
     return {
-      ...active,
-      tombstones: { ...state.tombstones, [key]: { fingerprint, conflict: false } },
+      logicalEvents: state.logicalEvents,
+      tombstones: conflict
+        ? { ...state.tombstones, [key]: { ...tombstone, conflict: true } }
+        : state.tombstones,
+      tombstoneKeys: state.tombstoneKeys,
+      feedKeys: state.feedKeys,
       wearables,
-      conflictCount: state.conflictCount,
+      conflictCount: conflict ? saturatingIncrement(state.conflictCount) : state.conflictCount,
     };
   }
 
-  const activeLogical = state.logicalEvents[key];
-  const conflict = tombstone.fingerprint !== fingerprint;
-  const nextConflict = tombstone.conflict || conflict;
-  const logical: LogicalEvent = activeLogical
-    ? { ...addEvidence(activeLogical, event), conflict: nextConflict }
-    : {
-      key,
-      record: event,
-      evidence: [{ root: event.root, observer: event.observer, path: event.path, device: event.device, observerRssiDbm: event.observer_rssi_dbm }],
-      evidenceSaturated: false,
-      conflict: nextConflict,
-    };
+  const baselineFingerprint = tombstone?.fingerprint ?? activeLogical.fingerprint;
+  const conflict = baselineFingerprint !== fingerprint;
+  const nextConflict = (tombstone?.conflict ?? activeLogical.conflict) || conflict;
+  const logical: LogicalEvent = { ...addEvidence(activeLogical, event), conflict: nextConflict };
   const active = activeFeed(state.feedKeys, state.logicalEvents, key, logical);
   return {
     ...active,
-    tombstones: { ...state.tombstones, [key]: { ...tombstone, conflict: nextConflict } },
+    tombstones: tombstone ? { ...state.tombstones, [key]: { ...tombstone, conflict: nextConflict } } : state.tombstones,
+    tombstoneKeys: state.tombstoneKeys,
     wearables,
-    conflictCount: state.conflictCount + (conflict ? 1 : 0),
+    conflictCount: conflict ? saturatingIncrement(state.conflictCount) : state.conflictCount,
   };
 }
 
@@ -340,11 +423,14 @@ export function reducer(state: DashboardState, action: Action): DashboardState {
   switch (action.type) {
     case 'eventsReceived': {
       if (action.epoch !== state.epoch) return state;
+      if (action.page.events.length > 0 && action.page.events.every((record) => state.processedCursors.includes(record.cursor))) {
+        return state;
+      }
       let next: DashboardState = {
         ...state,
         eventCursor: advanceCursor(state.eventCursor, action.page),
         eventsRequest: { phase: 'ready', lastSuccessAt: action.receivedAt },
-        gapCount: state.gapCount + (action.page.gap ? 1 : 0),
+        gapCount: action.page.gap ? saturatingIncrement(state.gapCount) : state.gapCount,
         lastGap: action.page.gap
           ? { oldest_cursor: action.page.oldest_cursor, current_cursor: action.page.current_cursor }
           : state.lastGap,

@@ -1,15 +1,19 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { fetchEvents, fetchHealth, postRoot } from './lib/api';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { fetchEvents, fetchHealth, postRoot, type LayoutReadyResponse } from './lib/api';
 import { Header } from './components/Header';
 import { FloorplanPanel } from './components/FloorplanPanel';
 import { IncidentFeed } from './components/IncidentFeed';
 import { RootControlPanel } from './components/RootControlPanel';
 import { bridgeStatus, initialState, reducer, STALE_AFTER_MS } from './state/store';
 import { gatewayDevice, rootRequestBaseline } from './state/devices';
+import { deriveIncidentLocalization } from './localization/IncidentLocalization';
+import { WeightedCentroidProvider } from './localization/WeightedCentroidProvider';
 
 export const POLL_INTERVAL_MS = 4_000;
 export const ROOT_REQUEST_TIMEOUT_MS = 5_000;
 export const ROOT_CONFIRMATION_TIMEOUT_MS = 10_000;
+
+const localizationProvider = new WeightedCentroidProvider(2.0);
 
 interface ActiveRootRequest {
   id: number;
@@ -58,15 +62,35 @@ export default function App({
 }: AppProps) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [now, setNow] = useState(() => Date.now());
+  const [confirmedLayout, setConfirmedLayout] = useState<LayoutReadyResponse | null>(null);
   const eventCursor = useRef(0);
   const eventEpoch = useRef(0);
   const rootRequestId = useRef(0);
   const rootRequests = useRef(new Map<number, ActiveRootRequest>());
+  const collectionDeadlineTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const nearestDeadline = Object.values(state.logicalEvents)
+      .map((event) => event.collectUntil)
+      .filter((collectUntil) => collectUntil > now)
+      .reduce<number | null>((nearest, collectUntil) => nearest === null || collectUntil < nearest ? collectUntil : nearest, null);
+    if (nearestDeadline === null) return undefined;
+
+    const timer = window.setTimeout(() => {
+      if (collectionDeadlineTimer.current === timer) collectionDeadlineTimer.current = null;
+      setNow(Date.now());
+    }, Math.max(0, nearestDeadline - Date.now()));
+    collectionDeadlineTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (collectionDeadlineTimer.current === timer) collectionDeadlineTimer.current = null;
+    };
+  }, [now, state.logicalEvents]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,7 +108,9 @@ export default function App({
           requestedAfter = 0;
           continue;
         }
-        dispatch({ type: 'eventsReceived', page, receivedAt: Date.now(), epoch: eventEpoch.current });
+        const receivedAt = Date.now();
+        dispatch({ type: 'eventsReceived', page, receivedAt, epoch: eventEpoch.current });
+        setNow(receivedAt);
         const finalRecordCursor = page.events.at(-1)?.cursor;
         if (page.events.length === 100 && finalRecordCursor !== undefined && page.current_cursor > finalRecordCursor) {
           eventCursor.current = finalRecordCursor;
@@ -147,6 +173,10 @@ export default function App({
     state.health?.current_cursor ?? null,
     state.eventCursor,
   );
+
+  const handleLayoutChange = useCallback((layout: LayoutReadyResponse | null) => {
+    setConfirmedLayout(layout);
+  }, []);
 
   const requestRoot = async (device: number, active: boolean) => {
     const gateway = gatewayDevice(state.health?.devices ?? []);
@@ -213,6 +243,12 @@ export default function App({
   const events = state.feedKeys
     .map((key) => state.logicalEvents[key])
     .filter((event): event is NonNullable<typeof event> => event !== undefined);
+  const localizationViews = events.map((event) => deriveIncidentLocalization(
+    event,
+    now,
+    confirmedLayout,
+    localizationProvider,
+  ));
 
   return (
     <>
@@ -245,10 +281,12 @@ export default function App({
             rootRecords={state.rootRecords}
             now={now}
             healthAuthoritative={healthAuthoritative}
+            incidentViews={localizationViews.slice(0, 10)}
+            onLayoutChange={handleLayoutChange}
           />
         </div>
         <IncidentFeed
-          events={events}
+          views={localizationViews}
           conflictCount={state.conflictCount}
           loading={state.eventsRequest.phase === 'loading'}
           error={state.eventsRequest.error}
