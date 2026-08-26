@@ -38,7 +38,7 @@ describe('incident localization composition', () => {
   it('waits through deadline minus one without calling the provider, then derives at the deadline', () => {
     const logical = logicalEvent();
     const testProvider = provider({
-      status: 'insufficient', providerId: 'test-provider', contributors: [], required: 3,
+      status: 'insufficient', providerId: 'test-provider', contributors: [], required: 1,
     });
 
     expect(deriveIncidentLocalization(logical, logical.collectUntil - 1, null, testProvider)).toMatchObject({
@@ -47,7 +47,7 @@ describe('incident localization composition', () => {
     expect(testProvider.estimate).not.toHaveBeenCalled();
 
     expect(deriveIncidentLocalization(logical, logical.collectUntil, null, testProvider)).toMatchObject({
-      status: 'insufficient', contributorCount: 0,
+      status: 'insufficient', cause: 'no_positioned_rssi', contributorCount: 0,
     });
     expect(testProvider.estimate).toHaveBeenCalledOnce();
   });
@@ -66,7 +66,8 @@ describe('incident localization composition', () => {
       ],
     });
     const testProvider = provider({
-      status: 'insufficient', providerId: 'test-provider', contributors: [positionedOffGtt, thirdPositioned], required: 3,
+      status: 'estimated', providerId: 'test-provider', x: 0.2, y: 0.3,
+      contributors: [positionedOffGtt, thirdPositioned], geometryWarning: false, normalizedSpread: 0.1,
     });
 
     const view = deriveIncidentLocalization(logical, logical.collectUntil, layoutReady({ positions: [
@@ -75,7 +76,10 @@ describe('incident localization composition', () => {
       { adva: thirdPositioned, x: 0.5, y: 0.6 },
     ] }), testProvider);
 
-    expect(view).toMatchObject({ status: 'insufficient', contributorIds: [positionedOffGtt, thirdPositioned], contributorCount: 2 });
+    expect(view).toMatchObject({
+      status: 'ballpark', contributorIds: [positionedOffGtt, thirdPositioned], contributorCount: 2,
+      x: 0.2, y: 0.3, geometryWarning: false, normalizedSpread: 0.1,
+    });
     expect(testProvider.estimate).toHaveBeenCalledWith({
       anchors: [
         { id: positionedOffGtt, x: 0.1, y: 0.2 },
@@ -96,7 +100,7 @@ describe('incident localization composition', () => {
       id: 'test-provider',
       estimate: (input) => {
         calls.push(input);
-        return { status: 'insufficient', providerId: 'test-provider', contributors: [], required: 3 };
+        return { status: 'insufficient', providerId: 'test-provider', contributors: [], required: 1 };
       },
     };
 
@@ -110,11 +114,16 @@ describe('incident localization composition', () => {
 
   it('maps provider invalid input to visible insufficient without coordinates or an exposed reason', () => {
     const logical = logicalEvent();
-    const view = deriveIncidentLocalization(logical, logical.collectUntil, null, provider({
+    const view = deriveIncidentLocalization(logical, logical.collectUntil, layoutReady({ positions: [
+      { adva: logical.record.observer, x: 0.2, y: 0.3 },
+    ] }), provider({
       status: 'invalid_input', providerId: 'test-provider', reason: 'private diagnostic',
     }));
 
-    expect(view).toEqual(expect.objectContaining({ status: 'insufficient', contributorIds: [], contributorCount: 0 }));
+    expect(view).toEqual(expect.objectContaining({
+      status: 'insufficient', cause: 'localization_unavailable',
+      contributorIds: [logical.record.observer], contributorCount: 1,
+    }));
     expect(view).not.toHaveProperty('x');
     expect(view).not.toHaveProperty('y');
     expect(view).not.toHaveProperty('reason');

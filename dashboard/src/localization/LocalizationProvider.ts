@@ -33,7 +33,7 @@ export interface InsufficientLocalizationResult {
   readonly status: 'insufficient';
   readonly providerId: string;
   readonly contributors: ReadonlyArray<string>;
-  readonly required: 3;
+  readonly required: 1;
 }
 
 export interface InvalidLocalizationInputResult {

@@ -38,12 +38,12 @@
     "Layout PUT body <=65536; remove POST <=256. Base64 is canonical standard alphabet with no whitespace/data URL, strict validation and re-encoding equality.",
     "All layout mutations reuse strict loopback Host, same-origin/fetch-metadata, JSON media type, duplicate-key, body-size, revision-CAS, one-request-per-connection, and absolute request-deadline protections. Static/floorplan responses use bounded streaming and close FDs/connections.",
     "Localization provider is synchronous and pure with finite positive aspect ratio and discriminated estimated/insufficient/invalid_input output. Aspect-normalized geometry/spread uses the frozen metric.",
-    "Localization uses >=3 explicitly positioned observers, strongest4, path-loss exponent2.0, canonical tie-breaks, and collecting/insufficient/ballpark states only.",
+    "Localization uses one to sixteen explicitly positioned observers, every additional unique observer complements the RSSI-weighted estimate, path-loss exponent2.0 and canonical strongest-first tie-breaks remain fixed, and collecting/insufficient/ballpark states only are exposed.",
     "Session dedup is bounded: feed/events256, tombstones512 FIFO, processed cursors256, evidence16/event, markers10, counters saturate0xffffffff. Same-observer records retain strongest RSSI and saturating count; cursor replay changes nothing.",
     "Two-second collection starts at first host receipt; late evidence may recompute. Persisted positions, not current GTT freshness, determine eligibility.",
     "Floorplan controls require pointer/keyboard plus semantic node/estimate tables and announcements.",
     "No hardware flash/reset, fleet rollout, PC reboot, or further dependency/config change without explicit approval.",
-    "Implementation stays on feat/kiss-wearable-tavrn-dashboard and PR #2. After the accepted dashboard-only correction commit, make no further source mutation in this workplan."
+    "Implementation stays on feat/kiss-wearable-tavrn-dashboard and PR #2. The user-approved D3 dashboard-only localization correction is the sole allowed post-E source mutation; freeze source again after its reviewed local commit."
   ],
   "relevantFiles": [
     "shared/schema.h",
@@ -90,7 +90,10 @@
     "dashboard/src/state/layout.test.ts",
     "host/layout_store.py",
     "host/tests/test_layout_store.py",
-    "host/requirements.txt"
+    "host/requirements.txt",
+    "dashboard/src/localization/IncidentLocalization.ts",
+    "dashboard/src/localization/IncidentLocalization.test.ts",
+    "dashboard/src/components/IncidentFeed.test.tsx"
   ],
   "planFile": ".opencode/workplan/mind-gateway-floorplan-localization.md",
   "specFiles": [
@@ -187,7 +190,7 @@
           "title": "D1 — add provider-based weighted-centroid localization and event overlays",
           "target": "dashboard event evidence/store, localization module, floorplan integration and tests",
           "action": "A frontend code-writer defines the pure discriminated LocalizationProvider contract and WeightedCentroidProvider configured with path-loss exponent 2.0. The provider validates finite positive aspect ratio; geometry, spread, and all error reporting use d_norm=hypot(aspect*dx,dy)/hypot(aspect,1), and normalized doubled area abs(cross(aspect*x,y))/aspect with degeneracy <=1e-6. The reducer owns bounded logical-event deduplication, unique-observer strongest-RSSI evidence, saturating counters, FIFO tombstones, and first-receipt collection deadlines. FloorplanPanel remains the sole layout persistence/mutation owner and publishes only decoded, stale-guarded GET/200 committed snapshots—never draft, optimistic, aborted, or conflicted intended coordinates. App retains only the latest confirmed layout projection and synchronously derives localization through the provider; persisted-position joins remain independent of current GTT authority. At most ten newest floorplan views are shown and only ballpark views render map markers.",
-          "validation": "Tests freeze discriminated statuses, aspect rejection, exact normalized distance/area/spread bounds [0,1], geometry epsilon, weighted estimate, strongest-four tie-break, current-GTT disappearance, all capacities, and counter ceiling-1/ceiling/repeated overflow semantics. Components expose collecting/insufficient/ballpark and never branch by provider.",
+          "validation": "Historical D1 validation covered the original minimum-three/strongest-four provider, aspect rejection, normalized geometry/spread, current-GTT disappearance, state capacities, and saturating counters. D3 explicitly supersedes only the contributor threshold/selection/spread behavior.",
           "status": "completed"
         },
         {
@@ -196,6 +199,22 @@
           "target": "complete localization and cross-layer schema diff",
           "action": "A code-checker traces one wearable observation from radio RSSI through wire, gateway UART/API, global dedup, coordinate join, and map output. Review numerical stability, overclaiming, body/multipath limitations, bounded state, and late/duplicate evidence behavior.",
           "validation": "No blocker/critical/major findings remain; replay fixtures and all cross-layer suites pass, and UI consistently labels estimates as rough/ballpark.",
+          "status": "completed"
+        },
+        {
+          "id": "step-d3-one-observer-localization",
+          "title": "D3 — accept one observer and refine with every additional observer",
+          "target": "dashboard localization provider, presentation, tests, and workplan",
+          "action": "Change WeightedCentroidProvider so zero positioned RSSI observers is insufficient, one observer produces a ballpark marker exactly at that observer, and every additional retained unique positioned observer participates in RSSI-weighted recomputation. Preserve the reducer's existing deterministic first-16-identity admission bound and strongest-RSSI-per-observer replacement; the provider uses every retained positioned observer, ordering strongest RSSI first with canonical equal-RSSI ties rather than evicting identities. Preserve pure synchronous provider behavior and no precision claims. Generalize leave-one-out normalized spread to two or more contributors; one contributor reports spread unavailable. Geometry warning is false/not-applicable below three and applies only when at least three contributors are present and every triangle is degenerate.",
+          "validation": "Provider and deployed composition tests prove zero or null/unpositioned evidence is insufficient with required=1; one observer returns its exact normalized position and marker; two observers produce the exact weighted centroid and exact leave-one-out normalized spread; three observers produce the exact maximum-pairwise leave-one-out spread; geometry is not applicable below three and detects three-plus degeneracy; all retained sixteen observers influence output and produce finite bounded spread; input permutations preserve deterministic contributor order and estimate; the reducer deterministically rejects a seventeenth identity while retained observers continue strongest-sample aggregation; UI copy never claims three are required. Dashboard tests/typecheck/build, one-observer wide/narrow render, focused post-D3 review, workplan validation, and no-firmware diff check pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-d4-one-observer-review",
+          "title": "D4 — review and render one-observer localization",
+          "target": "D3 dashboard-only diff and real one-observer rendered state",
+          "action": "After D3 implementation and tests, run an adversarial dashboard-only review of provider/composition/UI behavior and inspect wide/narrow real Bridge renders containing one positioned RSSI observer. Resolve valid blocker/high/medium findings, rerun affected dashboard checks, commit the accepted change, and stop.",
+          "validation": "No blocker/high/medium provider, composition, copy, or visual findings remain; one observer visibly yields Ballpark at its exact anchor with spread unavailable and geometry not applicable; no host, firmware, hardware, D2, push, or PR work occurs.",
           "status": "completed"
         }
       ]
@@ -279,11 +298,14 @@
     "Slice D completed on 2026-08-25. Added the pure synchronous LocalizationProvider contract, WeightedCentroidProvider(2.0), aspect-normalized geometry/spread, confirmed-layout composition, exact two-second collection timer, bounded dedup/evidence/tombstone/cursor state, saturating counters, persisted-position joins independent of current GTT, and Collecting/Insufficient/Ballpark presentation.",
     "Slice D correction review resolved active-feed tombstone reactivation: tombstone-only late reports remain inactive and cannot reconstruct corrupted aggregate evidence; same-payload/conflicting late-report tests preserve feed/FIFO/timing/wearable/conflict behavior.",
     "Final Slice D dashboard verification passed 10 test files / 102 tests, TypeScript no-emit typecheck, Vite production build, and git diff hygiene. Final adversarial code review accepted with zero blocker/critical/major/high findings.",
-    "Real Bridge/PTTY/SQLite/Chromium rendered acceptance covered uploaded and image-less floorplans, wide and complete narrow Ballpark, fewer-than-three Insufficient with contributor threshold, and invalid-GTT persisted Ballpark with fail-closed roster editing. Final visual review accepted with zero blocker/high findings. Representative final artifacts are under /tmp/opencode/tron-d-*-final.png and are intentionally not repository evidence; persistent hardware proof remains Slice E.",
+    "Historical Slice D rendering covered uploaded and image-less floorplans, wide and complete narrow Ballpark, the former fewer-than-three threshold, and invalid-GTT persisted Ballpark with fail-closed roster editing. The former threshold is superseded by D3: only zero positioned RSSI observers is insufficient. Representative artifacts remain under /tmp/opencode/tron-d-*-final.png as non-repository history.",
     "User scope decision: finish the host/dashboard PoC only. No further firmware source, D2, firmware build/profile, flash/reset/reboot, hardware evidence, push, or PR work. The firmware observed-RSSI path and 5x5 G gateway glyph are already completed in Slice A and must not be reopened.",
-    "Dashboard-only Slice E verification passed: 67 host tests plus Python compilation; 107 dashboard tests plus TypeScript/Vite production build; wide `/tmp/opencode/tron-dashboard-final2-wide.png` and narrow `/tmp/opencode/tron-dashboard-final2-narrow.png` real Bridge/PTTY/SQLite/Chromium renders approved with no blocker/high/medium visual findings; workplans and diff hygiene passed; no `microbit/` file is modified. E2 hardware and E3 push/PR remain cancelled."
+    "Dashboard-only Slice E verification passed: 67 host tests plus Python compilation; 107 dashboard tests plus TypeScript/Vite production build; wide `/tmp/opencode/tron-dashboard-final2-wide.png` and narrow `/tmp/opencode/tron-dashboard-final2-narrow.png` real Bridge/PTTY/SQLite/Chromium renders approved with no blocker/high/medium visual findings; workplans and diff hygiene passed; no `microbit/` file is modified. E2 hardware and E3 push/PR remain cancelled.",
+    "User localization correction: one positioned observer with RSSI is sufficient for a ballpark marker; every additional unique positioned observer is complementary and participates in the weighted refinement up to the existing evidence bound of 16. The previous minimum-three/strongest-four rule is superseded.",
+    "D3 keeps the existing reducer admission policy: the first 16 unique observer identities are retained; later new identities increment overflow and are not considered. Within each retained identity the strongest sample wins, and the provider uses all retained positioned RSSI observations. No strongest-16 eviction policy or store refactor is introduced.",
+    "D3/D4 verification passed on 2026-08-26: 107 dashboard tests, TypeScript no-emit, and Vite production build; exact provider coverage includes zero, one, two, three, sixteen, overflow, permutation, spread, and geometry semantics; one-observer real Bridge/PTTY/SQLite/Chromium renders `/tmp/opencode/tron-dashboard-one-observer-wide.png` and `/tmp/opencode/tron-dashboard-one-observer-narrow.png` show Ballpark at the sole observer with contributor count 1, geometry Not applicable, and spread Not available. Final adversarial review found no blocker/high/medium issues. No host, firmware, hardware, D2, push, or PR work occurred."
   ],
   "status": "completed",
   "createdAt": "2026-08-24T11:43:32.405Z",
-  "updatedAt": "2026-08-25T15:48:00.154Z"
+  "updatedAt": "2026-08-26T05:35:21.121Z"
 }

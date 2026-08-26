@@ -42,23 +42,28 @@ const triangleObservations: readonly LocalizationObservation[] = [
 ];
 
 describe('WeightedCentroidProvider', () => {
-  it('returns the frozen discriminated contract and requires three contributors', () => {
+  it('requires one contributor and places a one-observer estimate exactly at its anchor', () => {
     const insufficient = provider.estimate(input(
-      triangleAnchors.slice(0, 2),
-      triangleObservations.slice(0, 2),
+      [],
+      [],
     ));
     expect(insufficient).toEqual({
       status: 'insufficient',
       providerId: 'weighted-centroid',
-      contributors: ['anchor-a', 'anchor-b'],
-      required: 3,
+      contributors: [],
+      required: 1,
     });
 
-    const estimate = estimated(input(triangleAnchors, triangleObservations));
+    const estimate = estimated(input(
+      [{ id: 'anchor-a', x: 0.25, y: 0.75 }],
+      [{ anchorId: 'anchor-a', rssiDbm: -60 }],
+    ));
     expect(estimate).toMatchObject({
       status: 'estimated',
       providerId: 'weighted-centroid',
-      contributors: ['anchor-a', 'anchor-b', 'anchor-c'],
+      x: 0.25,
+      y: 0.75,
+      contributors: ['anchor-a'],
       geometryWarning: false,
       normalizedSpread: null,
     });
@@ -85,25 +90,34 @@ describe('WeightedCentroidProvider', () => {
     expect(() => new WeightedCentroidProvider(Number.POSITIVE_INFINITY)).toThrow(RangeError);
   });
 
-  it('retains the deterministic strongest four, breaking equal-RSSI ties by canonical anchor ID', () => {
-    const result = estimated(input(
-      [
-        { id: 'anchor-d', x: 0, y: 0 },
-        { id: 'anchor-b', x: 1, y: 0 },
-        { id: 'anchor-e', x: 0, y: 1 },
-        { id: 'anchor-a', x: 1, y: 1 },
-        { id: 'anchor-c', x: 0.5, y: 0.5 },
-      ],
-      [
-        { anchorId: 'anchor-d', rssiDbm: -50 },
-        { anchorId: 'anchor-b', rssiDbm: -50 },
-        { anchorId: 'anchor-e', rssiDbm: -40 },
-        { anchorId: 'anchor-a', rssiDbm: -50 },
-        { anchorId: 'anchor-c', rssiDbm: -50 },
-      ],
-    ));
+  it('uses all sixteen retained observers, orders contributors deterministically, and rejects overflow input', () => {
+    const anchors = Array.from({ length: 16 }, (_, index) => ({
+      id: `anchor-${index.toString().padStart(2, '0')}`,
+      x: index / 15,
+      y: index % 2,
+    }));
+    const observations = anchors.map((anchor) => ({ anchorId: anchor.id, rssiDbm: -60 }));
+    const result = estimated(input([...anchors].reverse(), [...observations].reverse()));
+    const reordered = estimated(input(anchors, observations));
 
-    expect(result.contributors).toEqual(['anchor-e', 'anchor-a', 'anchor-b', 'anchor-c']);
+    expect(result.contributors).toEqual(anchors.map((anchor) => anchor.id));
+    expect(result.x).toBeCloseTo(0.5, 12);
+    expect(result.y).toBeCloseTo(0.5, 12);
+    expect(result.normalizedSpread).not.toBeNull();
+    expect(Number.isFinite(result.normalizedSpread)).toBe(true);
+    expect(result.normalizedSpread).toBeGreaterThanOrEqual(0);
+    expect(result.normalizedSpread).toBeLessThanOrEqual(1);
+    expect(reordered).toEqual(result);
+
+    const overflowAnchor = { id: 'anchor-16', x: 0.5, y: 0.5 };
+    expect(provider.estimate(input(
+      [...anchors, overflowAnchor],
+      [...observations, { anchorId: overflowAnchor.id, rssiDbm: -60 }],
+    ))).toEqual({
+      status: 'invalid_input',
+      providerId: 'weighted-centroid',
+      reason: 'observations must contain at most 16 entries.',
+    });
   });
 
   it('warns only when every selected contributor triangle is degenerate at the frozen epsilon', () => {
@@ -120,6 +134,8 @@ describe('WeightedCentroidProvider', () => {
       ],
     ));
     const nondegenerate = estimated(input(triangleAnchors, triangleObservations));
+    const single = estimated(input(triangleAnchors.slice(0, 1), triangleObservations.slice(0, 1)));
+    const pair = estimated(input(triangleAnchors.slice(0, 2), triangleObservations.slice(0, 2)));
     const fourWithAnUsableTriangle = estimated(input(
       [
         { id: 'a', x: 0, y: 0 },
@@ -152,6 +168,8 @@ describe('WeightedCentroidProvider', () => {
 
     expect(collinear.geometryWarning).toBe(true);
     expect(nondegenerate.geometryWarning).toBe(false);
+    expect(single.geometryWarning).toBe(false);
+    expect(pair.geometryWarning).toBe(false);
     expect(fourWithAnUsableTriangle.geometryWarning).toBe(false);
     for (const aspectRatio of [0.25, 2.5, Number.MIN_VALUE, Number.MAX_VALUE]) {
       expect(estimated(input(atEpsilonAnchors, epsilonObservations, aspectRatio)).geometryWarning).toBe(true);
@@ -159,7 +177,7 @@ describe('WeightedCentroidProvider', () => {
     }
   });
 
-  it('uses all four leave-one-out centroids and all six aspect-normalized pairwise distances for spread', () => {
+  it('uses every leave-one-out centroid and exact aspect-normalized pairwise spread for two or more contributors', () => {
     const anchors: readonly LocalizationAnchor[] = [
       { id: 'a', x: 0, y: 0 },
       { id: 'b', x: 1, y: 0 },
@@ -187,7 +205,20 @@ describe('WeightedCentroidProvider', () => {
 
     expect(pairwiseDistances).toHaveLength(6);
     expect(result.normalizedSpread).toBeCloseTo(Math.max(...pairwiseDistances), 12);
-    expect(estimated(input(triangleAnchors, triangleObservations)).normalizedSpread).toBeNull();
+
+    const pair = estimated(input(
+      triangleAnchors.slice(0, 2),
+      triangleObservations.slice(0, 2),
+    ));
+    expect(pair.x).toBeCloseTo(1 / 11, 12);
+    expect(pair.y).toBe(0);
+    expect(pair.normalizedSpread).toBeCloseTo(1 / Math.sqrt(2), 12);
+
+    const equalTriangle = estimated(input(
+      triangleAnchors,
+      triangleAnchors.map((anchor) => ({ anchorId: anchor.id, rssiDbm: -60 })),
+    ));
+    expect(equalTriangle.normalizedSpread).toBeCloseTo(0.5, 12);
   });
 
   it('keeps centroids and spread bounded for finite extreme aspect ratios', () => {

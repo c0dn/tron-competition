@@ -948,8 +948,8 @@ describe('floorplan interactions', () => {
       {
         logicalEvent,
         status: 'ballpark',
-        contributorIds: ['a', 'b', 'c'],
-        contributorCount: 3,
+        contributorIds: ['a'],
+        contributorCount: 1,
         geometryWarning: false,
         normalizedSpread: null,
         x: 0,
@@ -958,8 +958,9 @@ describe('floorplan interactions', () => {
       {
         logicalEvent: { ...logicalEvent, key: '8:000008', record: eventRecord({ wearable: 8, packet: '000008' }) },
         status: 'insufficient',
-        contributorIds: ['a', 'b'],
-        contributorCount: 2,
+        cause: 'no_positioned_rssi',
+        contributorIds: [],
+        contributorCount: 0,
       },
     ];
     stubFetch(vi.fn((input: string) => {
@@ -980,6 +981,7 @@ describe('floorplan interactions', () => {
     expect(nodePoint?.className).not.toContain('floorplan-marker-point');
     expect(incidentPoint?.className).toContain('floorplan-marker-point');
     expect(incidentPoint?.className).not.toContain('floorplan-node-point');
-    expect(within(document.body).getByText('2 of 3 required')).not.toBeNull();
+    expect(within(document.body).getByText('0')).not.toBeNull();
+    expect(within(document.body).getByText('Not applicable')).not.toBeNull();
   });
 });

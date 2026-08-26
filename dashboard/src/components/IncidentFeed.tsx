@@ -20,9 +20,14 @@ function locationAnnouncement(views: readonly IncidentLocalizationView[]): strin
     .map((view) => {
       const identity = `Wearable ${view.logicalEvent.record.wearable}, packet ${view.logicalEvent.record.packet}`;
       if (view.status === 'collecting') return `${identity}: collecting.`;
-      if (view.status === 'insufficient') return `${identity}: insufficient, ${view.contributorCount} of 3 contributors.`;
+      if (view.status === 'insufficient') {
+        return view.cause === 'no_positioned_rssi'
+          ? `${identity}: insufficient, no observer has both a position and RSSI.`
+          : `${identity}: localization unavailable.`;
+      }
       const spread = view.normalizedSpread === null ? 'not available' : view.normalizedSpread.toFixed(2);
-      return `${identity}: ballpark at normalized coordinates ${view.x.toFixed(2)}, ${view.y.toFixed(2)}, ${view.contributorCount} contributors, normalized spread ${spread}.`;
+      const contributors = `${view.contributorCount} contributor${view.contributorCount === 1 ? '' : 's'}`;
+      return `${identity}: ballpark at normalized coordinates ${view.x.toFixed(2)}, ${view.y.toFixed(2)}, ${contributors}, normalized spread ${spread}.`;
     })
     .join(' ');
 }
@@ -74,12 +79,18 @@ export function IncidentFeed({ views, conflictCount, loading, error }: IncidentF
                   {logical.evidenceSaturated && <p className="overflow">Evidence presentation is saturated; further observer identities are not retained.</p>}
                   <h4>Location</h4>
                   {view.status === 'collecting' ? <p className="location-status">Collecting</p>
-                    : view.status === 'insufficient' ? <p className="location-status">Insufficient — {view.contributorCount} of 3 positioned RSSI contributors</p>
+                    : view.status === 'insufficient' ? (
+                      <p className="location-status">
+                        {view.cause === 'no_positioned_rssi'
+                          ? 'Insufficient — no observer with both position and RSSI'
+                          : 'Insufficient — localization unavailable'}
+                      </p>
+                    )
                        : (
                          <dl className="localization-data">
                            <div><dt>Location</dt><dd>Ballpark</dd></div>
                           <div><dt>Contributors</dt><dd>{view.contributorCount}</dd></div>
-                          <div><dt>Geometry</dt><dd>{view.geometryWarning ? 'Warning' : 'No warning'}</dd></div>
+                           <div><dt>Geometry</dt><dd>{view.contributorCount < 3 ? 'Not applicable' : view.geometryWarning ? 'Warning' : 'No warning'}</dd></div>
                           <div><dt>Normalized spread</dt><dd>{view.normalizedSpread === null ? 'Not available' : view.normalizedSpread.toFixed(2)}</dd></div>
                           <div><dt>Normalized coordinates</dt><dd>{view.x.toFixed(2)}, {view.y.toFixed(2)}</dd></div>
                         </dl>

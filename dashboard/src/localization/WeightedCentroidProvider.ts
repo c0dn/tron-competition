@@ -7,8 +7,8 @@ import type {
 } from './LocalizationProvider';
 
 const DEPLOYMENT_PATH_LOSS_EXPONENT = 2.0;
-const MAX_CONTRIBUTORS = 4;
-const REQUIRED_CONTRIBUTORS = 3;
+const MAX_CONTRIBUTORS = 16;
+const REQUIRED_CONTRIBUTORS = 1;
 const DEGENERATE_AREA_EPSILON = 1e-6;
 
 interface Contributor {
@@ -51,6 +51,7 @@ function normalizedDoubledTriangleArea(first: LocalizationAnchor, second: Locali
 }
 
 function isDegenerate(contributors: readonly Contributor[]): boolean {
+  if (contributors.length < 3) return false;
   for (let first = 0; first < contributors.length - 2; first += 1) {
     for (let second = first + 1; second < contributors.length - 1; second += 1) {
       for (let third = second + 1; third < contributors.length; third += 1) {
@@ -101,6 +102,9 @@ export class WeightedCentroidProvider implements LocalizationProvider {
     }
     if (!Array.isArray(input.anchors)) return invalid('anchors must be an array.');
     if (!Array.isArray(input.observations)) return invalid('observations must be an array.');
+    if (input.observations.length > MAX_CONTRIBUTORS) {
+      return invalid(`observations must contain at most ${MAX_CONTRIBUTORS} entries.`);
+    }
 
     const anchorsById = new Map<string, LocalizationAnchor>();
     for (let index = 0; index < input.anchors.length; index += 1) {
@@ -145,8 +149,7 @@ export class WeightedCentroidProvider implements LocalizationProvider {
 
     const selected = [...contributors]
       .sort((left, right) => (right.rssiDbm - left.rssiDbm)
-        || compareAnchorIds(left.anchor.id, right.anchor.id))
-      .slice(0, MAX_CONTRIBUTORS);
+        || compareAnchorIds(left.anchor.id, right.anchor.id));
     const contributorIds = selected.map((contributor) => contributor.anchor.id);
 
     if (selected.length < REQUIRED_CONTRIBUTORS) {
@@ -162,7 +165,7 @@ export class WeightedCentroidProvider implements LocalizationProvider {
     if (!centroid) return invalid('weighted centroid is not finite.');
 
     let normalizedSpread: number | null = null;
-    if (selected.length === MAX_CONTRIBUTORS) {
+    if (selected.length >= 2) {
       const leaveOneOutCentroids: Centroid[] = [];
       for (let excluded = 0; excluded < selected.length; excluded += 1) {
         const estimate = this.weightedCentroid(selected.filter((_, index) => index !== excluded));

@@ -35,10 +35,13 @@ describe('IncidentFeed localization presentation', () => {
     const logical = logicalEvent();
     const views: readonly IncidentLocalizationView[] = [
       { logicalEvent: logical, status: 'collecting', contributorIds: [], contributorCount: 0 },
-      { logicalEvent: { ...logical, key: '8:00002b' }, status: 'insufficient', contributorIds: ['a'], contributorCount: 1 },
       {
-        logicalEvent: { ...logical, key: '9:00002c' }, status: 'ballpark', contributorIds: ['a', 'b', 'c'], contributorCount: 3,
-        geometryWarning: true, normalizedSpread: null, x: 0.25, y: 0.75,
+        logicalEvent: { ...logical, key: '8:00002b' }, status: 'insufficient',
+        cause: 'no_positioned_rssi', contributorIds: [], contributorCount: 0,
+      },
+      {
+        logicalEvent: { ...logical, key: '9:00002c' }, status: 'ballpark', contributorIds: ['a'], contributorCount: 1,
+        geometryWarning: false, normalizedSpread: null, x: 0.25, y: 0.75,
       },
       {
         logicalEvent: { ...logical, key: '10:00002d' }, status: 'ballpark', contributorIds: ['a', 'b', 'c', 'd'], contributorCount: 4,
@@ -50,17 +53,18 @@ describe('IncidentFeed localization presentation', () => {
     const ui = within(document.body);
     expect(ui.getByText('4 logical events')).not.toBeNull();
     expect(ui.getByText('Collecting')).not.toBeNull();
-    expect(ui.getByText('Insufficient — 1 of 3 positioned RSSI contributors')).not.toBeNull();
+    expect(ui.getByText('Insufficient — no observer with both position and RSSI')).not.toBeNull();
     expect(ui.getAllByText('Ballpark')).toHaveLength(2);
     expect(ui.getAllByText(/strongest RSSI -58 dBm/i)).toHaveLength(4);
     expect(ui.getAllByText(/4294967295 samples/i)).toHaveLength(4);
     expect(ui.getAllByText('Not available')).toHaveLength(1);
+    expect(ui.getByText('Not applicable')).not.toBeNull();
     expect(ui.getAllByText('0.00').length).toBeGreaterThan(0);
     const liveRegions = ui.getAllByRole('status');
     expect(liveRegions).toHaveLength(1);
     expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: collecting.');
-    expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: insufficient, 1 of 3 contributors.');
-    expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: ballpark at normalized coordinates 0.25, 0.75, 3 contributors, normalized spread not available.');
+    expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: insufficient, no observer has both a position and RSSI.');
+    expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: ballpark at normalized coordinates 0.25, 0.75, 1 contributor, normalized spread not available.');
     expect(liveRegions[0]?.textContent).toContain('Wearable 7, packet 00002a: ballpark at normalized coordinates 0.50, 0.50, 4 contributors, normalized spread 0.00.');
     expect(document.body.textContent).not.toMatch(/estimated|invalid_input|meters|precision/i);
   });

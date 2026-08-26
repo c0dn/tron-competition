@@ -888,8 +888,8 @@ export function FloorplanPanel({
               <tr key={view.logicalEvent.key}>
                 <th scope="row">Wearable {view.logicalEvent.record.wearable} <code>{view.logicalEvent.record.packet}</code></th>
                 <td data-label="Location"><span>{view.status === 'collecting' ? 'Collecting' : view.status === 'insufficient' ? 'Insufficient' : 'Ballpark'}</span></td>
-                <td data-label="Contributors">{view.status === 'collecting' ? '—' : view.status === 'insufficient' ? `${view.contributorCount} of 3 required` : view.contributorCount}</td>
-                <td data-label="Geometry">{view.status === 'ballpark' ? (view.geometryWarning ? 'Warning' : 'No warning') : '—'}</td>
+                <td data-label="Contributors">{view.status === 'collecting' ? '—' : view.contributorCount}</td>
+                <td data-label="Geometry">{view.status === 'ballpark' ? (view.contributorCount < 3 ? 'Not applicable' : view.geometryWarning ? 'Warning' : 'No warning') : '—'}</td>
                 <td data-label="Normalized spread">{view.status === 'ballpark' ? (view.normalizedSpread === null ? 'Not available' : view.normalizedSpread.toFixed(2)) : '—'}</td>
                 <td data-label="Normalized coordinates">{view.status === 'ballpark' ? `${view.x.toFixed(2)}, ${view.y.toFixed(2)}` : '—'}</td>
               </tr>

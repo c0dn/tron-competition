@@ -404,31 +404,31 @@ describe('Gateway floorplan dashboard', () => {
   it('transitions to Ballpark at two seconds and recomputes late evidence without remounting its marker', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(0));
-    const observers = ['0102545678c1', '0102545678c2', '0102545678c3', '0102545678c4'];
-    const initialEvents = observers.slice(0, 3).map((observer, index) => eventRecord({
+    const observers = ['0102545678c1', '0102545678c2'];
+    const initialEvents = observers.slice(0, 1).map((observer, index) => eventRecord({
       cursor: index + 1, observer, observer_rssi_dbm: -60, packet: '000007', seq: 7, received_at_ms: 0,
     }));
-    const lateEvent = eventRecord({ cursor: 4, observer: observers[3], observer_rssi_dbm: -40, packet: '000007', seq: 7, received_at_ms: 3_000 });
+    const lateEvent = eventRecord({ cursor: 2, observer: observers[1], observer_rssi_dbm: -40, packet: '000007', seq: 7, received_at_ms: 3_000 });
     const layout = layoutReady({ positions: observers.map((adva, index) => ({
       adva,
-      x: index === 1 || index === 3 ? 1 : 0,
-      y: index > 1 ? 1 : 0,
+      x: index,
+      y: index,
     })) });
     let lateEnabled = false;
     let lateDelivered = false;
     stubFetch(vi.fn((input: string) => {
       if (input.startsWith('/api/events')) {
         if (input.includes('after=0')) return Promise.resolve(jsonResponse(200, {
-          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 3, events: initialEvents,
+          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 1, events: initialEvents,
         }));
         if (lateEnabled && !lateDelivered) {
           lateDelivered = true;
           return Promise.resolve(jsonResponse(200, {
-            schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 4, events: [lateEvent],
+            schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: 2, events: [lateEvent],
           }));
         }
         return Promise.resolve(jsonResponse(200, {
-          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: lateDelivered ? 4 : 3, events: [],
+          schema: 'mind.api.v2', session_id: '0123456789abcdef0123456789abcdef', gap: false, oldest_cursor: 1, current_cursor: lateDelivered ? 2 : 1, events: [],
         }));
       }
       if (input === '/api/health') return Promise.resolve(jsonResponse(200, healthResponse([])));
@@ -445,6 +445,8 @@ describe('Gateway floorplan dashboard', () => {
     const marker = ui.getByRole('img', { name: /Wearable 7, packet 000007: Ballpark/i });
     const before = marker.getAttribute('aria-label');
     expect(ui.getAllByText('Ballpark').length).toBeGreaterThan(0);
+    expect(ui.getAllByText('Not applicable').length).toBeGreaterThan(0);
+    expect(ui.getAllByText('Not available').length).toBeGreaterThan(0);
 
     lateEnabled = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
@@ -582,9 +584,10 @@ describe('Gateway floorplan dashboard', () => {
     const records = Array.from({ length: 11 }, (_, wearableIndex) => {
       const wearable = wearableIndex + 1;
       const packet = wearable.toString(16).padStart(6, '0');
-      const evidenceCount = wearable === 11 ? 2 : 3;
+      const evidenceCount = wearable === 11 ? 1 : 3;
       return observers.slice(0, evidenceCount).map((observer) => eventRecord({
-        cursor: cursor++, wearable, packet, seq: wearable, observer, observer_rssi_dbm: -55, received_at_ms: 0,
+        cursor: cursor++, wearable, packet, seq: wearable, observer,
+        observer_rssi_dbm: wearable === 11 ? null : -55, received_at_ms: 0,
       }));
     }).flat();
     stubFetch(vi.fn((input: string) => {
@@ -601,6 +604,7 @@ describe('Gateway floorplan dashboard', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     const ui = within(document.body);
     expect(ui.getByText('11 logical events')).not.toBeNull();
+    expect(ui.getByText('Insufficient — no observer with both position and RSSI')).not.toBeNull();
     expect(document.querySelectorAll('.estimate-table tbody tr')).toHaveLength(10);
     expect(ui.getAllByRole('img', { name: /Ballpark/i })).toHaveLength(9);
     expect(document.body.textContent).not.toMatch(/estimated|invalid_input|meters|precision/i);

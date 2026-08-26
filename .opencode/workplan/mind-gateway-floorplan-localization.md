@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Ship a competition-oriented, single-PC dashboard that treats the sole serial-connected backbone as the **Gateway**, lists remote nodes from that gateway's GTT, persists a floorplan and node coordinates on host disk, globally deduplicates wearable incidents, and places each logical incident approximately from the original RX RSSI reported by multiple positioned observer nodes.
+Ship a competition-oriented, single-PC dashboard that treats the sole serial-connected backbone as the **Gateway**, lists remote nodes from that gateway's GTT, persists a floorplan and node coordinates on host disk, globally deduplicates wearable incidents, and places each logical incident approximately from the original RX RSSI reported by one or more positioned observer nodes.
 
 Internal firmware and API root semantics remain `ROOT`; only visible product language and the 5x5 local indicator become `GATEWAY`/`G`.
 
@@ -236,7 +236,7 @@ interface LocalizationProvider {
         contributors:ReadonlyArray<string>; geometryWarning:boolean;
         normalizedSpread:number|null }
     | { status:'insufficient'; providerId:string;
-        contributors:ReadonlyArray<string>; required:3 }
+        contributors:ReadonlyArray<string>; required:1 }
     | { status:'invalid_input'; providerId:string; reason:string };
 }
 ```
@@ -276,7 +276,11 @@ no-ops.
 API replay of an already processed cursor changes nothing. A distinct record
 from the same observer increments a saturating sample count and retains the
 strongest valid RSSI as the deterministic representative; it does not add a
-second contributor. Strongest-four ties break by canonical anchor ID.
+second contributor. The reducer admits the first 16 unique observer identities
+and rejects later identities without eviction. The provider does not choose a
+different strongest 16: it consumes every admitted observer that has RSSI and a
+persisted position. Contributor output order is strongest RSSI first, with
+equal-RSSI ties broken by canonical anchor ID.
 
 For each logical incident:
 
@@ -284,8 +288,11 @@ For each logical incident:
    freshness annotates the event but cannot retroactively invalidate an
    observation-time sample.
 2. Exclude unavailable RSSI, unpositioned, or unresolved observers.
-3. Sort by strongest RSSI and retain at most four unique observers.
-4. Require at least three.
+3. Use every remaining observer from the reducer's already-retained first-16
+   set; sort only the deterministic contributor/output order by strongest RSSI
+   and canonical equal-RSSI ID.
+4. Require at least one. Zero positioned observers with RSSI is insufficient;
+   one observer produces a ballpark marker exactly at that observer.
 5. With signed dBm `r_i`, strongest `r_max`, and fixed path-loss exponent `n=2.0`, compute stable relative inverse-distance-squared weights:
 
    `w_i = 10 ^ ((r_i - r_max) / (5 * n))`
@@ -294,12 +301,14 @@ For each logical incident:
 7. For finite positive image aspect ratio `a`, every geometry/error/spread test
    uses `d_norm = hypot(a*dx,dy)/hypot(a,1)`, bounded `[0,1]`.
    Normalized doubled triangle area is
-   `abs(cross((a*x,y)))/a`, also bounded `[0,1]`; geometry is degenerate when
-   every contributor triangle has area <= `1e-6`.
-   With four contributors, compute all four leave-one-out three-observer
-   estimates; normalized spread is their maximum pairwise `d_norm`. Three
-   contributors have `normalizedSpread=null`.
-8. Never display meters or a position with fewer than three contributors.
+   `abs(cross((a*x,y)))/a`, also bounded `[0,1]`; with at least three
+   contributors, geometry is degenerate when every contributor triangle has
+   area <= `1e-6`. With two or more contributors, compute every leave-one-out
+   estimate and use their exact maximum pairwise `d_norm` as normalized spread.
+   Tests freeze exact two- and three-contributor values and finite bounded
+   sixteen-contributor spread. One contributor has `normalizedSpread=null`.
+8. Never display meters or claim precision. Additional observers complement
+   and refine the one-observer ballpark estimate; they are not a prerequisite.
 
 The composition/store starts a two-second **collecting** window at first host
 receipt, then asks the provider. Late observer evidence may recompute the
@@ -327,7 +336,10 @@ Execution must use the required sequence:
 4. **Slice D:** localization code-writer -> Slice D code-checker -> correction writer if needed.
 5. **Slice E:** review the remaining host/dashboard correction -> run host and
    dashboard tests/build -> inspect wide and narrow dashboard renders -> commit
-   the accepted dashboard-only correction -> stop.
+   the accepted dashboard-only correction.
+6. **D3 follow-up:** apply the user-approved one-observer localization rule ->
+   run focused/full dashboard checks -> review and render one-observer wide and
+   narrow states -> commit the accepted dashboard-only correction -> stop.
 
 Do not launch dependent slices in parallel: B depends on A schemas; C depends on
 B APIs; D depends on A/C evidence and map state. Within Slice A, RSSI wire work
@@ -335,16 +347,17 @@ and the isolated G glyph may proceed in parallel with disjoint files. After
 plan approval, commit this plan first. Each Slice A-D follows writer(s) ->
 combined checker -> correction writer/recheck -> reviewed slice commit. Slice A,
 including the observer-RSSI path and recognizable 5x5 G glyph, is completed and
-must not be reopened. Slice E changes no firmware and runs no firmware build,
+must not be reopened. D3 is the sole approved post-E source change. It changes
+dashboard localization/presentation only and runs no host or firmware work,
 D2, profile, flash/reset/reboot, hardware-evidence, push, or PR workflow.
 
 ## Acceptance summary
 
-Dashboard-PoC acceptance requires the host tests and Python compilation,
-dashboard tests/typecheck/production build, durable/revisioned host storage,
-GTT-only roster, accessible floorplan controls, deterministic dedup/estimator
-tests, wide and narrow visual smoke checks, workplan validation, and a reviewed
-dashboard-only commit containing no `microbit/` changes.
+D3 acceptance requires focused and complete dashboard tests, typecheck,
+production build, deterministic zero/one/two/sixteen-observer estimator and
+composition coverage, one-observer wide and narrow visual smoke checks,
+workplan validation, adversarial review, and a reviewed dashboard-only commit
+containing no `host/` or `microbit/` changes.
 
 Hardware acceptance, firmware validation, push, and PR updates are deferred
 outside this workplan and require a separate future request.

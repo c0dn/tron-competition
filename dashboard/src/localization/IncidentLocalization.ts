@@ -25,6 +25,7 @@ export interface CollectingIncidentLocalizationView extends IncidentLocalization
 
 export interface InsufficientIncidentLocalizationView extends IncidentLocalizationViewBase {
   readonly status: 'insufficient';
+  readonly cause: 'no_positioned_rssi' | 'localization_unavailable';
 }
 
 export interface BallparkIncidentLocalizationView extends IncidentLocalizationViewBase {
@@ -62,10 +63,12 @@ function strongestEvidenceByObserver(logicalEvent: LogicalEvent, positions: read
 function insufficient(
   logicalEvent: LogicalEvent,
   contributorIds: readonly string[],
+  cause: InsufficientIncidentLocalizationView['cause'],
 ): InsufficientIncidentLocalizationView {
   return {
     logicalEvent,
     status: 'insufficient',
+    cause,
     contributorIds,
     contributorCount: contributorIds.length,
   };
@@ -89,12 +92,12 @@ function fromProvider(
     };
   }
   if (result.status === 'insufficient') {
-    return insufficient(logicalEvent, result.contributors);
+    return insufficient(logicalEvent, result.contributors, 'no_positioned_rssi');
   }
 
   // `invalid_input` and its reason are intentionally internal to the provider
   // boundary. The presentation fails closed with no marker-capable fields.
-  return insufficient(logicalEvent, fallbackContributorIds);
+  return insufficient(logicalEvent, fallbackContributorIds, 'localization_unavailable');
 }
 
 /**
