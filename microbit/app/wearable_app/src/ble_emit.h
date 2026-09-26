@@ -1,14 +1,13 @@
 /*
  * ble_emit.h - BLE advertising output for the wearable.
- * Packs incident_state_t into the shared beacon contract (schema.h) and
- * advertises with the fixed AdvA identity.
+ * Packs incident_state_t into a TM/01 MIND_EVENT frame and advertises with
+ * the fixed AdvA identity.
  */
 
 #ifndef BLE_EMIT_H
 #define BLE_EMIT_H
 
-#include <tk/tkernel.h>
-#include "fusion.h"
+#include "incident.h"
 
 /* Configure the radio for advertising. Call once at boot. */
 void ble_emit_init(void);

@@ -31,6 +31,51 @@ uv tool install pyocd grabserial
 
 Also required: `arm-none-eabi-gcc`, `cmake`, `ninja`.
 
+## Local dashboard bridge security
+
+The host bridge binds only to `127.0.0.1`. It serves its dashboard and APIs
+only when the request `Host` is `localhost:<actual-port>` or
+`127.0.0.1:<actual-port>`; other Host values, including a different port, are
+rejected. Mutation endpoints require one `application/json` Content-Type
+(optionally `charset=utf-8`). Browser requests must provide the matching
+`http` Origin and may only declare `Sec-Fetch-Site: same-origin` or `none`.
+The bridge sends no CORS permissions. Local CLI clients remain supported when
+they send JSON with no Origin or fetch-metadata headers.
+
+## Dashboard bridge deployment
+
+Install the bridge image validator, then install the frozen dashboard
+dependencies and build the production assets before launch:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python -r host/requirements.txt
+(
+  cd dashboard
+  bun install --frozen-lockfile
+  bun run build
+)
+```
+
+Run the dashboard bridge with exactly one serial-connected Gateway:
+
+```bash
+.venv/bin/python host/bridge.py --serial /dev/serial/by-id/<gateway> --assets dashboard/dist
+```
+
+The bridge rejects zero or multiple `--serial` arguments before opening its
+localhost HTTP server. Floorplan metadata and image bytes are stored together
+in `${XDG_DATA_HOME:-$HOME/.local/share}/tron-dashboard/dashboard.sqlite3`.
+An empty or relative `XDG_DATA_HOME` is ignored in favor of the fallback.
+Use an explicit absolute directory when needed:
+
+```bash
+.venv/bin/python host/bridge.py --serial /dev/ttyACM0 --state-dir /var/lib/tron-dashboard
+```
+
+The state directory uses mode `0700`; `dashboard.sqlite3` uses mode `0600`.
+Keep this directory on persistent local storage.
+
 ## Build & flash (micro:bit)
 
 ```bash

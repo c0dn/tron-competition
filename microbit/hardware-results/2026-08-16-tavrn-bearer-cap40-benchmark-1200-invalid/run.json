@@ -1,0 +1,909 @@
+{
+  "boards": [
+    {
+      "adva": "18:42:de:52:4a:dd",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.elf",
+        "elf_sha256": "63025fbcaf9d018b7af8ee135a89770aa9662810b19eae6b2ceb4b6ac2929f64",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.hex",
+          "sha256": "4ac11cf27d8be3a3474b6d0acbc37b23a20d37ff0e86065b024cc2664212ea1c"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.hex",
+        "hex_sha256": "4ac11cf27d8be3a3474b6d0acbc37b23a20d37ff0e86065b024cc2664212ea1c",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.manifest",
+        "manifest_sha256": "ceaf038643ad329b3467cf6858ee83e714487a5ddb22c26e5d81e64d73c7acd0"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-A.log",
+        "sha256": "e12a187346113b0753c74156661207e246f9faf071831d158dbcf5b720c87565",
+        "terminal_censored": true,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 569
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "1e:33:a7:2f:8e:d8"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "A",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01",
+      "uid": "9906360200052820cf57b9f988a30e16000000006e052820"
+    },
+    {
+      "adva": "dc:4b:0a:06:03:f8",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.elf",
+        "elf_sha256": "0a15fd35a390b11b90e1304641972f25068c3f6d046435f449a039fdf1885f6c",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.hex",
+          "sha256": "3233b0d483ac4d610b509d0e14cfd09a6fb40750e4fbf1e48788e40da769784e"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.hex",
+        "hex_sha256": "3233b0d483ac4d610b509d0e14cfd09a6fb40750e4fbf1e48788e40da769784e",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.manifest",
+        "manifest_sha256": "9368baa5219812e1ff2359d0d80c9ea20bfbdeec7b66ce87a964ec86474fe512"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-B.log",
+        "sha256": "14498e0181710144e8692b38d37cada7ff68b4a74118e4f971f8603dd6e368dc",
+        "terminal_censored": true,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 706
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "B",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01",
+      "uid": "99063602000528205539bee7957c8dea000000006e052820"
+    },
+    {
+      "adva": "1e:33:a7:2f:8e:d8",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.elf",
+        "elf_sha256": "c8ff08673391c0cefbf9ed3c110c9d801d7827e28efc98ba83637ab93408c66f",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.hex",
+          "sha256": "6703bcb13dc6e93ddc5ed8d0e54d7a0f03355053a9c18de1e636c279b46e75b6"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.hex",
+        "hex_sha256": "6703bcb13dc6e93ddc5ed8d0e54d7a0f03355053a9c18de1e636c279b46e75b6",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.manifest",
+        "manifest_sha256": "f4028c2b739ebaf5d8c46a32ad7ab27cd7ec3cc4d74fcdfafa96a1ba2fdd38c6"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-C.log",
+        "sha256": "16ddef92f6ff866c98361c5829c769b4cab2ee4fb7abdef2360e64250f966139",
+        "terminal_censored": true,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 53
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "18:42:de:52:4a:dd"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "C",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f9a4d9d29f9d7c0b000000006e052820-if01",
+      "uid": "9906360200052820f9a4d9d29f9d7c0b000000006e052820"
+    },
+    {
+      "adva": "51:56:ae:12:21:ca",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.elf",
+        "elf_sha256": "2731aa39fcdc26ff81e8c19ca02a019255e9bbac00282b9bba6512a0966db4fc",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.hex",
+          "sha256": "dd26a724d46d5d01ca95f332dba4d1df645f4ae6cfa01164b5372ee3456f4502"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.hex",
+        "hex_sha256": "dd26a724d46d5d01ca95f332dba4d1df645f4ae6cfa01164b5372ee3456f4502",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.manifest",
+        "manifest_sha256": "02402323d71cd45aec973efec0290f8dafd5167ae8176c529bcb7f8d46ae947b"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-D.log",
+        "sha256": "2c0b9c7cb49a3352d320cfdc4ef133f8069baf927bf9c8f08a32333cc8cfe426",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "D",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f4767fb3d81870df000000006e052820-if01",
+      "uid": "9906360200052820f4767fb3d81870df000000006e052820"
+    },
+    {
+      "adva": "be:65:0b:2c:96:d0",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.elf",
+        "elf_sha256": "e41f22f488885843d893f4b68312dc2ade68537a956bcd8051dfa3c493af4da9",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.hex",
+          "sha256": "9263496d9d7324aa5408fbb02e498db9cf56e5af082ce84e1b46a307d2c10136"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.hex",
+        "hex_sha256": "9263496d9d7324aa5408fbb02e498db9cf56e5af082ce84e1b46a307d2c10136",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.manifest",
+        "manifest_sha256": "4126d1804fc25fead92920e80a53181881ea50b48a7ee4042f0a59ae860a72d3"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-E.log",
+        "sha256": "579765071964ac31ebfbe6d2c7cd5f88c9e5f854e11345d941cc6eaabb741cd1",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "E",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528200b9c563b9bdebe86000000006e052820-if01",
+      "uid": "99063602000528200b9c563b9bdebe86000000006e052820"
+    },
+    {
+      "adva": "56:a2:44:0e:9e:d6",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.elf",
+        "elf_sha256": "08c63998a746ff05516053b72fd10d52699846068d5c7d6a409ba395682ac0d7",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.hex",
+          "sha256": "738f4b5f3eb5aa7de2db687328f86d7cc0aeca4521efb36fafa67b98828667a2"
+        },
+        "hex": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.hex",
+        "hex_sha256": "738f4b5f3eb5aa7de2db687328f86d7cc0aeca4521efb36fafa67b98828667a2",
+        "manifest": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.manifest",
+        "manifest_sha256": "2dec609e64f29b8ec0cf73fc376e7b153a2629104b3eb95b8223645e7d565cf8"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-F.log",
+        "sha256": "8de4c4cee159a2d9d717fb25a0de1994fc0aa415a955e1ba15ae32995ef3ae7b",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "F",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_990636020005282033b7c2ad5952ee2e000000006e052820-if01",
+      "uid": "990636020005282033b7c2ad5952ee2e000000006e052820"
+    }
+  ],
+  "candidate_scope": "BENCH_HOOKED_RESTRICTED",
+  "ended_utc": "2026-08-16T21:18:52.982945Z",
+  "events": [
+    {
+      "at": "2026-08-16T20:56:36.696414Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820cf57b9f988a30e16000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_A",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:37.518228Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "99063602000528205539bee7957c8dea000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_B",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:38.414336Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820f9a4d9d29f9d7c0b000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_C",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:39.376461Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820f4767fb3d81870df000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_D",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:40.096568Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "99063602000528200b9c563b9bdebe86000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_E",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:40.999375Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "990636020005282033b7c2ad5952ee2e000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "read32 0x100000a4 8"
+      ],
+      "event": "ficr_F",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:56:41.861634Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.hex",
+        "--uid",
+        "9906360200052820cf57b9f988a30e16000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_A",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:01.832620Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820cf57b9f988a30e16000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_A",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:02.613455Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.hex",
+        "--uid",
+        "99063602000528205539bee7957c8dea000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_B",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:22.745025Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "99063602000528205539bee7957c8dea000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_B",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:23.603749Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.hex",
+        "--uid",
+        "9906360200052820f9a4d9d29f9d7c0b000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_C",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:43.990122Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820f9a4d9d29f9d7c0b000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_C",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:57:44.955607Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.hex",
+        "--uid",
+        "9906360200052820f4767fb3d81870df000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_D",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:04.932851Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "9906360200052820f4767fb3d81870df000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_D",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:05.664977Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.hex",
+        "--uid",
+        "99063602000528200b9c563b9bdebe86000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_E",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:25.565214Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "99063602000528200b9c563b9bdebe86000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_E",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:26.494625Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "load",
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.hex",
+        "--uid",
+        "990636020005282033b7c2ad5952ee2e000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "flash_F",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:46.491112Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "commander",
+        "--uid",
+        "990636020005282033b7c2ad5952ee2e000000006e052820",
+        "--target",
+        "nrf52833",
+        "--command",
+        "halt"
+      ],
+      "event": "halt_F",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:47.298657Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_A",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-A.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.298957Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_B",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-B.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.299212Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f9a4d9d29f9d7c0b000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_C",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-C.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.299515Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f4767fb3d81870df000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_D",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-D.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.299823Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528200b9c563b9bdebe86000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_E",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-E.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.300142Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "-d",
+        "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_990636020005282033b7c2ad5952ee2e000000006e052820-if01",
+        "-b",
+        "115200",
+        "-T",
+        "-F",
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+      ],
+      "event": "capture_F",
+      "log": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/logs/board-F.log",
+      "status": "started"
+    },
+    {
+      "at": "2026-08-16T20:58:47.300178Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "9906360200052820cf57b9f988a30e16000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_A",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:48.159276Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "99063602000528205539bee7957c8dea000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_B",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:49.104853Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "9906360200052820f9a4d9d29f9d7c0b000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_C",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:50.142485Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "9906360200052820f4767fb3d81870df000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_D",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:50.951434Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "99063602000528200b9c563b9bdebe86000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_E",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T20:58:51.936848Z",
+      "command": [
+        "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "reset",
+        "--uid",
+        "990636020005282033b7c2ad5952ee2e000000006e052820",
+        "--target",
+        "nrf52833"
+      ],
+      "event": "run_F",
+      "returncode": 0,
+      "status": "ok"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972606Z",
+      "event": "capture_duration",
+      "seconds": 1200.0,
+      "status": "elapsed"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972637Z",
+      "event": "capture_A",
+      "process_group": 2710503,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972656Z",
+      "event": "capture_B",
+      "process_group": 2710504,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972666Z",
+      "event": "capture_C",
+      "process_group": 2710505,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972675Z",
+      "event": "capture_D",
+      "process_group": 2710506,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972683Z",
+      "event": "capture_E",
+      "process_group": 2710507,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.972693Z",
+      "event": "capture_F",
+      "process_group": 2710508,
+      "signal": "SIGTERM",
+      "status": "terminate_requested"
+    },
+    {
+      "at": "2026-08-16T21:18:52.979943Z",
+      "event": "capture_A",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980010Z",
+      "event": "capture_B",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980048Z",
+      "event": "capture_C",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980080Z",
+      "event": "capture_D",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980111Z",
+      "event": "capture_E",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980143Z",
+      "event": "capture_F",
+      "returncode": -15,
+      "status": "terminated"
+    },
+    {
+      "at": "2026-08-16T21:18:52.980765Z",
+      "event": "terminal_censor_A",
+      "open_gtt": false,
+      "partial_bytes": 569,
+      "status": "recorded"
+    },
+    {
+      "at": "2026-08-16T21:18:52.981184Z",
+      "event": "terminal_censor_B",
+      "open_gtt": false,
+      "partial_bytes": 706,
+      "status": "recorded"
+    },
+    {
+      "at": "2026-08-16T21:18:52.981733Z",
+      "event": "terminal_censor_C",
+      "open_gtt": false,
+      "partial_bytes": 53,
+      "status": "recorded"
+    }
+  ],
+  "observation": {
+    "destination_role": "C",
+    "heartbeat_hz": 1,
+    "source_role": "A",
+    "throughput_burst_seconds": 60,
+    "throughput_hz": 10,
+    "throughput_repeat_seconds": 450,
+    "throughput_start_seconds": 60,
+    "window_seconds": 10
+  },
+  "pinned": {
+    "boards": {
+      "A": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.elf",
+          "sha256": "63025fbcaf9d018b7af8ee135a89770aa9662810b19eae6b2ceb4b6ac2929f64"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.hex",
+          "sha256": "4ac11cf27d8be3a3474b6d0acbc37b23a20d37ff0e86065b024cc2664212ea1c"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-18c94cb0e49a.manifest",
+          "sha256": "ceaf038643ad329b3467cf6858ee83e714487a5ddb22c26e5d81e64d73c7acd0"
+        }
+      },
+      "B": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.elf",
+          "sha256": "0a15fd35a390b11b90e1304641972f25068c3f6d046435f449a039fdf1885f6c"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.hex",
+          "sha256": "3233b0d483ac4d610b509d0e14cfd09a6fb40750e4fbf1e48788e40da769784e"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-18c94cb0e49a.manifest",
+          "sha256": "9368baa5219812e1ff2359d0d80c9ea20bfbdeec7b66ce87a964ec86474fe512"
+        }
+      },
+      "C": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.elf",
+          "sha256": "c8ff08673391c0cefbf9ed3c110c9d801d7827e28efc98ba83637ab93408c66f"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.hex",
+          "sha256": "6703bcb13dc6e93ddc5ed8d0e54d7a0f03355053a9c18de1e636c279b46e75b6"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-18c94cb0e49a.manifest",
+          "sha256": "f4028c2b739ebaf5d8c46a32ad7ab27cd7ec3cc4d74fcdfafa96a1ba2fdd38c6"
+        }
+      },
+      "D": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.elf",
+          "sha256": "2731aa39fcdc26ff81e8c19ca02a019255e9bbac00282b9bba6512a0966db4fc"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.hex",
+          "sha256": "dd26a724d46d5d01ca95f332dba4d1df645f4ae6cfa01164b5372ee3456f4502"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-18c94cb0e49a.manifest",
+          "sha256": "02402323d71cd45aec973efec0290f8dafd5167ae8176c529bcb7f8d46ae947b"
+        }
+      },
+      "E": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.elf",
+          "sha256": "e41f22f488885843d893f4b68312dc2ade68537a956bcd8051dfa3c493af4da9"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.hex",
+          "sha256": "9263496d9d7324aa5408fbb02e498db9cf56e5af082ce84e1b46a307d2c10136"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-18c94cb0e49a.manifest",
+          "sha256": "4126d1804fc25fead92920e80a53181881ea50b48a7ee4042f0a59ae860a72d3"
+        }
+      },
+      "F": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.elf",
+          "sha256": "08c63998a746ff05516053b72fd10d52699846068d5c7d6a409ba395682ac0d7"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.hex",
+          "sha256": "738f4b5f3eb5aa7de2db687328f86d7cc0aeca4521efb36fafa67b98828667a2"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-18c94cb0e49a.manifest",
+          "sha256": "2dec609e64f29b8ec0cf73fc376e7b153a2629104b3eb95b8223645e7d565cf8"
+        }
+      }
+    },
+    "inventory": {
+      "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/inventory.tsv",
+      "sha256": "872a5236975e80d10d5a65ee4b9edec9ab883d7d7347eb37d7400840a2f0613e"
+    },
+    "observation_store": {
+      "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/observations.sqlite3",
+      "retention": "retained_run_evidence",
+      "sha256": "534af2021e55bfcd7ba492da69606820cd4f3bd0522b9764120af7beca7fbedb"
+    },
+    "plan": {
+      "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/plan.json",
+      "sha256": "839f270592c0c02eba5b7f763a41bc91fab26cd842c21884b6b7624dadd1d2d8"
+    },
+    "tools": {
+      "analyzer": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/summarize_tavrn_benchmark.py",
+        "sha256": "6bf511805d9484b40143c4f88244e14dc065b2fdece99ea4445daa6fbffce57a"
+      },
+      "grabserial": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/grabserial",
+        "sha256": "cbd4681cf800bc791461d330cc991bba302be7bc5283de91d4c9ecbd22c05080"
+      },
+      "pyocd": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/pyocd",
+        "sha256": "e98e19763d1fd9c7751133eea46d5c9624dc422635450daa8ea2ab898cdcf3b0"
+      },
+      "runner": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/run_tavrn_benchmark.py",
+        "sha256": "3334d9a8ddba5342030d98b1ad5f85cdb42916e4020503c3e73e6a46ca038c10"
+      },
+      "uv": {
+        "path": "/tmp/opencode/tavrn-bearer-cap40-18c94cb/benchmark-1200-exec/inputs/tools/uv",
+        "sha256": "a8764126944a67b4d477f2928c5532fe1d6ae3a44bdbcb004633a1a227b1f165"
+      }
+    }
+  },
+  "profile": "FULL_TAVRN",
+  "schema": "tron.tavrn.observation.run.v2",
+  "source": {
+    "commit": "18c94cb0e49a1da88317d73f6ae2b4691c8df10c",
+    "tree": "7565b0b4d4e7cf2e95865b06dbe95069d43718e0"
+  },
+  "started_utc": "2026-08-16T20:56:36.580952Z",
+  "status": "failed_invalid_evidence",
+  "timer_profile": "BALANCED"
+}

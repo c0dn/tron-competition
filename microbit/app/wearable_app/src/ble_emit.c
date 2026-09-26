@@ -1,31 +1,27 @@
 /*
  * ble_emit.c - BLE advertising output (see ble_emit.h).
  *
- * The wire format is defined once in the shared contract (schema.h). We fill
- * the packed mind_adv_payload_t and frame it as the two AD structures the
- * contract mandates: Flags + Manufacturer Specific Data. Identity rides the
- * fixed AdvA (MIND_ADVA), so nothing identity-related is in the payload.
- *
- * NOTE on the driver: ble_radio_advertise(adv, len, addr6) takes the FULL AD
- * structures in 'adv' (not just the payload) and the address as the 3rd arg,
- * so we hand-frame Flags+MSD here rather than the shorthand in schema.h.
+ * Schema-v1 payload bytes are carried inside a TM/01 manufacturer frame.  A
+ * stable 24-bit packet id distinguishes one logical wearable message from its
+ * copies; TTL is zero because backbone application ingress consumes the frame
+ * directly rather than sending it through the legacy flood node.
  */
 
 #include "ble_emit.h"
 #include "ble_radio.h"
 #include "app_config.h"
 #include "schema.h"
+#include "tron_mesh_packet.h"
 
 /* Fixed random-static advertising address for this unit (LSB..MSB). */
 static const UB adva[6] = MIND_ADVA(DEVICE_ID);
 
 UINT ble_emit_pack(const incident_state_t *st, UB *buf)
 {
+    tron_mesh_packet_t packet;
     mind_adv_payload_t p;
-    const UB *pbytes = (const UB *)&p;
+    size_t adv_len = 0u;
     UW svm = st->accel_svm;
-    UINT len = 0;
-    UINT i;
 
     if (svm > 8000u) svm = 8000u;   /* contract range: 0..8000 mg @ +/-8g */
 
@@ -34,23 +30,29 @@ UINT ble_emit_pack(const incident_state_t *st, UB *buf)
     p.confidence     = st->confidence;
     p.accel_svm      = (uint16_t)svm;
     p.mic_level      = st->mic_level;
-    p.seq            = st->seq;
+    /* The schema compatibility byte is always derived from the on-air ID. */
+    p.seq            = (UB)(st->event_id & 0xFFu);
 
-    /* AD 1 - Flags: LE General Discoverable, BR/EDR not supported. */
-    buf[len++] = 0x02;
-    buf[len++] = MIND_AD_TYPE_FLAGS;
-    buf[len++] = 0x06;
+    packet.net_id = MIND_MESH_NET_ID;
+    packet.ttl = 0u;
+    packet.src = MIND_MESH_SRC;
+    packet.seq24 = (uint32_t)(st->event_id & TRON_MESH_SEQ24_MAX);
+    packet.msg_type = TRON_MESH_MSG_TYPE_MIND_EVENT;
+    packet.payload_len = (uint8_t)MIND_PAYLOAD_SIZE;
+    {
+        const UB *bytes = (const UB *)&p;
+        UINT index;
 
-    /* AD 2 - Manufacturer Specific Data: company(2) + payload(7). */
-    buf[len++] = (UB)(1 + 2 + MIND_PAYLOAD_SIZE);   /* type + company + payload */
-    buf[len++] = MIND_AD_TYPE_MSD;
-    buf[len++] = (UB)(MIND_COMPANY_ID & 0xFF);
-    buf[len++] = (UB)(MIND_COMPANY_ID >> 8);
-    for (i = 0; i < MIND_PAYLOAD_SIZE; i++) {
-        buf[len++] = pbytes[i];     /* packed struct == wire bytes (LE) */
+        for (index = 0; index < MIND_PAYLOAD_SIZE; index++) {
+            packet.payload[index] = bytes[index];
+        }
     }
 
-    return len;
+    if (tron_mesh_packet_encode(&packet, buf, BLE_ADV_MAX_DATA, &adv_len) !=
+        TRON_MESH_PACKET_OK) {
+        return 0;
+    }
+    return (UINT)adv_len;
 }
 
 void ble_emit_init(void)
@@ -62,5 +64,9 @@ void ble_emit_advertise(const incident_state_t *st)
 {
     UB buf[BLE_ADV_MAX_DATA];
     UINT len = ble_emit_pack(st, buf);
+
+    if (len == 0u) {
+        return;
+    }
     ble_radio_advertise(buf, len, adva);
 }

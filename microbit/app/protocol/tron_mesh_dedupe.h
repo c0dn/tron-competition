@@ -18,16 +18,13 @@
 #include <stdint.h>
 
 #include "tron_mesh_packet.h"
+#include "tron_timer_config.h"
 
 /* 16 entries covers a bench population with headroom. Aging at 10 s must
    outlive the longest relay cascade, or the tail of a flood is treated as new
    traffic and re-floods. */
 #ifndef TRON_MESH_DEDUPE_SIZE
 #define TRON_MESH_DEDUPE_SIZE     16u
-#endif
-
-#ifndef TRON_MESH_DEDUPE_TTL_MS
-#define TRON_MESH_DEDUPE_TTL_MS   10000u
 #endif
 
 typedef struct tron_mesh_dedupe_entry {
@@ -40,12 +37,14 @@ typedef struct tron_mesh_dedupe_entry {
 } tron_mesh_dedupe_entry_t;
 
 typedef struct tron_mesh_dedupe {
+    const tron_timer_config_t *timers;
     tron_mesh_dedupe_entry_t entries[TRON_MESH_DEDUPE_SIZE];
 } tron_mesh_dedupe_t;
 
 /* Wrap-safe "now >= deadline" on the low 32 bits of a millisecond clock. */
 int tron_mesh_time_reached(uint32_t now, uint32_t deadline);
 
+/* Binds the immutable generated timer object and clears the fixed cache. */
 void tron_mesh_dedupe_reset(tron_mesh_dedupe_t *cache);
 
 /* Returns 1 if this packet was already seen (caller should drop it), 0 if it is

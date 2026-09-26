@@ -1,0 +1,7 @@
+artifact.elf.sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+artifact.name=expiry-fixture
+build.timer_profile=FAST_TEST
+feature.level.effective=FULL_TAVRN
+hook.enabled=ON
+hook.expiry_full_table=ON
+timer.gtt_maintenance_ms=2500

@@ -1,0 +1,16 @@
+{
+  "schema": "tron.tavrn.expiry.required-stack-edges.v3",
+  "root": "mind_ui_task",
+  "edges": [
+    {"from": "mind_ui_task", "to": "mind_audio_hardware_init", "kind": "call", "when": "always"},
+    {"from": "mind_ui_task", "to": "mind_ui_service", "kind": "call", "when": "always"},
+    {"from": "mind_ui_task", "to": "mind_ui_render", "kind": "call", "when": "always"},
+    {"from": "mind_ui_task", "to": "display_set_rows", "kind": "call", "when": "always"},
+    {"from": "mind_ui_task", "to": "tk_dly_tsk", "kind": "call", "when": "always"}
+  ],
+  "indirect_calls": [],
+  "declared_leaves": [
+    {"symbol": "memcpy", "frame_bytes": 0, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.2.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "04d818b91fff08550e414c23704cc2344ae8568a896951e5772c722210c99395"}},
+    {"symbol": "memset", "frame_bytes": 12, "evidence": {"kind": "library_archive", "path": "/usr/lib/gcc/arm-none-eabi/16.2.0/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libg.a", "sha256": "a09944e71b329a81e34948a47108f71fa185c3a225823284b1dd1976da852659", "compiler_manifest_key": "build.compiler.sha256", "compiler_sha256": "04d818b91fff08550e414c23704cc2344ae8568a896951e5772c722210c99395"}}
+  ]
+}

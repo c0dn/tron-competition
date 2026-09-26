@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 2,
+  "id": "tavrn-bearer-budget-edf-redundancy",
+  "kind": "software-engineering",
+  "title": "KISS TAVRN budgeted EDF redundant bearer",
+  "goal": "Improve raw BLE advertising bearer resilience with bounded rolling airtime, priority-banded EDF expiry, selectively repeated atomic sweeps, and measured queue capacity while preserving current network ownership and protocol semantics.",
+  "scope": [
+    "Use a true rolling 1000 ms budget with 40 total BU, 32 general BU, and 8 reply-critical reserve BU",
+    "Use mandatory expiry and priority-banded EDF for the routed fixed-array TX queue",
+    "Keep one-sweep and two-sweep operations atomic and reserve their full cost before TX",
+    "Use two sweeps for every wire RREQ, every wire RREP, DATA, and bootstrap HELLO; use one sweep for current remaining frame classes",
+    "Fix response release time from the first repeated request copy so duplicates cannot postpone or recreate a pending response",
+    "Drop and count expired anonymous work; emit an expiry scheduler event for custody DATA and controls already tracked by the existing token path",
+    "Remove generalized owner-domain/global-reset scaffolding introduced during this branch instead of expanding protocol ownership",
+    "Measure final memory, timing, queue behavior, delivery, retries, blackout, and duplicate reception for capacities 4, 8, 16, and 40 before selecting production capacity"
+  ],
+  "nonGoals": [
+    "Implement RSSI-based BLE LBT/CCA",
+    "Add standard Bluetooth Mesh, SoftDevice, GATT, connections, or Link Layer ARQ",
+    "Add token domains, ownership tracking, or delivery semantics to previously anonymous mentorship, RERR, FLOOD, maintenance, relay, HELLO, or TC traffic",
+    "Create a production caller for the currently unused originated-FLOOD API",
+    "Use dynamic allocation, a tree/heap queue, global EDF, or simultaneous multi-channel RX",
+    "Refactor unrelated pre-bearer custody/router behavior",
+    "Flash or roll out firmware without explicit approval"
+  ],
+  "constraints": [
+    "Keep network semantics out of the radio driver",
+    "Use fixed-size storage, bounded linear scans, no heap, and no recursion",
+    "One BU equals one ordered 37/38/39 sweep; a two-sweep operation reserves two BU atomically",
+    "Nothing bypasses the 40-BU total cap; general work cannot consume the 8-BU critical reserve",
+    "Critical reserve eligibility is limited to HACK, RREP, RREP_ACK, SYNC_OFFER, and SYNC_DATA; RREQ, DATA, and bootstrap HELLO remain general",
+    "Preserve existing priority bands: HACK above retry, control, DATA, and relay; apply EDF only within a priority band",
+    "Preserve existing token behavior; token NONE remains anonymous and existing low/high token ranges remain routed through current scheduler events",
+    "Preserve the 5000 ms absolute DATA transaction deadline and current retry ceiling",
+    "The first received request-copy timestamp is authoritative: HACK, RREP, and RREP_ACK release at that fixed timestamp +14+8 ms regardless of later decision latency; SYNC_OFFER releases at first bootstrap-HELLO timestamp +14 ms + the existing mentorship delay",
+    "No hardware flash, reset, clean, checkout, commit, or deletion without explicit approval"
+  ],
+  "relevantFiles": [
+    "microbit/app/drivers/ble_radio.c",
+    "microbit/app/drivers/ble_radio.h",
+    "microbit/app/protocol/ble_mesh_tx_queue.c",
+    "microbit/app/protocol/ble_mesh_tx_queue.h",
+    "microbit/app/protocol/ble_mesh_scheduler.c",
+    "microbit/app/protocol/ble_mesh_scheduler.h",
+    "microbit/app/protocol/tavrn_link_v2.c",
+    "microbit/app/protocol/tavrn_link_v2.h",
+    "microbit/app/protocol/tavrn_router.c",
+    "microbit/app/protocol/tavrn_router.h",
+    "microbit/app/protocol/aodv_core.c",
+    "microbit/app/protocol/aodv_core.h",
+    "microbit/app/protocol/tavrn_mentorship.c",
+    "microbit/app/protocol/tavrn_mentorship.h",
+    "microbit/app/protocol/tron_timer_config.c",
+    "microbit/app/protocol/tron_timer_config.h",
+    "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
+    "microbit/app/ble_mesh_node/config/tron_build_config.h.in",
+    "microbit/app/ble_mesh_node/config/tron_build_manifest.in",
+    "microbit/app/tavrn_routed_node/src/main.c",
+    "microbit/app/tavrn_routed_node/src/routed_benchmark_observer.h",
+    "microbit/scripts/run_tavrn_benchmark.py",
+    "microbit/scripts/summarize_tavrn_benchmark.py",
+    "microbit/scripts/compare_tavrn_benchmarks.py",
+    "microbit/tests/protocol/test_tavrn_link_v2.c",
+    "microbit/tests/protocol/test_tavrn_phase4_incarnation.c",
+    "microbit/tests/protocol/test_tavrn_future_bearer_red.c",
+    "microbit/tests/protocol/test_tavrn_future_bearer_budget_red.c",
+    "microbit/tests/protocol/test_tavrn_future_bearer_radio_repeat_red.c",
+    "microbit/tests/protocol/run_tavrn_future_bearer_tests.sh",
+    "microbit/tests/protocol/run_tron_ble_build_profile_tests.sh",
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_ack_contract.md",
+    "microbit/docs/tavrn_ble_architecture.md",
+    "microbit/docs/tavrn_ble_test_matrix.md",
+    "microbit/docs/tavrn_ble_deviations.md",
+    "microbit/app/protocol/tavrn_full_maintenance_binding.c",
+    "microbit/app/protocol/tavrn_full_repair_binding.c",
+    "microbit/app/protocol/tavrn_repair.c",
+    "microbit/app/protocol/tavrn_repair.h",
+    "microbit/app/tavrn_routed_node/src/routed_benchmark.c",
+    "microbit/app/tavrn_routed_node/src/routed_benchmark.h",
+    "microbit/tests/protocol/test_routed_benchmark.c",
+    "microbit/tests/protocol/test_summarize_tavrn_benchmark.py",
+    "microbit/tests/protocol/run_tavrn_benchmark_tests.sh",
+    "microbit/app/tavrn_routed_node/src/routed_benchmark_uart_tx.c",
+    "microbit/app/tavrn_routed_node/src/routed_benchmark_uart_tx.h",
+    "microbit/tests/protocol/test_routed_benchmark_uart_tx.c",
+    "microbit/hardware-results/2026-08-20-tavrn-observer-v3-benchmark-1200-recovered/"
+  ],
+  "planFile": ".opencode/workplan/tavrn-bearer-budget-edf-redundancy.md",
+  "specFiles": [
+    "microbit/docs/tavrn_ble_profile.md",
+    "microbit/docs/tavrn_ble_ack_contract.md",
+    "microbit/docs/tavrn_ble_architecture.md",
+    "microbit/docs/tavrn_ble_test_matrix.md",
+    "microbit/docs/tavrn_ble_deviations.md"
+  ],
+  "phases": [
+    {
+      "id": "phase-nimble-trail-863296",
+      "title": "Groundwork and measured configuration",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-steady-pine-101142",
+          "title": "Record available mixed-worktree evidence and its limit",
+          "target": "branch/base commit, D2 source hashes, F6 evidence, known pre-bearer custody/router behavior",
+          "action": "Preserve all pre-bearer custody/router changes without reset or flash. Record that no restorable pre-bearer patch was captured, so shared-file hunks require manual intent review rather than automated attribution.",
+          "validation": "The plan cites available evidence and never claims the base commit or D2 aggregate digest can reconstruct the pre-bearer worktree.",
+          "status": "completed"
+        },
+        {
+          "id": "step-ember-reef-206520",
+          "title": "Parameterize routed queue capacity",
+          "target": "profile CMake, generated config/manifest, queue layout",
+          "action": "Support routed capacities 4, 8, 16, and 40 while LEGACY and LINK remain fixed at 4.",
+          "validation": "Variants build and initial linker-map deltas are recorded without legacy/link growth.",
+          "status": "completed"
+        },
+        {
+          "id": "step-river-forge-304348",
+          "title": "Add focused bearer contract tests",
+          "target": "queue, scheduler, radio shim, link, timers",
+          "action": "Cover EDF metadata/selection, rolling budget, repeated radio operations, timer formulas, and frame mapping with focused host tests.",
+          "validation": "Each completed mechanic has a focused green test mode.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-swift-branch-720553",
+      "title": "Core KISS queue, scheduler, and radio mechanics",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-maple-lantern-786417",
+          "title": "Implement expiry metadata and priority-banded EDF selection",
+          "target": "routed fixed-array TX queue",
+          "action": "Store mandatory expiry and select released, non-expired work by priority, earliest expiry within that priority, then oldest ordinal. Expired retirement is a separate active slice.",
+          "validation": "Priority, EDF, ordinal, expiry exclusion, equality, and wrap tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-nimble-orbit-108295",
+          "title": "Implement rolling BU accounting and custody hold",
+          "target": "routed scheduler",
+          "action": "Reserve complete operation cost against 40 total, 32 general, and 8 critical-reserve BU in a true rolling 1000 ms window; remain in RX when denied.",
+          "validation": "Cost, wrap, equality, reserve, no-refund, and no-fallback tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-maple-petal-558375",
+          "title": "Implement atomic one/two-sweep radio operations",
+          "target": "raw RADIO driver and host shim",
+          "action": "Execute ordered 37/38/39 or 37/38/39 twice under one RX blackout and retain per-sweep completion evidence.",
+          "validation": "Order, requested/completed masks, partial results, and cleanup tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-cobalt-pine-916193",
+          "title": "Publish canonical operation and custody timing bounds",
+          "target": "timer config, profiles, manifests, tests",
+          "action": "Publish and validate the 8 ms one-sweep, 14 ms two-sweep, 18 ms cleanup, budgeted attempt, response-window, and absolute DATA deadline formulas.",
+          "validation": "Generated values, validation, manifests, and focused timer tests agree.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-ember-pine-525791",
+      "title": "Frame mapping, fixed responses, and KISS expiry closure",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-cobalt-meadow-842108",
+          "title": "Finalize sweep and reserve-class mapping",
+          "target": "tavrn_link_v2 constructors and frame-policy tests",
+          "action": "Apply wire-type precedence: every RREQ/RREP is two sweeps regardless of producer; DATA and bootstrap HELLO are two; all others are one. Limit critical reserve to HACK, RREP, RREP_ACK, SYNC_OFFER, and SYNC_DATA; change no ownership semantics.",
+          "validation": "Link/incarnation tests cover sweep count and budget class for each exceptional class; profile gates pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-ember-pine-832565",
+          "title": "Fix first-copy response release",
+          "target": "tavrn_link_v2; aodv_core/tavrn_router existing RREQ/RREP dedupe; tavrn_mentorship existing bootstrap pending state",
+          "action": "Capture the first RX timestamp before candidate/action resolution and keep at most one pending response per existing request key. HACK, RREP, and RREP_ACK release at fixed first-RX +14+8 ms regardless of decision latency; SYNC_OFFER releases at first bootstrap-HELLO RX +14 ms + the existing mentorship delay. A later retry may respond after the first pending response transmitted or expired.",
+          "validation": "First/second copy, delayed decision/candidate timeout, first status, after-send retry, exact fixed +22 ms direct-reply release, mentorship delay, wrap, cancellation, and expiry tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-gentle-path-439519",
+          "title": "Remove over-scoped terminal ownership scaffolding",
+          "target": "ble_mesh_tx_queue; ble_mesh_scheduler; tavrn_link_v2; focused future-bearer tests",
+          "action": "Remove branch-added AODV/maintenance/repair/mentorship owner kinds, LOW/HIGH owner domains, synchronous global-owner reset, and compatibility callback. Preserve the existing queue token and scheduler-event routing used before this bearer work.",
+          "validation": "No branch-added protocol owner domain remains; anonymous token NONE and existing tracked/custody tokens retain completion, failure, eviction, and cancellation behavior.",
+          "status": "completed"
+        },
+        {
+          "id": "step-steady-petal-705269",
+          "title": "Retire expired entries through existing scheduler events",
+          "target": "queue collector; routed scheduler poll; tavrn_link_v2; tavrn_router; tavrn_full_maintenance_binding; tavrn_maintenance; tavrn_full_repair_binding; tavrn_repair; existing token counters",
+          "action": "At the start of routed poll, before selection and budget checks, purge bounded anonymous expiry and surface at most one token-bearing expiry as TX_EXPIRED. The event carries the queued token, requested channel mask, and requested sweep count; attempted sweep count, completed mask, and all per-sweep completed masks are zero. Add explicit TX_EXPIRED handling to each existing low/high/custody token consumer as an unsent deadline terminal, without TX_DONE side effects or normalization to radio TX_FAILED. Add no owner domain or cross-protocol reset.",
+          "validation": "Anonymous purge/count and capacity release; expiry-before-selection ordering; custody, metadata, targeted, verification, and repair existing-token expiry; equality/wrap; one-token event per poll; exact event masks/counts; and no-silent-discard tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "step-amber-pine-192072",
+          "title": "Reconcile normative docs with KISS scope",
+          "target": "profile, ACK, architecture, deviations, test matrix",
+          "action": "Remove generalized owner/global-reset claims and document only implemented bearer mechanics, token-preserving expiry events, fixed first-copy responses, budget/EDF rules, and benchmark requirements.",
+          "validation": "Docs, requirement IDs, generated formulas, and implementation agree without future-owner claims.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-cedar-meadow-804280",
+      "title": "Non-perturbing benchmark evidence and capacity decision",
+      "status": "in_progress",
+      "steps": [
+        {
+          "id": "step-cedar-branch-466478",
+          "title": "Freeze the observer-v3 application contract",
+          "target": "benchmark firmware, analyzer, comparison output, six-role runner",
+          "action": "Use the approved KISS accepted-only observer-v3 contract: compact per-accepted and per-final identity/timestamp evidence, exact workload-split cumulative offered/accepted/rejected/not-ready counters, accepted PDR as authoritative, offered PDR labeled separately, and no claim of exact per-window rejection identities. Match by origin session plus compact identity and preserve source-offer to destination-delivery latency.",
+          "validation": "The wire grammar, accounting equations, validity domains, queue/drop semantics, record-order rules, and capture-boundary behavior are explicit and analyzer tests cover them.",
+          "status": "completed"
+        },
+        {
+          "id": "step-swift-stream-101005",
+          "title": "Make benchmark telemetry non-perturbing",
+          "target": "routed_benchmark state/queues, routed benchmark integration, observer-v3 analyzer/tests, resource gates",
+          "action": "Replace duplicated OFFER/APPLICATION logging with a compact accepted-event FIFO and workload-split counters. Add a compact final-event FIFO whose saturation drops and invalidates telemetry but never returns delivery BUSY. Use atomic event/checkpoint accounting, prioritize critical accept/final evidence over auxiliary control/GTT output, expose existing router reserve/commit BUSY counters, and keep non-benchmark MIND behavior unchanged. Add no speculative scheduler counters in this slice.",
+          "validation": "Focused C/Python tests pass; source/final queue equations are exact at complete checkpoints; terminal partial lines are safely right-censored; benchmark final telemetry fullness cannot backpressure router delivery; observer fixed state and total BSS do not exceed the prechange benchmark baseline without an explicit reviewed exception.",
+          "status": "completed"
+        },
+        {
+          "id": "step-steady-forge-356086",
+          "title": "Validate canonical FULL load and rerun AODV comparison",
+          "target": "host/resource checks and pinned six-board queue-40 two-sweep runs",
+          "action": "The 130-second smoke and recovered 1200-second FULL_TAVRN queue-40 runs are complete with valid application, transport, control, and clock evidence. Preserve the canonical FULL bundle, then rerun AODV after reboot and use compare_tavrn_benchmarks.py for the final side-by-side application and control-proxy comparison. Keep GTT formally INCOMPLETE for the single role-E cadence violation even though reporting recovered.",
+          "validation": "FULL evidence remains checksummed and reproducible with zero invalid telemetry intervals, zero critical observer/transport drops, and exact accepted/final accounting. The next AODV run must use the same observer-v3 contract and produce a finalized bundle before the comparison/capacity decision is closed.",
+          "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "id": "phase-young-slope-270205",
+      "title": "Acceptance and explicitly approved rollout",
+      "status": "in_progress",
+      "steps": [
+        {
+          "id": "step-quiet-bridge-190568",
+          "title": "Run complete software and resource closure",
+          "target": "focused, protocol, application, profile, resource, and D2 gates",
+          "action": "Run narrow checks first, then the complete existing suite. Review each final hunk against the KISS scope and known pre-bearer behavior; use available D2 source hashes as evidence only where applicable and do not claim automated pre-bearer reconstruction.",
+          "validation": "All required checks are green; no unused owner/reset scaffolding remains; manual hunk review records any shared pre-bearer file that cannot be mechanically attributed.",
+          "status": "completed"
+        },
+        {
+          "id": "step-spruce-meadow-452199",
+          "title": "Roll out selected production build only after approval",
+          "target": "existing hardware inventory",
+          "action": "After benchmark selection and explicit approval, flash the selected capacity/policy and start any requested long stress run.",
+          "validation": "Budget caps, RX blackout, delivery, retries, expiry, queue behavior, and terminal faults meet the approved gates.",
+          "status": "draft"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [],
+  "notes": [
+    "Repository branch is feat/kiss-wearable-tavrn-dashboard with recorded base origin/master@648efe497624444e412cff28103fbabeffba5530. Latest preserved pre-bearer D2 report is /tmp/opencode/d2-idempotent-custody.report.",
+    "The idempotent external-custody reacquisition behavior predates this bearer slice and must be preserved, not attributed to frame mapping.",
+    "Initial routed-capacity BSS deltas versus capacity 4 were +208 B at 8, +624 B at 16, and +1872 B at 40 before later scheduler-state growth; final measurement remains required.",
+    "Current canonical bounds are one sweep 8 ms, two sweeps 14 ms, cleanup 18 ms, budgeted custody attempt 3048 ms, response-window sum 750 ms, unconstrained three-attempt wall 9894 ms, and absolute DATA deadline 5000 ms.",
+    "Core EDF selection, rolling budget, repeated radio operation, timer formulas, and initial sweep mapping are implemented. Active work fixes first-copy response behavior; reserve-class correction, removal of owner/global-reset scaffolding, expiry retirement, docs, and benchmarks remain.",
+    "The existing benchmark runner uses six roles A-F under tron.tavrn.observation.plan.v2 and pins inventory, plan, tool, artifact, and source hashes. Hardware execution remains gated by --execute and explicit user approval.",
+    "No hardware has been flashed with these bearer changes.",
+    "Baseline limitation: no restorable pre-bearer patch/index snapshot was captured. The base commit and D2 source hashes are evidence, not a reconstruction. Final scope review must therefore inspect shared-file hunks manually and preserve the known pre-bearer idempotent custody changes.",
+    "Frame/reserve mapping and fixed response release are green. HACK keeps one pending canonical reply, anchors due/expiry to first DATA RX, and releases at +22 ms; RREP/RREP_ACK actions retain their first RX anchor through router dispatch; bootstrap SYNC_OFFER adds the 14 ms repeated-request bound to its existing RSSI delay without duplicate postponement. Wrap-to-zero release is now a real timestamp rather than an implicit immediate sentinel. Link, AODV, phase 3, phase 4, and incarnation tests pass.",
+    "KISS expiry closure completed: one-pass anonymous purge/count, at most one token-bearing TX_EXPIRED per poll, explicit custody/metadata/targeted/verification/repair handling, token-only queue, and reconciled normative docs. Link/AODV/phase3/phase4/incarnation/phase5/phase6/four future-bearer modes/profile gates pass. Benchmark resource fixed state is 71080 bytes (BSS component 70744 bytes); production capacity and hardware comparison remain pending.",
+    "Committed bearer/MIND baseline is HEAD cad844e on feat/kiss-wearable-tavrn-dashboard. The 18c94cb queue-40 canonical 1200-second run completed but is invalid evidence: source offered/accepted/rejected 2995/2229/766, source attempt queue 1024/1024 with 3985 dropped records, and destination final queue reached 8 and could feed BUSY into router delivery.",
+    "Controlled queue-4 testing improved accepted PDR only by rejecting most offers; a one-sweep DATA override admitted no link transmissions and is rejected. The immediate task is observer non-interference, not scheduler-policy tuning.",
+    "User approved the KISS accepted-only observer-v3 contract and autonomous continuation on 2026-08-19. Exact accepted PDR and latency remain authoritative; offered/rejected/not-ready remain exact aggregate counters by workload, without per-window rejection identity claims.",
+    "Observer-v3 non-perturbation hardening completed in original commits 4069d29, 9f76264, and beb776a; the original chain remains reachable from the consolidated branch, and the working tree matches the hardware-tested observer paths.",
+    "The queue-40 130-second smoke is VALID. The recovered 1200-second FULL_TAVRN run is overall VALID with 18,234 complete records, zero invalid telemetry intervals, application/transport/control VALID, heartbeat delivered/accepted PDR 0.990385, and throughput delivered/accepted PDR 0.921586.",
+    "Canonical FULL evidence is persisted at microbit/hardware-results/2026-08-20-tavrn-observer-v3-benchmark-1200-recovered. The runner timed out only after all six capture windows ended; recovery conservatively right-censored one terminal role-C partial record.",
+    "GTT remains formally INCOMPLETE because role E had one 12,034 ms cadence interval. Reporting resumed and the final nine fleet windows contained all six boards and were converged. AODV rerun and final comparison remain pending.",
+    "Final consolidated verification passed: observer benchmark shell tests; 24 analyzer tests; 26 runner tests; phase-4 telemetry and scheduler green modes; MIND application tests; 23 host tests; 25 dashboard tests and production build; wearable tests and linked production/injector builds; clean-source BLE build/profile/resource gates; both evidence checksum and archive-integrity checks; Python compilation; observer-path equality; and diff hygiene."
+  ],
+  "status": "in_progress",
+  "createdAt": "2026-08-16T12:56:08.481Z",
+  "updatedAt": "2026-08-20T10:13:46.139Z"
+}

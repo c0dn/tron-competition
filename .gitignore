@@ -2,6 +2,13 @@
 microbit/build/
 microbit/*.zip
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local opencode recovery artifacts
+.opencode/recovery/
+
 # ESP32 sidecar build output + generated config
 esp-sidecar/build/
 esp-sidecar/.pio/

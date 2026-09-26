@@ -26,8 +26,6 @@
 #include "app_config.h"
 #include "schema.h"
 
-static UB seq;
-
 /* Latched sources. *_ms are valid only while *_live is TRUE. */
 static fall_event_t  last_fall;
 static UW            last_fall_ms;
@@ -40,7 +38,6 @@ static BOOL          shout_live;
 
 void fusion_init(void)
 {
-    seq = 0;
     last_fall = FALL_EVT_NONE;
     last_fall_ms = 0;
     last_fall_svm = 0;
@@ -121,6 +118,6 @@ BOOL fusion_update(fall_event_t fe, sound_event_t se,
     out->confidence = (UB)conf;
     out->accel_svm  = svm;
     out->mic_level  = mic;
-    out->seq        = seq++;
+    /* Admission assigns the packet identity from the single device sequence. */
     return TRUE;
 }

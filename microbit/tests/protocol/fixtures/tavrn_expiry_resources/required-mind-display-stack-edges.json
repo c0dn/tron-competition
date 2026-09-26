@@ -1,0 +1,9 @@
+{
+  "schema": "tron.tavrn.expiry.required-stack-edges.v3",
+  "root": "display_task",
+  "edges": [
+    {"from": "display_task", "to": "tk_dly_tsk", "kind": "call", "when": "always"}
+  ],
+  "indirect_calls": [],
+  "declared_leaves": []
+}

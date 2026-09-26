@@ -1,0 +1,25 @@
+{
+  "root": "routed_mesh_task",
+  "edges": [
+    {"from": "routed_mesh_task", "to": "binding", "kind": "call", "when": "always"}
+  ],
+  "graph": {
+    "routed_mesh_task": ["binding"],
+    "binding": ["long_first", "short_heavy"],
+    "long_first": ["long_second"],
+    "long_second": [],
+    "short_heavy": []
+  },
+  "frames": [
+    {"source": "mesh.c", "function": "routed_mesh_task", "bytes": 10},
+    {"source": "binding.c", "function": "binding", "bytes": 10},
+    {"source": "long.c", "function": "long_first", "bytes": 1},
+    {"source": "long.c", "function": "long_second", "bytes": 1},
+    {"source": "short.c", "function": "short_heavy", "bytes": 100},
+    {"source": "one.c", "function": "duplicate_static", "bytes": 12},
+    {"source": "two.c", "function": "duplicate_static", "bytes": 44}
+  ],
+  "expected_path": ["routed_mesh_task", "binding", "short_heavy"],
+  "expected_duplicate_static_bytes": 44,
+  "check_missing_clone": true
+}

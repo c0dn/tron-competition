@@ -1,0 +1,348 @@
+{
+  "boards": [
+    {
+      "adva": "18:42:de:52:4a:dd",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.elf",
+        "elf_sha256": "cbdff6f02a8a7a2a9af133503ce92ea789026c4bc5d469f905bd7d018450a1d3",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.hex",
+          "sha256": "c1974726cd1dba66f940693d41f0e584a99d44d3accdd748b0f78c6d161d8229"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.hex",
+        "hex_sha256": "c1974726cd1dba66f940693d41f0e584a99d44d3accdd748b0f78c6d161d8229",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.manifest",
+        "manifest_sha256": "522e664e7afcce821bb8be9615387caa2bf590f2a023dbefc8fe3ed11e2268f3"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-A.log",
+        "sha256": "5ba4f15c5cae1d32c8fefeb844bdee63bfa5d6c8c8add182b9dfb8a4e6355340",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "1e:33:a7:2f:8e:d8"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "A",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820cf57b9f988a30e16000000006e052820-if01",
+      "uid": "9906360200052820cf57b9f988a30e16000000006e052820"
+    },
+    {
+      "adva": "dc:4b:0a:06:03:f8",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.elf",
+        "elf_sha256": "3d71050ed034dc3a22bacae933b9498d002a28ad5016e343e1caea89e86e5b3e",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.hex",
+          "sha256": "508d467f5ebcea702d99bf9a97d759cd8c91f846040c68886184057f88e34fad"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.hex",
+        "hex_sha256": "508d467f5ebcea702d99bf9a97d759cd8c91f846040c68886184057f88e34fad",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.manifest",
+        "manifest_sha256": "55acfdcd07795b995d96ebc72e07464da2e56682549443af3cb3335ef0db2d82"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-B.log",
+        "sha256": "f53dcf31b1c5a8ca2b0b290ed247e3b1b62e1c8da6b6cd5e11216c063ff34faf",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "B",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528205539bee7957c8dea000000006e052820-if01",
+      "uid": "99063602000528205539bee7957c8dea000000006e052820"
+    },
+    {
+      "adva": "1e:33:a7:2f:8e:d8",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.elf",
+        "elf_sha256": "fd5a4722f2c81124213189f1dc5417a4c67810cfcc16d0671e5640ceea44128c",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.hex",
+          "sha256": "703be97ba0002118ca14897957832f2f81e344192e8b78134e191a64c99f0136"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.hex",
+        "hex_sha256": "703be97ba0002118ca14897957832f2f81e344192e8b78134e191a64c99f0136",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.manifest",
+        "manifest_sha256": "497437bd73f1dc013115bc3f0a2579c7ef75857d1f9d6eb093a82628f07618d4"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-C.log",
+        "sha256": "5a7e2e6c3bc11a007d13870067e11f91c39da8101e6b063d9145d5b2acd65453",
+        "terminal_censored": true,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 184
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "18:42:de:52:4a:dd"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "C",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f9a4d9d29f9d7c0b000000006e052820-if01",
+      "uid": "9906360200052820f9a4d9d29f9d7c0b000000006e052820"
+    },
+    {
+      "adva": "51:56:ae:12:21:ca",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.elf",
+        "elf_sha256": "e2e795371e07a7cce3c73fd52270b24d5761b3ecfa60f69e2b9fd462f93b1e05",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.hex",
+          "sha256": "86baf4ef0720bc07524b3cf8fb21f15d005a0da5cebce6cb9baf9146db555bbd"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.hex",
+        "hex_sha256": "86baf4ef0720bc07524b3cf8fb21f15d005a0da5cebce6cb9baf9146db555bbd",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.manifest",
+        "manifest_sha256": "f152c3d869b067691b62e7128a65a924f1f71642e0c90923376a723855e0a086"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-D.log",
+        "sha256": "061b73fb97d0d1a83658a426beaddea89bb4e68572fa9b5b2e988faa48394e29",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "D",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_9906360200052820f4767fb3d81870df000000006e052820-if01",
+      "uid": "9906360200052820f4767fb3d81870df000000006e052820"
+    },
+    {
+      "adva": "be:65:0b:2c:96:d0",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.elf",
+        "elf_sha256": "6b0ad8517ff6f5278542b1c616bf98d812d6ba17434ca9fe4abeb87bba3d2efa",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.hex",
+          "sha256": "c94a306d4ce92c86eb215838220f5404aaa5d5115f84fc12e288351055d8bb6f"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.hex",
+        "hex_sha256": "c94a306d4ce92c86eb215838220f5404aaa5d5115f84fc12e288351055d8bb6f",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.manifest",
+        "manifest_sha256": "2e6e62939645e8a9b17ed037f9f1b8cd34d52d08287c92da35c3f4187c384cb8"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-E.log",
+        "sha256": "f6cad401ca069442dfc11075442ef228b6ad570d909431a8ef34729586bb713c",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "E",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_99063602000528200b9c563b9bdebe86000000006e052820-if01",
+      "uid": "99063602000528200b9c563b9bdebe86000000006e052820"
+    },
+    {
+      "adva": "56:a2:44:0e:9e:d6",
+      "artifact": {
+        "elf": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.elf",
+        "elf_sha256": "14fc2d3f0adbb9a0b31e4dbe5e01e21c3a8c28eb67cab49f789a9900de5d4136",
+        "flash_image": {
+          "format": "hex",
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.hex",
+          "sha256": "ab555733cb76255b3e7604a0233eb345fb7d71d6155115a3c9281c95ca1f44ae"
+        },
+        "hex": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.hex",
+        "hex_sha256": "ab555733cb76255b3e7604a0233eb345fb7d71d6155115a3c9281c95ca1f44ae",
+        "manifest": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.manifest",
+        "manifest_sha256": "b54aaf7e9dca1198bbad7b06b89a216864187c2e71f10e567ca81742a2eccf4d"
+      },
+      "log": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/logs/board-F.log",
+        "sha256": "0087a9b8527d6c25780c6cb80bee74b70520350b98227050f549bae0ce5826ee",
+        "terminal_censored": false,
+        "terminal_open_gtt": false,
+        "terminal_partial_bytes": 0
+      },
+      "manifest_hooks": {
+        "hook.rx_block_adva": "NOT_CONFIGURED"
+      },
+      "manifest_observation": {
+        "capacity.scheduler_tx_queue": "40"
+      },
+      "role": "F",
+      "serial_device": "/dev/serial/by-id/usb-Arm_BBC_micro:bit_CMSIS-DAP_990636020005282033b7c2ad5952ee2e000000006e052820-if01",
+      "uid": "990636020005282033b7c2ad5952ee2e000000006e052820"
+    }
+  ],
+  "candidate_scope": "BENCH_HOOKED_RESTRICTED",
+  "ended_utc": "2026-08-20T07:13:58.165943Z",
+  "events": [
+    {
+      "at": "2026-08-20T07:13:58.165943Z",
+      "detail": "Original runner was terminated by the command harness after all six 1200-second UART captures ended; metadata boundary conservatively uses the latest observed serial timestamp.",
+      "event": "offline_recovery",
+      "status": "recovered_after_runner_timeout"
+    }
+  ],
+  "observation": {
+    "destination_role": "C",
+    "heartbeat_hz": 1,
+    "source_role": "A",
+    "throughput_burst_seconds": 60,
+    "throughput_hz": 10,
+    "throughput_repeat_seconds": 450,
+    "throughput_start_seconds": 60,
+    "window_seconds": 10
+  },
+  "pinned": {
+    "boards": {
+      "A": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.elf",
+          "sha256": "cbdff6f02a8a7a2a9af133503ce92ea789026c4bc5d469f905bd7d018450a1d3"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.hex",
+          "sha256": "c1974726cd1dba66f940693d41f0e584a99d44d3accdd748b0f78c6d161d8229"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/A/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-a-adva1842de524add-beb776a029a3.manifest",
+          "sha256": "522e664e7afcce821bb8be9615387caa2bf590f2a023dbefc8fe3ed11e2268f3"
+        }
+      },
+      "B": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.elf",
+          "sha256": "3d71050ed034dc3a22bacae933b9498d002a28ad5016e343e1caea89e86e5b3e"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.hex",
+          "sha256": "508d467f5ebcea702d99bf9a97d759cd8c91f846040c68886184057f88e34fad"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/B/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-b-advadc4b0a0603f8-beb776a029a3.manifest",
+          "sha256": "55acfdcd07795b995d96ebc72e07464da2e56682549443af3cb3335ef0db2d82"
+        }
+      },
+      "C": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.elf",
+          "sha256": "fd5a4722f2c81124213189f1dc5417a4c67810cfcc16d0671e5640ceea44128c"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.hex",
+          "sha256": "703be97ba0002118ca14897957832f2f81e344192e8b78134e191a64c99f0136"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/C/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-c-adva1e33a72f8ed8-beb776a029a3.manifest",
+          "sha256": "497437bd73f1dc013115bc3f0a2579c7ef75857d1f9d6eb093a82628f07618d4"
+        }
+      },
+      "D": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.elf",
+          "sha256": "e2e795371e07a7cce3c73fd52270b24d5761b3ecfa60f69e2b9fd462f93b1e05"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.hex",
+          "sha256": "86baf4ef0720bc07524b3cf8fb21f15d005a0da5cebce6cb9baf9146db555bbd"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/D/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-d-adva5156ae1221ca-beb776a029a3.manifest",
+          "sha256": "f152c3d869b067691b62e7128a65a924f1f71642e0c90923376a723855e0a086"
+        }
+      },
+      "E": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.elf",
+          "sha256": "6b0ad8517ff6f5278542b1c616bf98d812d6ba17434ca9fe4abeb87bba3d2efa"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.hex",
+          "sha256": "c94a306d4ce92c86eb215838220f5404aaa5d5115f84fc12e288351055d8bb6f"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/E/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-e-advabe650b2c96d0-beb776a029a3.manifest",
+          "sha256": "2e6e62939645e8a9b17ed037f9f1b8cd34d52d08287c92da35c3f4187c384cb8"
+        }
+      },
+      "F": {
+        "elf": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.elf",
+          "sha256": "14fc2d3f0adbb9a0b31e4dbe5e01e21c3a8c28eb67cab49f789a9900de5d4136"
+        },
+        "hex": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.hex",
+          "sha256": "ab555733cb76255b3e7604a0233eb345fb7d71d6155115a3c9281c95ca1f44ae"
+        },
+        "manifest": {
+          "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/F/tron-ble-routed-full-tavrn-phase5-adaptive-hello-repair1-balanced-candidate1-bench-hooked-restricted-f-adva56a2440e9ed6-beb776a029a3.manifest",
+          "sha256": "b54aaf7e9dca1198bbad7b06b89a216864187c2e71f10e567ca81742a2eccf4d"
+        }
+      }
+    },
+    "inventory": {
+      "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/inventory.tsv",
+      "sha256": "872a5236975e80d10d5a65ee4b9edec9ab883d7d7347eb37d7400840a2f0613e"
+    },
+    "observation_store": {
+      "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/observations.sqlite3",
+      "retention": "retained_run_evidence",
+      "sha256": "1583b1fdc1f9a721558e7a47c8a7e558957c30efe63bbb769cd55b885b7dc226"
+    },
+    "plan": {
+      "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/plan.json",
+      "sha256": "e01796695425302d928ec5d6a421041734fd703d5caaa0b44825b7b8ccbe26c6"
+    },
+    "tools": {
+      "analyzer": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/tools/summarize_tavrn_benchmark.py",
+        "sha256": "86f2d532920c4c6df30e08f1e81747b25b606029a71b70c81bf34ebef2c9441f"
+      },
+      "grabserial": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/tools/grabserial",
+        "sha256": "cbd4681cf800bc791461d330cc991bba302be7bc5283de91d4c9ecbd22c05080"
+      },
+      "pyocd": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/tools/pyocd",
+        "sha256": "e98e19763d1fd9c7751133eea46d5c9624dc422635450daa8ea2ab898cdcf3b0"
+      },
+      "runner": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/tools/run_tavrn_benchmark.py",
+        "sha256": "3334d9a8ddba5342030d98b1ad5f85cdb42916e4020503c3e73e6a46ca038c10"
+      },
+      "uv": {
+        "path": "/tmp/opencode/tavrn-observer-v3-clock-tail-beb776a/run-1200/inputs/tools/uv",
+        "sha256": "a8764126944a67b4d477f2928c5532fe1d6ae3a44bdbcb004633a1a227b1f165"
+      }
+    }
+  },
+  "profile": "FULL_TAVRN",
+  "schema": "tron.tavrn.observation.run.v2",
+  "source": {
+    "commit": "beb776a029a3843117ded3a4523841a6208451ac",
+    "tree": "ca05db20346e520742b09fc544fca1e92c803e6e"
+  },
+  "started_utc": "2026-08-20T06:52:30.397822Z",
+  "status": "recovered_after_runner_timeout",
+  "timer_profile": "BALANCED"
+}

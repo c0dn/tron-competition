@@ -1,0 +1,962 @@
+{
+  "schemaVersion": 2,
+  "id": "kiss-wearable-tavrn-dashboard",
+  "kind": "software-engineering",
+  "title": "KISS wearable-to-runtime-root TAVRN dashboard PoC",
+  "goal": "Integrate the 1000 ms wearable spray with corrected FULL TAVRN using a separate Layer-7 MIND application: each backbone suppresses local spray copies for 2000 ms, the application projects read-only GTT topology into its own fixed root registry and fans first-seen packets to every designated root, and a local serial API feeds a globally deduplicating dashboard. TAVRN remains an unchanged flat opaque-data mesh; two roots is only a competition soft cap.",
+  "scope": [
+    "Reconcile origin/master, recent fall-shout wearable behavior, and corrected FULL TAVRN on a dedicated integration branch while preserving TAVRN protocol sources",
+    "Preserve the wearable stable 24-bit packet identity across its 1000 ms spray",
+    "Classify direct TM/01 wearable advertisements into an application RX plane before TAVRN dispatch",
+    "Add exact 2000 ms per-node suppression with bounded transactional ingress",
+    "Add a read-only topology projection from copied GTT snapshots into Layer-7 application records without mutating or specializing GTT",
+    "Add runtime UART ROOT ON/OFF/STATUS; local designation lasts until reboot and is independent of TAVRN",
+    "Maintain root freshness in an application-owned fixed registry and announce local root state through existing generic opaque TAVRN DATA plus application-level ACK",
+    "Treat two simultaneous roots only as the recommended competition/demo soft cap; firmware application fanout, API devices, and dashboard state support the full application registry",
+    "Send an inactive current-session announcement after SID8 establishment when a rebooted node is not a root, preventing stale application root state without leases",
+    "Fan each first-seen wearable report independently to every active application root through one Layer-7 arbiter and existing generic TAVRN DATA submission",
+    "Clear application roots and retained event targets on accepted ROOT OFF or explicit copied GTT departure",
+    "Provide persistent node-number/root-presence display and a cockpit-style cue on local root transition",
+    "Emit exact machine-readable event/root/command records on root UARTs",
+    "Add a minimal bidirectional repeated-serial localhost API and small dashboard with session-global dedupe",
+    "Validate host behavior, unchanged TAVRN protocol hashes/regressions, production builds/resources, mandatory rootless/one-root/two-root hardware flows, and software fanout to application capacity"
+  ],
+  "nonGoals": [
+    "MQTT, MQTT-SN, ESP32-C3, ESP-MESH-LITE, broker integration, cloud connectivity, or protocol compliance claims",
+    "Automatic root election, priority arbitration, consensus, split-brain prevention, or root failover; UART designation is explicit and any bounded number of roots may coexist",
+    "Periodic application root leases; TAVRN/GTT departure is the root-loss authority",
+    "End-to-end event application acknowledgments, exactly-once delivery, durable storage, reboot persistence, or production sessions",
+    "Buffering wearable events while the root registry is empty; rootless events are consumed after application ingress without user-facing output",
+    "RF hardening, radio-driver changes, scheduler redesign, duty-cycle optimization, or mitigation of RX exhaustion caused by TX activity",
+    "Changes to TAVRN membership, GTT, AODV, HACK, repair, mentorship, or maintenance semantics",
+    "Production security, provisioning, encryption, authentication, or a general-purpose application framework"
+  ],
+  "constraints": [
+    "This is a KISS competition PoC: fixed records, bounded application tables, one mesh-owner application arbiter, and no speculative framework",
+    "Layer separation is strict: TAVRN/GTT exposes copied topology and routes opaque application DATA; ROOT_STATE, ROOT_ACK, MIND_REPORT, root limits, retries, UI, and dedupe exist only in the MIND application layer",
+    "All corrected TAVRN protocol sources under microbit/app/protocol/tavrn_*.{c,h}, including wire/router/GTT/full/ESC semantics, remain byte-identical to 49e2ee8 during application slices",
+    "Application kinds 0x02..0x04 and exact payload validation live in mind_application headers/code. TAVRN performs only its existing generic DATA width/length validation and must not learn root or report semantics",
+    "Wearables remain outside TAVRN; recognized TM/01 MIND_EVENT frames are consumed as direct application ingress and never legacy-relayed",
+    "Each wearable logical message reuses one packet ID24 throughout its 1000 ms spray",
+    "Each backbone node commits a valid wearable key at most once for exactly 2000 ms with wrap-safe equality expiry",
+    "Ingress validates, reserves cache and queue, copies, then commits; failures leave the key unseen, but after commit downstream BUSY never removes the seen key",
+    "All valid first-seen classes enter the application queue; zero active application roots causes silent consume with only an internal counter",
+    "Define MIND_APP_ROOT_CAPACITY=16 as an independent Layer-7 static array size. It includes local and remote root records; it is not derived from, exported to, or asserted equal to TAVRN_GTT_CAPACITY",
+    "Root designation is RAM-only; every node exposes a current local root-state tuple using the router existing boot nonce and nonzero application generation",
+    "Application root history has MIND_APP_ROOT_CAPACITY entries with no live eviction; the active-root set is a view over this application table, never a TAVRN structure or separate two-entry index",
+    "Two roots is only a recommended demo/UI soft cap and must not appear in TAVRN, wire, fanout, API, or dashboard collection bounds",
+    "The application topology adapter consumes copied routed_full_telemetry GTT snapshots and resolver results through existing public seams. It copies canonical identities/freshness/departure into application-owned records and never mutates, extends, or interprets GTT storage as root state",
+    "The frozen topology snapshot seam exposes only OK or non-OK, not truncation. Non-OK preserves all application state, increments snapshot-failure evidence, and retries later; a full returned snapshot is never inferred to be truncated. Application registry/campaign capacity is tested independently",
+    "An unknown ROOT_STATE rejected because the application registry is full is not retained in a hidden rejection cache. Every repeated delivery is reevaluated against current capacity and receives capacity-rejected only while capacity remains full",
+    "ROOT_STATE and ROOT_ACK are ordinary generic SID8 DATA. Commands before SID8 update local application role/UI immediately and defer campaigns until SID8 readiness",
+    "Application campaign and event-target capacities are independently defined fixed application constants, initially 16, and use explicit count/overflow behavior. They are not TAVRN constants",
+    "Resolver UNIQUE attempts generic DATA submission. UNKNOWN or COLLIDING retains the application obligation and retries after later topology snapshots/rediscovery. RESERVED or INVALID is fail-closed with application invariant evidence and no submission/removal",
+    "Accepted/duplicate ROOT_ACK completes application success; capacity/stale completes rejected; no ACK remains retryable; ACK must resolve to the exact target and match all echoed state bytes",
+    "Application roots and per-event targets clear on accepted newer OFF or explicit copied GTT departed=true; no application lease exists",
+    "Leaf display uses zero/one/two-or-more visual states and saturates at two LEDs; saturation is presentation-only and never truncates exact application root count or fanout",
+    "One mesh-owner application arbiter selects exactly one ROOT_ACK, urgent report, ROOT_STATE, or heartbeat per existing application-submit phase and correlates the result to one retained application owner",
+    "Each ingress item snapshots all active roots using a MIND_APP_ROOT_CAPACITY target set. Target progress is independent and root removal clears only matching targets",
+    "Generic final DATA remains in its reserved application inbox until Layer-7 processing or logger-record reservation succeeds; logger never mutates application root state",
+    "The application MIND_REPORT preserves wearable ID, packet ID24, and unchanged schema-v1 payload in exact ten-byte generic SID8 DATA",
+    "UART commands use an application-owned 32-byte RX-only interrupt ring installed after inherited device startup; T-monitor remains sole TX owner and kernel/radio/scheduler files are unchanged",
+    "New application modules perform no dynamic allocation; application queues/state/PWM/UI/UART rings are static. Inherited kernel task/device startup allocation is unchanged and not claimed heap-free",
+    "The plan requires compile-time sizeof reports and measured aggregate .data/.bss deltas for every new fixed application structure, declared fixed-state allowance updates from evidence, at least 8192 bytes post-reserve RAM, at least 1024 bytes mesh-stack headroom, and maximum-application-capacity builds. By explicit user decision after callsite-complete evidence, the inherited mesh chain ceiling/allocation/reserve are revised to 4096/4864/13360 bytes rather than refactoring frozen behavior",
+    "Production manifests prove FULL repair-on/ingress/node number and benchmark/hooks/diagnostic initiator/RF blocks off; they do not contain a TAVRN root role",
+    "The host bridge accepts repeated serial arguments without a semantic two-device cap, passes duplicates unchanged, and gives every path a stable process-lifetime device index",
+    "Dashboard collections and root controls are dynamic over API devices; dashboard alone deduplicates events by wearable ID and packet ID24",
+    "Frozen radio/scheduler and TAVRN protocol files remain byte-identical to 49e2ee8; RX starvation under TX load remains deferred",
+    "A slice is a higher-level deliverable. Each slice contains one or more explicit waves; a wave launches its non-overlapping writers, then exactly one checker reviews the combined wave output",
+    "Checkers review waves, never individual writer outputs. Valid checker findings are fixed within the same wave and receive only the necessary consolidated recheck before advancement"
+  ],
+  "relevantFiles": [
+    "shared/schema.h",
+    "microbit/app/wearable_app/src/app_config.h",
+    "microbit/app/wearable_app/src/incident.h",
+    "microbit/app/wearable_app/src/tx_adapter.c",
+    "microbit/app/wearable_app/src/tx_adapter.h",
+    "microbit/app/wearable_app/src/ble_emit.c",
+    "microbit/app/wearable_app/src/main.c",
+    "microbit/app/protocol/tron_mesh_packet.c",
+    "microbit/app/protocol/tron_mesh_packet.h",
+    "microbit/app/protocol/tavrn_wire_v2.c",
+    "microbit/app/protocol/tavrn_wire_v2.h",
+    "microbit/app/protocol/tavrn_gtt.c",
+    "microbit/app/protocol/tavrn_gtt.h",
+    "microbit/app/protocol/tavrn_router.c",
+    "microbit/app/protocol/tavrn_router.h",
+    "microbit/app/tavrn_routed_node/src/main.c",
+    "microbit/app/tavrn_routed_node/src/routed_cycle.c",
+    "microbit/app/tavrn_routed_node/src/routed_cycle.h",
+    "microbit/app/ble_mesh_node/cmake/TronBleProfiles.cmake",
+    "microbit/build-tavrn-ble.sh",
+    "microbit/tests/wearable/test_tx_adapter.c",
+    "microbit/tests/protocol/test_tavrn_wire_v2.c",
+    "microbit/tests/protocol/test_tavrn_router.c",
+    "dashboard/",
+    "microbit/scripts/",
+    "microbit/app/mind_application/mind_event_forwarder.c",
+    "microbit/app/mind_application/mind_event_forwarder.h",
+    "microbit/tests/application/test_mind_event_forwarder.c",
+    "microbit/tests/application/test_mind_root_integration.c",
+    "microbit/tests/application/test_mind_application_resource_sizes.c",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-mesh-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-logger-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-uart-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-ui-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-mind-display-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/indirect-maximum-path.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/required-repair-stack-edges.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/ceiling-4097-fail.json",
+    "microbit/tests/protocol/fixtures/tavrn_expiry_resources/headroom-3841-fail.json",
+    "host/bridge.py",
+    "host/tests/test_bridge.py",
+    "dashboard/package.json",
+    "dashboard/bun.lock",
+    "dashboard/src/App.tsx",
+    "dashboard/src/lib/api.ts",
+    "dashboard/src/state/store.ts",
+    "dashboard/src/styles.css",
+    "dashboard/src/App.test.tsx",
+    "dashboard/src/lib/api.test.ts",
+    "dashboard/src/state/store.test.ts",
+    "microbit/app/mind_application/mind_log.c",
+    "microbit/app/mind_application/mind_log.h",
+    "microbit/tests/application/test_mind_log_formatter.c",
+    "microbit/tests/protocol/test_tavrn_phase4_scheduler_overrun_red.c"
+  ],
+  "planFile": ".opencode/workplan/kiss-wearable-tavrn-dashboard.md",
+  "specFiles": [
+    "shared/schema.h"
+  ],
+  "phases": [
+    {
+      "id": "phase-integration-baseline",
+      "title": "Slice A — reproducible source reconciliation and production baseline",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-a1-baseline",
+          "title": "Wave A1 — reconcile pinned sources and production profile",
+          "target": "git history, submodule, build layout, source closure and manifest tests",
+          "action": "One code-writer owns serial reconciliation: start from origin/master@648efe4, merge corrected TAVRN 49e2ee8, preserve wearable/schema and every frozen TAVRN protocol/radio/scheduler file, selectively port wearable 74d4931 without driver relocation/old flood, and define production application ingress/node-number source closure. The writer owns CMake/profile registration during baseline. Then one code-checker reviews the complete Wave A1 diff; valid fixes remain in Wave A1 and receive one consolidated recheck.",
+          "validation": "Pinned refs/submodule/frozen TAVRN protocol/radio/scheduler hashes/source list/manifests are exact; no C3/MQTT/old flood/benchmark contamination; wearable and inherited TAVRN baseline tests/builds pass; Wave A1 checker approves.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-ingress-contract",
+      "title": "Slice B — direct wearable ingress and 2000 ms suppression",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-b1-ingress",
+          "title": "Wave B1 — freeze Layer-7 records and implement wearable ingress",
+          "target": "shared schema, mind_application packet codec/contracts, wearable transport, ingress/cache and focused tests",
+          "action": "Launch three non-overlapping code-writers: writer B1a owns shared schema comments plus new mind_application packet constants/codec/docs/golden vectors and does not edit tavrn protocol files; writer B1b owns wearable source/CMake/tx tests; writer B1c owns new application ingress files, routed-cycle/main integration, profile registration for this slice, and ingress tests. After all settle, one code-checker reviews the combined Wave B1 diff; fixes and one consolidated recheck stay in this wave.",
+          "validation": "Application codec proves exact MIND_REPORT/ROOT_STATE/ROOT_ACK records over existing generic SID8 DATA; TAVRN protocol hashes stay unchanged; exact TM/01 TTL-zero ingress, 1000 ms wearable spray, validate/reserve/copy/commit rollback, 2000 ms behavior, no legacy relay and no TAVRN mutation pass; Wave B1 checker approves.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-root-plane",
+      "title": "Slice C — Layer-7 topology projection, runtime roots, UART command, ACK campaign, and UI",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-c1-root-plane",
+          "title": "Wave C1 — implement application topology and root plane",
+          "target": "mind_application topology adapter/root registry/campaign, UART command, display/speaker, integration and focused tests",
+          "action": "One code-writer owns the complete Layer-7 root slice. It implements a read-only GTT-to-application topology adapter, independent 16-entry MIND root registry/campaign state, ACK/arbiter APIs, UART RX command module, UI/speaker modules, routed main/CMake/test registration, and focused tests. It only calls existing generic TAVRN snapshot/resolver/submit seams and edits no tavrn protocol file. One code-checker reviews the complete Wave C1 diff; valid fixes and one consolidated recheck remain in Wave C1.",
+          "validation": "Application registry 0/1/2/16/full+1 boundaries, repeated capacity rejection then acceptance after a slot frees, topology snapshot OK/non-OK preservation and retry, retained unresolved roots/rediscovery, exact active counts, ACK correlation, campaigns, UART vector coexistence, saturated two-LED presentation, cue, priorities and resources pass; TAVRN protocol hashes/regressions remain unchanged; Wave C1 checker approves.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-event-forwarding",
+      "title": "Slice D — Layer-7 event fanout and root UART delivery",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-d1-forwarding",
+          "title": "Wave D1 — implement all-root application fanout and truthful final delivery",
+          "target": "mind_application event target set/arbiter, generic final inbox/logger records and tests",
+          "action": "One code-writer owns application event fanout and final delivery: MIND_APP_ROOT_CAPACITY target snapshots, one-submit arbiter integration, generic local/remote DATA submission, final inbox/logger ownership, UART records and tests. It uses existing router reserve/commit/cancel and generic DATA unchanged; no tavrn protocol file is edited. One code-checker reviews the complete Wave D1 diff; fixes and one consolidated recheck stay in D1.",
+          "validation": "Boundary matrix covers zero/one/two/16 application roots, exact counts, one event with all application targets independently progressing, matching OFF/departure-only clearing, over-capacity preservation/rejection, unresolved rediscovery, generic DATA/HACK/BUSY/duplicate truth and UART records; all TAVRN protocol files remain byte-identical; Wave D1 checker approves.",
+          "status": "completed"
+        },
+        {
+          "id": "wave-d2-resources",
+          "title": "Wave D2 — close measured application memory and stack budgets",
+          "target": "build-tavrn-ble.sh, resource checker/fixtures/manifests and maximum-application-capacity build evidence",
+          "action": "One code-writer owns resource closure after D1. It reports sizeof for application root/campaign/event/final/logger/UART/UI structures, measures production .data/.bss delta, and builds/tests MIND_APP_ROOT_CAPACITY=16. Callsite-complete evidence revises the inherited mesh chain ceiling/allocation/runtime reserve to 4096/4864/13360 bytes while retaining independent >=1024 mesh headroom and >=8192 post-reserve RAM gates. Because the historical FAST/BALANCED six-file baseline was lost and the user explicitly waived recovery, D2 adds an explicit paired D2_APPLICATION_INCREMENTAL mode: build FULL+repair BALANCED node 6 ingress OFF, pass its current gate, then externally seal its artifact manifest before building ingress ON. Both artifacts use hashed callsite-complete v3 routed-mesh contracts; v2 is invalid for every production FULL mesh invocation, including ingress OFF/ON, stack-baseline-only, live-resource, and retained legacy FAST/BALANCED callers. The exact ON source additions are display.c plus mind_application wire, ingress, event_forwarder, topology_adapter, root_plane, root_coordinator, root_inbox, command, log, log_formatter, uart, audio, and ui; no source removal or common-file hash change is allowed. The build-config header may differ only by TRON_BUILD_ENABLE_WEARABLE_INGRESS 0->1. The build-config manifest may differ semantically only by adding mind-root-plane capability, wearable_ingress requested/effective OFF->ON, root_plane OFF->ON, and the exact selected-source list/hash additions. Repair, timer, node number, capacities, hooks, benchmark, stack allocations, reserve, source state, and every other semantic field are identical. Artifact/resource hashes and application evidence sidecars may differ only as independently hash-bound consequences of those additions. The ON comparison requires exact ELF symbol accounting and publishes acceptance.scope=D2_APPLICATION_INCREMENTAL plus historical_expiry_fixed_state=USER_WAIVED_NOT_REPRODUCED; it must not masquerade as historical expiry acceptance. TAVRN protocol capacities/sources remain unchanged. One code-checker reviews the amended Wave D2.",
+          "validation": "Per-structure/aggregate bytes and exact OFF-to-ON deltas pass; OFF is externally sealed only after its current gate passes and ON is compared afterward; both artifact manifests record resource.gate=PASSED. Pair validation proves zero removals/common-source hash changes, exactly the fourteen allowed source additions, only the one generated-header and four semantic build-manifest changes, and unchanged repair/timer/node/capacities/hooks/benchmark/stack/reserve/source state. Every production FULL routed_mesh_task path rejects v2 and uses published/hashed callsite-complete v3 evidence. Measured mesh chain is <=4096 and allocation-minus-chain is >=1024 independently (effective maximum 3840); post-reserve RAM is >=8192 with reserve 13360; unexplained application delta is <=512; no hidden application heap or frozen TAVRN source change; the paired report hashes both artifacts, external seal, checker outputs, preprocessed mains, contracts, and size report, and explicitly marks historical expiry fixed-state evidence user-waived and not reproduced; Wave D2 checker approves.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-dashboard-glue",
+      "title": "Slice E — bidirectional local serial API and KISS dashboard",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-e1-dashboard",
+          "title": "Wave E1 — implement repeated-serial API and dynamic dashboard",
+          "target": "host bridge, parser/API tests, dashboard API/store/UI/tests",
+          "action": "Launch two parallel non-overlapping code-writers: E1a owns the Python repeated-serial bridge/tests; E1b owns dashboard files, dynamic device/root collections, global dedupe and frontend tests/build. No firmware application capacity leaks into API/dashboard contracts. One code-checker reviews the combined host wave; fixes and one consolidated recheck stay in E1.",
+          "validation": "One/two/16 mocked serial devices get stable indices and serialized writes; exact API/error/cursor contracts pass; dashboard dynamically controls roots and deduplicates multi-root/multi-observer reports with no hard firmware-cap assumption, MQTT or C3; accessibility checks pass; Wave E1 checker approves.",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-system-validation",
+      "title": "Slice F — completed software history; hardware work superseded",
+      "status": "completed",
+      "steps": [
+        {
+          "id": "wave-f1-software-gates",
+          "title": "Wave F1 — run complete software/source/resource gates",
+          "target": "all firmware and host components",
+          "action": "Launch two non-overlapping validation/fix writers. F1a owns firmware/application/tests/build/resource scripts only; F1b owns dashboard/host bridge only. After tests/builds/resource/source assertions settle, one code-checker reviews the combined implementation and evidence once; valid findings receive one consolidated recheck.",
+          "validation": "All focused/inherited tests, application capacity matrix, firmware builds/manifests/resources, frozen TAVRN protocol/radio/scheduler hashes, submodule/source assertions, dynamic host tests/build/rendered checks and diff hygiene pass; Wave F1 checker approves.",
+          "status": "completed"
+        },
+        {
+          "id": "wave-f2-hardware-proof",
+          "title": "Wave F2 — hardware proof superseded; do not execute",
+          "target": "historical hardware acceptance only",
+          "action": "Cancelled by the dashboard-PoC scope decision. Do not perform firmware changes, firmware builds, flashing, reset, reboot, or hardware evidence collection under this plan.",
+          "validation": "No execution is required. The completed firmware integration and G glyph remain committed history; current work is limited to host/dashboard PoC verification.",
+          "status": "cancelled"
+        },
+        {
+          "id": "wave-f2a-layer7-diagnosis",
+          "title": "Wave F2a — diagnose ROOT OFF and terminal-fault context without changing TAVRN",
+          "target": "mind UART/coordinator integration and routed-node application diagnostics",
+          "action": "Reproduce the post-ROOT-ON command failure in focused tests or hardware instrumentation, add bounded Layer-7 diagnostics for the AODV_STATUS_INVALID source path, and fix only defects outside frozen TAVRN.",
+          "validation": "Focused application/UART tests pass; required TAVRN files remain byte-identical; hardware logs identify ROOT OFF processing and the exact router-tick invalid branch.",
+          "status": "completed"
+        },
+        {
+          "id": "wave-f2b-test-injector",
+          "title": "Wave F2b — add an explicitly test-only wearable event injector",
+          "target": "wearable_app build configuration and focused tests",
+          "action": "Add a compile-time-disabled production-safe injector that emits a deterministic non-heartbeat incident through the existing 1000 ms spray path for hardware acceptance.",
+          "validation": "Default wearable artifact remains behaviorally unchanged; injector build emits one stable packet identity across the required spray copies and focused tests pass.",
+          "status": "completed"
+        },
+        {
+          "id": "wave-f2c-remediation-validation",
+          "title": "Wave F2c — remediation validation superseded; do not execute",
+          "target": "historical firmware and hardware validation only",
+          "action": "Cancelled by the dashboard-PoC scope decision. Do not reopen D2, firmware profiles, pyOCD topology, or hardware acceptance from this plan.",
+          "validation": "No execution is required; dashboard completion is owned by mind-gateway-floorplan-localization.",
+          "status": "cancelled"
+        }
+      ]
+    }
+  ],
+  "reviewFindings": [
+    {
+      "severity": "major",
+      "title": "History reconciliation recipe was under-specified",
+      "detail": "Resolved in revised plan with exact refs, corrected submodule choice, frozen-file equality, selective wearable source port, and explicit exclusion of relocation/old flood node.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wearable classifier and source ownership were under-specified",
+      "detail": "Resolved by freezing the pre-mentorship RX classifier outcomes, recognized-frame consumption, exact validation, source closure, and build flag.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Seen-cache and application queue transaction was incomplete",
+      "detail": "Resolved with mesh-owner validate/purge/duplicate/reserve/commit ordering, fixed capacities, rollback, rootless consume, and saturation tests.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "HACK duplicate validation made an impossible byte-preservation claim",
+      "detail": "Resolved by separating DATA byte preservation, HACK correlation, duplicate DATA, BUSY, direct-local, and multi-observer behavior.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "UART and HTTP contracts were not frozen",
+      "detail": "Resolved with exact firmware line grammar, direct nonblocking UART command input, cursor API schemas, ring bounds, localhost binding, and same-origin serving.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard global dedupe and UI scope were ambiguous",
+      "detail": "Resolved by limiting UI to root/health/latest wearable/event feed and aggregating observer paths under one stable key; MQTT/node analytics are removed.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Forwarded wire contract was tentative",
+      "detail": "Resolved by definitively assigning application kinds 0x02..0x04 and exact byte/source/width rules.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 7",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Validation gates lacked exact source and manifest assertions",
+      "detail": "Resolved in revised validation section and step validations.",
+      "source": "plan-checker ses_0032ff658ffemOoPfqUpAeVPMR finding 8",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root OFF and reboot freshness required inactive high-water",
+      "detail": "Resolved with an independent 16-entry Layer-7 root registry retaining inactive current tuple and one prior nonce, plus current-session inactive announcement after SID8 when not designated root. Registry size is application-owned, not derived from GTT.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root campaigns lacked exact GTT/SID8 and ACK outcome bindings",
+      "detail": "Resolved by pinning routed_full_telemetry snapshots, tavrn_full outgoing resolution, tavrn_esc incoming resolution, pre-SID8 deferral, terminal ACK outcomes, repeated-command campaigns, and event-target cancellation.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Downstream BUSY contradicted committed seen suppression",
+      "detail": "Resolved: seen keys never roll back after ingress commit; one mesh-owner arbiter owns exactly one submit per cycle; local targets retain on BUSY and final accepted DATA stays reserved until processing/logger capacity.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Polled UART command input could overrun at 115200",
+      "detail": "Resolved with application-owned RXDRDY/ERROR-only interrupt ring; T-monitor retains TX and kernel submodule remains unchanged.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Firmware/API schemas and two-serial support remained incomplete",
+      "detail": "Resolved with exact command/event/root line grammars, record/health/POST JSON shapes and status codes, stable repeated --serial device indexing, and command records in cursor stream.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Two-root hardware validation was optional",
+      "detail": "Resolved by making two-root/two-UART fanout, display, bridge, dedupe, and withdrawal a mandatory hardware acceptance pass.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Initial backoff and minimum inter-submit cadence disagreed",
+      "detail": "Resolved with both deterministic 20..120 ms per-target initial due time and global minimum 50 ms actual ROOT_STATE submission throttle.",
+      "source": "plan-checker ses_002fb8f8effe7d1jNfsCOf00x8 finding 7",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Equal-generation conflict and ROOT_ACK correlation were incomplete",
+      "detail": "Resolved by freezing conflicting equal-generation state as stale and requiring exact resolved sender/target plus six-byte campaign tuple before ACK completion.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root history and campaign overflow behavior was unspecified",
+      "detail": "Resolved with no-eviction preservation, capacity-rejected unknown states including OFF, deferred new campaign targets, counters, and later snapshot retry.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "UART vector coexistence remained under-specified",
+      "detail": "Resolved with exact application-time vector replacement after inherited device startup, priority 5 enable, RXDRDY/ERROR mask, TXDRDY disable, event/error handling, and prohibition on opening sera.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Whole-firmware no-heap claim contradicted inherited runtime",
+      "detail": "Resolved by limiting the static-allocation rule to new application modules and leaving inherited kernel/device startup unchanged.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "HTTP errors/defaults/concurrent serial writes were not frozen",
+      "detail": "Resolved with exact defaults, error schema/enums, health root shape, exclusive cursor semantics, and one serialized writer queue per device.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard source reference was not reproducible",
+      "detail": "Resolved by pinning historical reference 0c1557e and exact scaffold/style files; application/state/API modules are authored afresh and MQTT/node analytics excluded.",
+      "source": "plan-checker ses_002c701ddffeWJjEykWuxD0ybo finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Hard two-root limit leaked across application layers",
+      "detail": "Resolved with independent MIND_APP_ROOT_CAPACITY=16 inside Layer 7. The separate two-entry active index is removed; TAVRN carries opaque data, serial/dashboard collections are dynamic, and two remains only a UI/demo soft cap.",
+      "source": "user correction after recovery",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Execution model conflated writer tasks, waves, and slices",
+      "detail": "Resolved by making phases the six slices and structured steps explicit waves. Each wave names non-overlapping writer ownership and exactly one combined-wave checker; no per-writer checker remains.",
+      "source": "user correction after recovery",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "GTT capacity was incorrectly treated as 16 remote identities plus self",
+      "detail": "Superseded by the stricter layer separation: corrected GTT capacity includes self, but Layer-7 root capacity is independently fixed by MIND_APP_ROOT_CAPACITY and has no cross-layer equality contract.",
+      "source": "plan-checker ses_ffdcbc60effeXRU6U7BoCZM014 finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Retained roots missing from GTT had undefined progress",
+      "detail": "Resolved by freezing resolver outcomes: UNIQUE submits; UNKNOWN/COLLIDING retains and retries after snapshots/rediscovery; RESERVED/INVALID fail closed with invariant evidence; only OFF/departure clears.",
+      "source": "plan-checker ses_ffdcbc60effeXRU6U7BoCZM014 finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Validation did not prove maximum root capacity",
+      "detail": "Resolved with 0/1/2/16/full+1 application-registry boundaries, maximum campaign/event targets, over-capacity rejection, exact counts, and 16-device bridge/dashboard fixtures independent of TAVRN capacity.",
+      "source": "plan-checker ses_ffdcbc60effeXRU6U7BoCZM014 finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "All-root static memory was not budgeted",
+      "detail": "Resolved by adding Wave D2 with named sizeof, measured .data/.bss, declared fixed-state, stack/headroom, maximum-capacity build and resource-gate ownership.",
+      "source": "plan-checker ses_ffdcbc60effeXRU6U7BoCZM014 finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave C1 had an unsafe parallel dependency and shared-file ambiguity",
+      "detail": "Resolved by assigning the complete root/UART/UI integration to one writer and one combined-wave checker; other parallel waves now name exact subsystem/shared-file ownership.",
+      "source": "plan-checker ses_ffdcbc60effeXRU6U7BoCZM014 finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root capacity was incorrectly modeled as a GTT/TAVRN property",
+      "detail": "Resolved by introducing independent MIND_APP_ROOT_CAPACITY=16 inside Layer 7. GTT is now only a read-only topology input; TAVRN, API, and dashboard do not encode application root limits.",
+      "source": "user layer-separation correction",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root application kinds and validation leaked into TAVRN protocol changes",
+      "detail": "Resolved by moving 0x02..0x04 packet definitions/validation to mind_application and freezing all corrected tavrn protocol files. Existing generic SID8 DATA carries opaque bytes unchanged.",
+      "source": "user layer-separation correction",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Capacity-rejected root tuples had impossible duplicate history",
+      "detail": "Resolved by storing no hidden rejection tuple. Unknown ROOT_STATE is reevaluated on every delivery and returns capacity-rejected only while the independent application registry remains full.",
+      "source": "plan-checker ses_ffdb7e53affeasgeMMNo3VUcxs finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Frozen GTT snapshot seam cannot report truncation",
+      "detail": "Resolved by treating non-OK snapshot as opaque application input failure that preserves state/counts/retries; full snapshots are never inferred truncated and application capacity is tested independently.",
+      "source": "plan-checker ses_ffdb7e53affeasgeMMNo3VUcxs finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave A1 destructively reverted current-main files",
+      "detail": "ESP sniffer/watch tooling and related current-main paths were deleted/reverted during tree reconciliation. Restore from pinned origin/master without removing intentional TAVRN additions.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave A1 regressed hardware-validated microphone gain",
+      "detail": "Imported mic driver replaced current-main gain-4 behavior while wearable thresholds still assume gain 4. Restore current-main mic driver.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Inherited scheduler startup-order gate remains red",
+      "detail": "Corrected TAVRN starts cyclic/mesh/logger while static gate expects logger/cyclic/mesh. This predates application integration and is being treated as explicitly named out-of-scope evidence unless Wave A1 caused it.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave A1 imported unrelated historical hardware artifacts",
+      "detail": "Prune unreferenced captures/transcripts/failure reports; retain only executable-test inputs required by the integrated baseline.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Shared schema comments describe obsolete C3 bare-beacon authority",
+      "detail": "Update comments for TM/01 carriage, ID24 application identity and compatibility seq without changing seven-byte layout.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "No host test exercises ble_emit_pack exact vector",
+      "detail": "Add focused host test for exact 26-byte direct-ingress packet, TTL zero, ID24 masking, source/type/schema and repeat equality.",
+      "source": "code-checker ses_ffd9b652fffexUNytGo2HJ9XYx finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "MIND_REPORT urgent semantics missing from Layer-7 record",
+      "detail": "Thread generic DATA urgent through application record, derive it in report packer, and enforce urgent iff event is non-heartbeat.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Ingress filter timing used stale phase timestamp",
+      "detail": "Return validated filter completion time and use it for consumed traces and passthrough router phase start.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Benchmark and wearable-ingress sources could coexist",
+      "detail": "Reject benchmark+ingress configuration and assert mutual source/manifest isolation.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "Ingress FIFO consistency validation incomplete",
+      "detail": "Validate tail=(head+count)%capacity and classify passthrough frames before application-state validation.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "minor",
+      "title": "ROOT_ACK enum lower bound not validated portably",
+      "detail": "Validate exact enum membership including negative casts; preserve output on rejection.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "note",
+      "title": "Generated Python bytecode and stale ingress test comment",
+      "detail": "Add repository ignore coverage without deleting files absent explicit deletion approval; update stale source-less comment.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "MIND_REPORT urgency validator read packet-ID byte",
+      "detail": "Use schema event-type offset inside the 10-byte report and add vectors where packet-ID middle byte contradicts event urgency.",
+      "source": "code-checker ses_ffd6fbb37ffenW6QIA3YfsXiEY recheck",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave C1 UART ring/mailbox/error handling unsafe",
+      "detail": "Use race-free SPSC or interrupt-masked ownership, synchronize command mailbox, and clear ERRORSRC write-one-to-clear with interleaving/register tests.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root commands could mutate state without required records",
+      "detail": "Reserve command/root log capacity transactionally before mutation and retain attempts while output is busy; no silent mailbox/log drops.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Failed ROOT_STATE submissions bypassed 50 ms pacing",
+      "detail": "Record every actual submit-seam invocation for global pacing; apply 3000 ms ACK deadline only after accepted handoff; add multi-target BUSY tests.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "UI/audio had unsynchronized multiple owners and stale time",
+      "detail": "Make low-priority UI task sole framebuffer/PWM owner, publish synchronized state/transition sequence, use real task clock, queue every genuine root transition and propagate display start failure.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave C1 tests omitted required boundary and routed integration matrix",
+      "detail": "Add generation/full-table/freshness/campaign/ACK/resolver/UART/UI and routed-binding acceptance tests identified by consolidated checker.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave C1 integration test bypassed production coordinator",
+      "detail": "Extract main.c root snapshot/resolver/submit/command orchestration into a testable production Layer-7 coordinator with injected seams and compile it in the integration test.",
+      "source": "code-checker ses_ffd3794b7ffenjW7VqyJrElkjL recheck",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave D1 BUSY target could starve later roots",
+      "detail": "Add retained fair selection/retry cursor so every target progresses independently even when an earlier target remains BUSY/NOT_READY.",
+      "source": "code-checker ses_ffcf18b78ffe4CKsQlILsApoeb finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Coordinator exact token omitted event target slot",
+      "detail": "Include target_slot and kind-specific bounds in token equality; wrong slot completion preserves pending owner.",
+      "source": "code-checker ses_ffcf18b78ffe4CKsQlILsApoeb finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Logger backpressure could alter event timestamp/observer",
+      "detail": "Use delivered_at_ms and pin canonical transport origin once resolved so logger retry cannot change evidence.",
+      "source": "code-checker ses_ffcf18b78ffe4CKsQlILsApoeb finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave D1 production custody and exact UART tests incomplete",
+      "detail": "Add full-capacity/status/cancellation tests, real router/link/inbox duplicate-HACK path, and production formatter golden lines with multiple observers.",
+      "source": "code-checker ses_ffcf18b78ffe4CKsQlILsApoeb finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Wave D1 shared target cursor still permits cross-event starvation",
+      "detail": "The first fix retained one global target cursor. With two two-target events, alternating BUSY/NOT_READY selections can revisit one blocked target per event forever. Move target progress into each event item while retaining the global event cursor; prove the multi-event/multi-target case. Complete coordinator QUEUED/NOT_READY and event resolver COLLIDING/INVALID matrices.",
+      "source": "code-checker ses_ffcf18b78ffe4CKsQlILsApoeb consolidated recheck",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Wave D2 inherited expiry baseline artifacts are unavailable",
+      "detail": "The acceptance gate requires the original provenance-bound FAST/BALANCED before-map, manifest, and hash artifacts frozen before semantic changes. Checked-in JSON fixtures are synthetic and current-source regeneration would violate the no-rebaseline rule. Restore prior acceptance artifacts or obtain an explicit project-level rebaseline waiver.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Application fixed-state residual and baseline seal fail open",
+      "detail": "The checker trusts a manually enumerated symbol set, permits unbounded linker-placement residual, and lacks an external seal for the ingress-OFF application baseline manifest. Diff baseline/current ELF RAM symbols, account additions/removals exactly once, enforce the <=512 residual (ideally observed 8 bytes), and bind an external SHA-256 seal with adversarial omission tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Application stack graph omits reachable indirect callbacks",
+      "detail": "Register-indirect calls disappear except for three manually overlaid routed-cycle callbacks; coordinator operation callbacks can under-report a heavier path. Bind all production callbacks from generated/preprocessed assignments, reject unresolved reachable indirect calls, and add a heavier-indirect-path test.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "New application tasks consume unaccounted kernel heap",
+      "detail": "UART, UI, and newly used display task creation lack TA_USERBUF and consume at least 1,920 bytes plus allocator overhead while runtime reserve remains inherited. Prefer static TA_USERBUF stacks bound to generated stack constants, and make the checker prove no new application task heap allocation.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Published artifacts omit final resource-gate provenance",
+      "detail": "The artifact manifest does not hash the final checker output, preprocessed main, or stack-edge contracts; the resource JSON is emitted before validation. Publish and hash the final validated report/log, preprocessed main, every edge contract, and sizeof probe/report.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Complete indirect-call analysis exceeds the routed mesh stack contract",
+      "detail": "Fail-closed production analysis now finds 68 reachable register-indirect sites across 36 functions and a 3,788-byte maximum mesh chain. This exceeds the 3,072-byte consumption limit by 716 bytes and leaves 308 bytes headroom against the required 1,024. Do not weaken thresholds; identify the exact chain and choose a stack-reducing refactor or an explicit project-level budget revision with reserve evidence.",
+      "source": "code-writer ses_ffc6a8b51ffePmfhJzKFPHVaSS final D2 stack analysis",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Ingress-OFF FULL acceptance still uses incomplete v2 stack analysis",
+      "detail": "Application-enabled v3 analysis is callsite-complete, but inherited FAST/BALANCED ingress-OFF acceptance still uses the v2 edge contract and obsolete 2,976-byte result. Move all FULL acceptance paths to the fail-closed v3 callsite analysis and hashed contracts before restoring/running immutable baselines.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 final D2 confirmation",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "D2 paired acceptance does not re-verify core firmware artifacts",
+      "detail": "Pair validation currently verifies selected sidecars but can pass after deleting the declared ON ELF. Resolve and hash-check each artifact manifest's ELF, map, disassembly, compile commands, stack-usage set, resource report, gate inputs/output, contracts, and other evidence used for measurements; add missing/tampered negative tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 amended D2 review finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "D2 source whitelist ignores generated additions and tool hashes",
+      "detail": "Pair comparison strips generated sources and excludes source.selected fields, allowing generated/hidden.c after self-hash updates. Compare the complete selected-source set: generated names identical, exactly fourteen non-generated ON additions, no removals/common hash changes. Bind and compare build-script/checker hashes and dirty-worktree content evidence; add adversarial tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 amended D2 review finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "D2 paired acceptance trusts self-consistently rewritten measurements",
+      "detail": "Pair validation verifies hashes but does not semantically recompute stack/resource evidence. Replacing the v3 contract with a schema-only object or rewriting gate/resource values to 1/4863 passes after manifest hash updates. Pair validation must rerun contract semantics and recompute/reconcile measurements from raw ELF/map/disassembly/.su/config inputs; add self-consistent mutation tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 final provenance recheck finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Worktree digest assumes fixed repository depth",
+      "detail": "The checker uses Path(__file__).parents[2], which points outside the standalone microbit Git root in clean-publisher fixtures. Discover the Git top level with git rev-parse --show-toplevel or pass the publisher root explicitly; add both workspace and standalone-root tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 final provenance recheck finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "D2 canonical stack-chain lines are not reconciled",
+      "detail": "Numeric stack metrics and resource JSON chains are recomputed, but gate `STACK_CHAIN` and auxiliary `*_STACK_CHAIN` lines can be rewritten (for example to `[]`) after manifest hash refresh. Require exactly one canonical chain line per checked stack root and compare it byte-for-byte to the recomputed StackReport chain; add missing/duplicate/mutated tests.",
+      "source": "code-checker ses_ffc9f3d5fffevY5qbElFzUeKN3 final semantic recheck",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Wave E1 host and dashboard JSON contracts are incompatible",
+      "detail": "Host empty ring emits oldest_cursor=1/current_cursor=0 and health root retains kind=root, while dashboard decoders reject both. Model empty state explicitly, decode the exact health root-ring object minus cursor/device, and test dashboard decoders against real host output.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard strict decoder omits firmware/API boundaries",
+      "detail": "Enforce node<=6, svm<=8000, heartbeat confidence/mic invariants, <=100 records, and exact cursor/page relationships; add negative vectors for every host boundary.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Duplicate serial paths have independent physical owners",
+      "detail": "Repeated aliases currently open/read/write the same device independently and can interleave commands/split input. Group aliases by resolved physical path behind one transport reader/writer queue while preserving every CLI index and dynamic health/control entry.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Serial framing state survives reconnect",
+      "detail": "Clear partial-line and overlong-discard state on every descriptor close before reconnect; prove first complete post-reconnect record is accepted after either interrupted state.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Host HTTP and serial command waits are unbounded",
+      "detail": "Add worker-owned command deadlines, uncertain-partial-write disconnect, socket body/read/write deadlines, bounded nonblocking worker admission, close-on-bad-body behavior, and race-safe shutdown completion. Prove stalled writes/partial clients cannot block health or shutdown indefinitely.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 5",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard eviction/replay conflict handling is not idempotent",
+      "detail": "Define bounded tombstone/reappearance behavior, rehydrate/promote reappearing logical keys, and track processed cursor/report identity per ring epoch so replay cannot duplicate conflicts or evidence overflow.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 6",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard cannot recover from bridge cursor epoch reset",
+      "detail": "Detect current_cursor<requestedAfter, reset polling cursor, immediately refetch from zero, clear epoch-local cursor/root/command state deliberately, and preserve session-global event dedupe without silently missing future records.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 7",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard can prefer stale stream root over health authority",
+      "detail": "Compare stream root cursor with health snapshot current_cursor; prefer health when it covers that cursor and stream state only when demonstrably newer. Clear stale epoch-local records on bridge reset.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx finding 8",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Stable serial alias is resolved only once",
+      "detail": "Transport grouping correctly deduplicates aliases, but reconnect opens the startup-resolved tty target rather than the configured by-id alias. Separate grouping identity from reopen paths and retry configured aliases so symlink retarget/re-enumeration reconnects without changing device indices.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx consolidated recheck finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Dashboard logical history and replay ledger remain unbounded",
+      "detail": "Only feedKeys is capped; full logical events/fingerprints/processed JSON records grow indefinitely. Bound active logical objects and epoch replay ledger, retain minimal session tombstones, and make evidence overflow a truthful saturated indication unless omitted identities are retained exactly.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx consolidated recheck finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Pre-reset health root can override new epoch indefinitely",
+      "detail": "Epoch reset clears stream roots but retains old health cursor/root, so failed health polling lets old high-cursor state beat all new low-cursor stream records. Epoch-tag health authority and ignore stale-epoch health root/cursor while preserving device identity.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx consolidated recheck finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Mismatched accepted root echo leaves original device pending",
+      "detail": "postRoot decodes but does not require response device/command to match the request. A mismatched 202 clears another device and cancels timeout, leaving the original disabled. Reject mismatched echoes so rootFailed clears the original pending state.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx consolidated recheck finding 4",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Delayed pre-reset health response is tagged with the new epoch",
+      "detail": "Events and health start concurrently, but health dispatch reads the mutable epoch ref when it resolves. If events reset first, stale pre-reset health is mislabeled current and can override new stream root state. Capture request epoch before launching both requests and dispatch health with that immutable epoch; add delayed-health/reset race test.",
+      "source": "code-checker ses_ffb25dedbffenw0Xz9wIOV6dMx final E1 recheck",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Root arbiter stops after first unresolved ACK or campaign",
+      "detail": "prepare_root_owner returns immediately when the first eligible obligation fails SID8 resolution, starving a healthy obligation behind it. Bounded-loop across at most the relevant 16-entry capacity; failed resolution marks that owner blocked/fail-closed, then continue. Test two-obligation ACK and state cases.",
+      "source": "code-checker ses_ffadaceedffe4qynptKCpQMkC1 finding 1",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Host bridge requires Python 3.14 ALLOW_MISSING",
+      "detail": "serial_grouping_identity directly references os.path.ALLOW_MISSING. Use a portable fallback/default realpath behavior and test with the attribute absent.",
+      "source": "code-checker ses_ffadaceedffe4qynptKCpQMkC1 finding 2",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Untracked recovery artifacts contaminate intended handoff",
+      "detail": "`.opencode/recovery/` contains session recovery artifacts and is neither intended product content nor ignored. Exclude the directory from the handoff without deleting it.",
+      "source": "code-checker ses_ffadaceedffe4qynptKCpQMkC1 finding 3",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Hardware ROOT OFF transition is not observed",
+      "detail": "Resolved by request-driven quiet logger dispatch and heartbeat-only UART suppression. The final 178-second capture matched all 19 host writes with 19 command and 19 root records, observed two roots, withdrew node 1 to one root, withdrew node 2 to zero roots, and ended with acked=2 on all nodes.",
+      "source": "/tmp/opencode/f3-heartbeat-filter-captures/root-off-sequence.log",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Non-heartbeat wearable spray was not produced on hardware",
+      "detail": "Resolved with the dedicated production-equivalent wearable_test_injector target. Its deterministic fall-and-shout incident reached both active roots with local and routed observer evidence and was globally deduplicated by the dashboard.",
+      "source": "/tmp/opencode/f3-heartbeat-filter-captures/api-events.json; /tmp/opencode/f3-heartbeat-filter-captures/dashboard-two-root-incident.png",
+      "status": "resolved"
+    },
+    {
+      "severity": "blocker",
+      "title": "Hardware mesh eventually latches AODV invalid router tick",
+      "detail": "Resolved without changing frozen TAVRN. Request-driven quiet logger progress removed the deterministic scheduler-yield failure; a 180-second two-root hold and the final 178-second zero/one/two/one/zero sequence produced no cycle_fault or router_fault records.",
+      "source": "/tmp/opencode/f2-request-logger-captures/node1-root-sequence.log; /tmp/opencode/f2-request-logger-captures/node2-root-sequence.log; /tmp/opencode/f2-request-logger-captures/node3-root-sequence.log; /tmp/opencode/f3-heartbeat-filter-captures/root-off-sequence.log",
+      "status": "resolved"
+    },
+    {
+      "severity": "major",
+      "title": "Historical wearable hardware evidence was lost with tmpfs",
+      "detail": "The old tmpfs evidence remains non-auditable historical context, but F2/F2c are now cancelled by the dashboard-PoC scope decision and no rerun is required in this workplan.",
+      "source": "PR-level code review before merge",
+      "status": "resolved"
+    }
+  ],
+  "notes": [
+    "KISS POC is a primary requirement, not shorthand for skipping correctness: retain explicit bounds, validation order, and truthful counters.",
+    "Current wearable branch's broad driver relocation is not required by the application behavior and should not silently move frozen TAVRN radio sources.",
+    "Each first-seen observation fans through ordinary generic TAVRN DATA to every active Layer-7 runtime root; global dedupe occurs only after root UART delivery.",
+    "RX exhaustion under high TX activity is a known deferred risk and must remain visible in final docs/evidence.",
+    "User corrected the static-sink model: roots are runtime application roles designated over UART; any bounded number may coexist and every active root is a DATA destination. The hardware demonstration normally uses two.",
+    "Root loss uses explicit ROOT OFF or TAVRN/GTT departure, not application leases, because missed leases must not disconnect a valid root.",
+    "Rootless reception still crosses the wearable RX/application boundary; the application consumes it silently when the root table is empty.",
+    "Official micro:bit v2 pin mapping identifies P0.00 as the built-in speaker; implementation remains application/UI-only and must not touch frozen radio/scheduler code.",
+    "Planning review loop stopped after three plan-checker iterations per workflow rules. All blocker/major findings from the final iteration were patched into structured steps/constraints and the detailed Markdown; final machine validation remains required before handoff.",
+    "User clarified that two roots is a soft competition cap, not a cross-layer architectural maximum. Root/history/fanout/API/dashboard structures must support the full bounded identity registry.",
+    "Execution terminology is frozen: slice = higher-level deliverable; wave = one planned set of writers plus one checker over their combined output.",
+    "Corrected repository fact: TAVRN GTT capacity includes self, but this affects only the read-only topology adapter. MIND_APP_ROOT_CAPACITY=16 is an independent Layer-7 node resource bound with no cross-layer equality contract.",
+    "Active roots retained after GTT replacement are intentionally unresolved rather than silently removed; event/campaign obligations remain bounded and retry after rediscovery until OFF or explicit departure.",
+    "Focused soft-cap/wave review corrections are integrated: corrected GTT includes self; maximum boundary/resource/unresolved-target behavior and wave ownership are now frozen.",
+    "Focused plan-checker session ses_ffdcbc60effeXRU6U7BoCZM014 returned READY after correcting GTT self-capacity, unresolved-target, maximum-boundary, resource-budget, and wave-ownership details.",
+    "Layer model is authoritative: TAVRN/GTT is unchanged flat topology/opaque transport; a read-only adapter punches topology to Layer 7, where the independent fixed root array and all root policy live.",
+    "Layer-7 correction integrated after user confirmation: root capacity and packet semantics are now application-owned; all corrected TAVRN protocol files are frozen and only existing generic topology/resolver/opaque-DATA seams are consumed.",
+    "KISS Layer-7 capacity semantics: rejected unknown roots are not cached; repeated states are reevaluated. Frozen topology snapshots expose OK/non-OK only, so application code never claims truncation evidence.",
+    "Focused Layer-7 separation review ses_ffdb7e53affeasgeMMNo3VUcxs returned READY after freezing rejection reevaluation and OK/non-OK topology snapshot behavior.",
+    "Execution approved by user. Wave A1 started; no commits will be created without separate explicit authorization.",
+    "Wave A1 consolidated checker returned CHANGES REQUIRED. One fix pass is active; inherited scheduler startup-order red is recorded separately under the workplan's allowed pre-existing-gate rule.",
+    "Wave A1 approved by consolidated checker ses_ffd9b652fffexUNytGo2HJ9XYx. Passed reconciliation/profile/wearable builds/tests, frozen hashes, submodule and diff hygiene. Inherited scheduler startup-order gate remains named and deferred because main.c is byte-identical to 49e2ee8.",
+    "Wave B1 combined checker returned CHANGES REQUIRED. One consolidated parallel fix pass is active in B1a and B1c; no additional checker runs until both settle.",
+    "Wave B1 approved by consolidated checker ses_ffd6fbb37ffenW6QIA3YfsXiEY after one combined fix cycle plus final offset correction. Application wire 99 checks and ingress 79 checks pass; profile/firmware/runtime gates pass; TAVRN protocol hashes remain frozen. Generated Python bytecode is ignored and unstaged, not deleted.",
+    "Wave C1 consolidated checker returned CHANGES REQUIRED. One comprehensive same-writer fix pass is active; no separate per-module checker will run.",
+    "Wave C1 approved by consolidated checker ses_ffd3794b7ffenjW7VqyJrElkjL after extracting and testing the production mind_root_coordinator. UART SPSC/W1C, transactional commands/logs, invocation pacing, UI/audio ownership, freshness/campaign/resolver matrix and routed root integration pass. C1 measured delta over B1: +13,784 text, +3,172 bss; formal resource closure remains D2.",
+    "Wave D1 consolidated checker returned CHANGES REQUIRED. One same-writer fix pass is active; D1 capacities and measured baseline remain unchanged for D2.",
+    "Wave D1 first recheck confirmed exact token target_slot identity, pinned delivery evidence, formatter extraction, capacities, frozen hashes, builds, and existing tests. D1 remains open because one shared target cursor can starve healthy targets across multiple events; the remaining fix also completes explicit coordinator submit/resolver matrices.",
+    "Wave D1 second fix pass moved target rotation into each retained event item while preserving the global event cursor. Added two-event/two-target cross-starvation coverage plus coordinator QUEUED/NOT_READY and event resolver COLLIDING/INVALID matrices. Application suite, build-profile suite, production FULL node 6 build, and diff check passed; final focused checker recheck is pending.",
+    "Wave D1 approved by consolidated checker ses_ffcf18b78ffe4CKsQlILsApoeb after per-event target fairness correction. Complete application/profile/build gates pass; production FULL build is 293,988 text / 80 data / 39,464 BSS; application capacities remain unchanged and frozen TAVRN/radio/scheduler hashes match 49e2ee8. All D1 major findings are resolved; Wave D2 resource closure is now active.",
+    "Wave D2 implementation produced target-ABI sizeof/ELF component evidence and application-aware resource gates. Current measured application fixed-state delta is 5,964 bytes (33,580 -> 39,544), reconciled as 5,960 ELF/sizeof bytes minus 4 bytes removed plus 8 bytes alignment/new storage. Mesh stack is 2,976 with 1,120 headroom; logger/UART/UI/display totals and headrooms are 720/1,120, 128/384, 144/368, and 136/376. Application tests, checker unit tests, syntax, and diff checks pass. A complete build-script gate still lacks the inherited immutable BALANCED expiry baseline trio (`balanced.before.map`, baseline manifest, baseline hash); `/tmp/opencode/d2-before` is the measured ingress-OFF application baseline and is now directly consumable. Wave D2 checker review is next.",
+    "Wave D2 checker ses_ffc9f3d5fffevY5qbElFzUeKN3 reproduced all reported measurements and confirmed application/profile builds plus frozen-source hashes, but returned CHANGES REQUIRED. Four local fail-open gaps will receive one consolidated fix pass. The missing inherited expiry baseline is ruled a genuine external prerequisite and remains a blocker unless restored or explicitly rebaselined.",
+    "Wave D2 consolidated local fix pass now seals the ingress-OFF baseline externally, performs exact baseline/current ELF RAM symbol accounting with <=512 residual, binds 30 production indirect callbacks into stack graphs, uses three aligned 640-byte TA_USERBUF stacks, and publishes/hashes final gate output plus all consumed provenance sidecars. Updated measurement: baseline 33,580 -> production 41,472, application delta 7,892 = 7,880 named additions - 4 removed bytes + 16 linker residual; production .data 80 / .bss 41,136, post-reserve RAM 77,008. Application/resource/profile/build/adversarial mutation tests pass. The inherited six-file FAST/BALANCED baseline prerequisite remains absent; consolidated checker recheck is pending.",
+    "Wave D2 first recheck resolved fixed-state completeness/sealing, static TA_USERBUF task allocation, and final artifact provenance. One local major remains: stack analysis must fail closed over every reachable register-indirect branch and preserve actual nested callback caller frames; current reported mesh chain has only 96 bytes before the 3,072 limit. A final narrow stack-analysis fix pass is active.",
+    "Wave D2 final local pass implemented callsite-complete fail-closed register-indirect analysis and updated hashed v3 edge contracts. It detects 68 reachable mesh indirect callsites across 36 functions. The corrected maximum mesh chain is 3,788 bytes, violating the 3,072-byte limit and leaving 308 bytes versus required 1,024 headroom; auxiliary logger/UART/UI/display paths remain within allocation. Direct validation also needs a fresh externally sealed ingress-OFF application artifact because the prior seal is now stale. Final checker confirmation is pending before requesting a project-level decision.",
+    "Final D2 checker confirms application-enabled v3 indirect-call closure is correct: 68 reachable sites use 37 source-derived plus 31 explicit mappings with zero missing/duplicate/stale/unused mappings. Exact 3,788-byte chain is inherited and contains no mind_application function; largest non-frozen frame is routed_cycle_run_once at 896 bytes. Safe acceptance requires reducing at least 716 bytes, preferably in non-frozen routed_cycle orchestration, and upgrading ingress-OFF FULL acceptance to v3. Increasing allocation alone does not satisfy the unchanged 3,072-byte absolute limit. User decision is required before this broader refactor; immutable baseline artifacts remain separately required.",
+    "User decision after D2 blockers: do not refactor the inherited 3,788-byte chain when RAM is sufficient. Revise the mesh stack contract/allocation from measured evidence while retaining >=1,024 headroom and >=8 KiB post-reserve RAM. User also waived recovery of the lost historical FAST/BALANCED baseline ('screw it'); replace that D2 dependency with an explicit fresh provenance-bound FULL+repair ingress-OFF comparison for the application wave, not an unmarked silent bypass. Proposed values for review: 4,096-byte measured-chain ceiling, 4,864-byte mesh allocation, 13,360-byte runtime reserve; measured 3,788-byte chain then has 1,076 headroom and approximately 76,240 post-reserve RAM. Frozen TAVRN/radio/scheduler files remain unchanged.",
+    "User-approved D2 budget amendment implemented after focused plan-checker READY. Mesh measured-chain ceiling/allocation/runtime reserve are 4096/4864/13360; complete OFF/ON v3 analysis measures 3,788 bytes and 1,076 headroom. Explicit paired D2_APPLICATION_INCREMENTAL acceptance passes without historical baseline files: OFF post-reserve RAM 84,132; ON 76,240; ON application fixed-state 7,892 measured/declared with 7,880 sizeof aggregate and 16-byte residual. Paired report `/tmp/opencode/d2-profile-final3-application-incremental.report` SHA-256 `61b233f2b5619616e5e4fceb4f7dcdf45428b9fc0babdf9c15d0c794b9693ecc` records the user waiver instead of a historical claim. Final D2 checker review is pending.",
+    "Amended D2 checker reproduced all numeric/current gates but found two pair-level provenance holes. Superseded missing-history, old 3,072-byte budget, and ingress-OFF-v2 findings are now resolved by the explicit user waiver/amendment. One narrow provenance fix pass is active: pair validation must re-verify core ELF/map/disassembly/compile/.su artifacts and compare complete selected sources/tool hashes including generated sources.",
+    "Final D2 pair-provenance fix now resolves and verifies ELF/map/disassembly/Ninja+compile commands/config/resource/gate/preprocessed/contracts/complete .su/checker/sizeof evidence, rejects path/duplicate/missing/tampered sidecars, compares complete source inventories including generated names/content, and binds build-script/checker plus deterministic dirty-worktree content digests. Focused attacks that previously accepted deleted ELF and generated/hidden.c now fail. Fresh paired acceptance PASS report: `/tmp/opencode/d2-wave-d2-paired-final.env`, SHA-256 `8dd890f6184413ea53f1a742e1076f3d0c771a1ec17a8eab9a2fd7abc0b1f3c2`; artifacts `/tmp/tron-d2-application-incremental.dCiJYI`. Application, D2 profile/resource, Phase 5 host, frozen hash, syntax, JSON, and diff checks pass. Checker recheck pending.",
+    "D2 checker confirms deleted/tampered files, hidden generated source, tool/worktree, seal, path, and duplicate-sidecar attacks now fail. Two deeper fixes remain: paired acceptance must semantically recompute stack/resource results rather than trust self-consistent rewritten sidecars, and worktree digest root discovery must support the standalone microbit Git fixture.",
+    "Final semantic-recomputation pass treats gate/resource records as outputs, reconstructs stack/RAM/heap/binding/application evidence from raw ELF/map/disassembly/.su/preprocessed/config/contracts, and rejects schema-only contracts plus coordinated 1/4863 metric rewrites. Git top-level is now discovered and validated for monorepo and standalone microbit publisher layouts. Fresh pair `/tmp/opencode/d2-semantic-rerun.env` SHA-256 `a17463a6d5fc30201d6bd847624c4db3031975d39705778c1971439b3f80204c`, artifacts `/tmp/tron-d2-application-incremental.PfbMtx`; complete profile/application/Phase5/frozen/syntax/JSON/diff checks pass. Final checker recheck pending.",
+    "Semantic contract/metric recomputation and standalone Git-root discovery are checker-confirmed resolved. One final D2 major remains: canonical mesh/logger/UART/UI/display STACK_CHAIN output lines must be reconciled exactly to recomputed StackReport chains, not only numeric totals/headroom.",
+    "Canonical stack-chain reconciliation implemented with one shared strict JSON serializer/parser. Pair validation now requires exactly one mesh and each auxiliary chain line equal to recomputed StackReport chains; empty/missing/duplicate/auxiliary mutation attacks fail after refreshed manifest hashes. Fresh pair `/tmp/opencode/d2-canonical-chains.env` SHA-256 `3749dd484b5bbf1fdec254a3079396ace267bf53954a7fd22b8b2f81dc4a86cc`, artifacts `/tmp/tron-d2-application-incremental.n0Act2`; focused checks pass. Final checker approval pending.",
+    "Wave D2 approved by consolidated checker ses_ffc9f3d5fffevY5qbElFzUeKN3. Final canonical-chain report `/tmp/opencode/d2-canonical-chains.env` SHA-256 `3749dd484b5bbf1fdec254a3079396ace267bf53954a7fd22b8b2f81dc4a86cc`; mesh 3,788/1,076, OFF/ON post-reserve RAM 84,132/76,240, application delta 7,892. All D2 major findings are resolved under the explicit 4,096/4,864/13,360 budget amendment and `USER_WAIVED_NOT_REPRODUCED` historical marker. Slice D complete; Wave E1 is active.",
+    "Wave E1 writers settled in disjoint lanes. E1a created stdlib POSIX repeated-serial bridge/API/static server under host/ with 14 passing tests. E1b created pinned React 19.2.8 + Vite 8.2.1 dashboard under dashboard/ with strict API decoders, dynamic root controls, global wearable+packet dedupe, bounded evidence/conflict handling, 13 passing tests, frozen Bun install and production build. Context7 was quota-blocked; current official React/Vite/Vitest/Testing Library docs were verified through Exa/Hound. Combined checker and rendered pass are pending.",
+    "Wave E1 combined checker returned CHANGES REQUIRED after real-host/browser smoke. Baseline lane tests/builds pass, but one contract blocker and seven host/dashboard correctness majors remain. Fixes will be serialized host-first then dashboard because exact real-host empty/populated JSON and duplicate-path transport ownership affect frontend integration tests.",
+    "Wave E1 consolidated fix completed serially. Host now groups duplicate physical aliases behind one transport, resets framing on reconnect, and bounds command/HTTP/shutdown waits; 21 host tests pass. Dashboard now decodes real host empty/populated JSON, enforces exact bounds, handles cursor epochs/page draining, replay-safe retained logical history, health-vs-stream root authority, and root POST timeout recovery; 21 dashboard tests / 99 expectations plus frozen install/build pass. Combined checker recheck and rendered inspection are pending.",
+    "Wave E1 recheck confirms all first-pass contract, decoder, ownership, framing, bounded-I/O, cursor-reset, ordinary authority, and timeout findings resolved. Four majors remain: reopen through stable by-id alias after symlink retarget; bound active/replay dashboard state with minimal tombstones and saturated overflow truth; epoch-tag health authority; and reject mismatched 202 root echoes.",
+    "Final E1 fix pass: host reconnect now groups by startup identity but retries original stable aliases each time; PTY symlink-retarget test passes and host suite is 22 tests. Dashboard caps active feed/full objects/replay ledger at 256, retains minimal session tombstones, uses saturated evidence-overflow truth, epoch-tags health authority, and validates accepted root echoes; 23 tests / 117 expectations, frozen install and build pass. Final combined checker approval pending.",
+    "E1 checker confirms stable alias retarget, bounded dashboard state, ordinary epoch authority, and accepted-root echo findings resolved. One final race remains: concurrent health polling must carry the epoch captured at request start rather than the mutable epoch at response time.",
+    "Final E1 race fix captures immutable poll-start epoch for health dispatch. Deferred old-health/reset/new-root/fresh-health test passes; dashboard suite now 24 tests / 121 assertions, frozen install and build green. Final checker approval pending.",
+    "Wave E1 approved by consolidated checker ses_ffb25dedbffenw0Xz9wIOV6dMx after real-host/browser integration fixes. Final host suite 22 tests; dashboard 25 tests with frozen Bun install and Vite build. Rendered representative two-device/multi-root evidence at `/tmp/opencode/e1-approved-wide-final.png` and `/tmp/opencode/e1-approved-narrow-final.png`; checker reports no frontend-design violations. Temporary PTY bridge/render screen was stopped. Slice E complete; Wave F1 software/source/resource gates are active.",
+    "Wave F1 validation lanes settled with no repository edits. F1a passed wearable/application/protocol/profile/D2-paired/node1+node6/resource/frozen-source/submodule/syntax gates; final production is text 293,988 / data 80 / bss 41,392, resource mesh 3,788 with 1,076 headroom, post-reserve RAM 76,240, application delta 7,892. F1b passed 22 host tests, 25 dashboard tests/build/frozen install, real two-PTY API/root-byte and wide/narrow populated/empty/error/gap/conflict renders. Historical expiry-green remains explicitly user-waived. Scheduler-green retains its inherited expected-order mismatch; integrated main is not whole-file frozen, so combined checker must verify the startup statements themselves remain unchanged from 49e2ee8 before classifying it deferred. Combined F1 checker pending.",
+    "Wave F1 combined checker returned CHANGES REQUIRED for three narrow issues: root ACK/state resolver starvation, Python 3.14-only ALLOW_MISSING use, and unignored `.opencode/recovery/` artifacts. Scheduler expectation and historical baseline remain separately deferred/user-waived; no other F1 major was reported.",
+    "F1 fix pass completed: root coordinator bounded-scans ACK/state obligations after resolver failure with two-owner and full-16 unresolved tests; application/profile/production/frozen gates pass. Host uses portable ALLOW_MISSING fallback and 23 tests pass. `.gitignore` now excludes `.opencode/recovery/` without deleting recovery files. F1 checker recheck pending.",
+    "Wave F1 approved by combined checker ses_ffadaceedffe4qynptKCpQMkC1. Fresh post-fairness D2 report `/tmp/opencode/f1-checker-d2-recheck.env`: production 294,052 text / 80 data / 41,392 BSS; mesh 3,788/1,076; post-reserve 76,240; application delta 7,892/no heap. All F1 major findings resolved. Scheduler-green exact cyclic->mesh->logger startup block is unchanged from 49e2ee8 and remains deferred inherited expectation mismatch; historical expiry evidence remains explicitly user-waived. Wave F2 hardware proof is active.",
+    "Hardware flashing is now performed with /home/lucas/.local/share/uv/tools/pyocd/bin/pyocd 0.45.1 using explicit probe UIDs and sector erase; all six inventory probes enumerate as nrf52833.",
+    "Partial hardware success: zero-root rootless consumption, one-root routing, two runtime roots, and the same heartbeat packet IDs 002704/002706/002707 captured on both roots with observers 1842de524add, 1e33a72f8ed8, and 56a2440e9ed6.",
+    "Live dashboard screenshot /tmp/opencode/f2-captures/live-two-root-dashboard.png globally deduplicates packet 002707 and displays evidence from both roots plus the TAVRN observer. SHA-256 afa76532bff52a4b5e274486c36a1108614756b383dc36ff1f82dcbb3997716c.",
+    "User visually confirmed the backbone LEDs were flashing; audible cue was not explicitly confirmed.",
+    "Final remediation uses request-driven quiet logger dispatch and suppresses only valid heartbeat MIND event formatting in unhooked FULL ingress builds; all queues still drain and command/root/non-heartbeat/fault evidence remains visible.",
+    "Fresh acceptance passed: application, scheduler-green, telemetry-green, full build/profile with D2 report `/tmp/opencode/d2-heartbeat-filter.report`, wearable tests/injector wiring, 23 host tests, 25 dashboard tests, and dashboard production build. D2 artifacts are `/tmp/tron-d2-application-incremental.U7iQ10`.",
+    "Final three-node capture `/tmp/opencode/f3-heartbeat-filter-captures/root-off-sequence.log` matched 19 writes to 19 command and 19 root records across zero/one/two/one/zero roots, ending acked=2 on every node with zero heartbeat records, cycle faults, or router faults.",
+    "Final injector/API evidence `/tmp/opencode/f3-heartbeat-filter-captures/api-events.json` contains one deterministic fall-and-shout incident on both roots with four observer records (two local, two TAVRN). Dashboard evidence is `/tmp/opencode/f3-heartbeat-filter-captures/dashboard-two-root-incident.png`; bridge health has zero parse errors.",
+    "Nodes 1-3 run fresh artifacts from `/tmp/opencode/f3-heartbeat-filter-builds`; the wearable runs the fresh dedicated injector build. Nodes 4-5 and all frozen TAVRN/protocol/kernel sources remain untouched. The local bridge/dashboard remains available at `http://127.0.0.1:8787` under PID 1567703.",
+    "Post-closure five-node production stress exposed ordinary 3 ms LINK_SERVICE crossings of the 2 ms diagnostic target. User approved making timing crossings observe-only in production because fail-stop harmed the demonstration; genuine router, scheduler, radio, invalid-state, and structural timestamp faults remain terminal.",
+    "The observe-only policy is compile-time (`ROUTED_CYCLE_TIMING_OVERRUN_TERMINAL=0`) for tavrn_routed_node, preserves the routed_cycle state ABI and D2 fixed-state accounting, and retains strict terminal timing as the generic host-test default.",
+    "Five-node/one-root/one-production-wearable stress passed for 1800 seconds. Every node reported roots=1, announced=4, acked=4, rejected=0, pending=0; six sparse status commands completed; zero cycle/router faults or heartbeat log leaks occurred; the wearable produced 1,443 accelerometer samples with zero errors. Evidence: `/tmp/opencode/f5-observe-only-stress/thirty-minute.log`; builds: `/tmp/opencode/f5-observe-only-builds`; D2: `/tmp/opencode/d2-observe-only-timing.report`.",
+    "The indefinite five-node run exposed two genuine `TAVRN_ROUTER_FAULT_DATA_TERMINAL_HOOK_INVALID` latches: node 5 before harness attachment and node 3 after 8,637 harness seconds. This is link retry/custody integration with FULL local repair, not Layer-7 or UART corruption.",
+    "Known data-terminal hook `INVALID` results before ownership transfer now recover by declining policy and following normal router cleanup for immediate, retained, and custody-transferred paths. Ownership-split, impossible disposition, and corrupted retained-state cases remain terminal.",
+    "Remaining reason-11 terminal latches carry compact site subreasons in existing router padding and print as `routed router_fault reason=<n> subreason=<n>`. Fixed state remains unchanged. Phase 3/4/5/6, application, full profile, and paired D2 pass; D2 report `/tmp/opencode/d2-terminal-recovery.report`, artifacts `/tmp/tron-d2-application-incremental.jM8aPg`, replacement builds `/tmp/opencode/f6-terminal-recovery-builds`.",
+    "The existing `tron-indefinite-stress` tmux session intentionally continues on the prior faulted firmware to preserve long-run evidence; replacement firmware has not been flashed.",
+    "Superseding prior session note: the old faulted indefinite run stopped cleanly after 18,101.962 seconds and remains archived under `/tmp/opencode/f5-observe-only-stress/indefinite`. All five nodes were flashed with F6 terminal-recovery firmware, node 1 reached roots=1/acked=4, and a clean `tron-indefinite-stress` session started at 2026-08-16T05:01:41.799Z with evidence under `/tmp/opencode/f5-observe-only-stress/indefinite-f6`. Its initial five-node sweep has zero failures and all nodes report announced=4/acked=4.",
+    "After workstation reboot, all historical F2/F3/F5/F6 `/tmp` artifacts and live sessions were absent. Source and committed observer benchmark evidence survived, but wearable root/fanout/dashboard hardware acceptance must be rerun on current code and persisted before this workplan returns to completed.",
+    "User scope decision: the KISS firmware integration is historical completed work. No further firmware work, D2 reopening, firmware build/profile work, flashing, reset, reboot, or hardware evidence is part of finishing the dashboard PoC. The already-completed 5x5 G gateway glyph remains in scope/history."
+  ],
+  "status": "completed",
+  "createdAt": "2026-08-13T20:28:20.424Z",
+  "updatedAt": "2026-08-25T15:20:22.884Z"
+}

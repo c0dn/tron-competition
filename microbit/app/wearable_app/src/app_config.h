@@ -12,6 +12,12 @@
 /* Per-unit id, baked in at flash time; used in the fixed AdvA (Plan 02 2.3). */
 #define DEVICE_ID               0x01
 
+/* TM/01 direct wearable ingress identity.  The packet is advertising-only;
+ * backbone application ingress consumes it and does not legacy-relay it. */
+#define MIND_MESH_NET_ID        0x01u
+#define MIND_MESH_SRC_BASE      0x0100u
+#define MIND_MESH_SRC           (MIND_MESH_SRC_BASE + DEVICE_ID)
+
 /* Accelerometer: +/-8g so impacts don't clip. IMU_COUNTS_PER_G is the
  * rest-SVM calibration knob (imu.h: ~4096 counts/g at +/-8g). */
 #define IMU_FULLSCALE_G         8
@@ -82,9 +88,11 @@
  * and must still be "live" when the fall resolves. */
 #define FUSION_COINCIDENCE_MS   3000
 
-/* --- Advertising cadence (Plan 01 5) ------------------------------------- */
-#define HEARTBEAT_INTERVAL_MS   1500    /* slow alive beacon                  */
-#define BURST_INTERVAL_MS       120     /* fast re-broadcast on an event      */
-#define BURST_COUNT             50      /* ~6 s of burst per event            */
+/* --- Advertising cadence -------------------------------------------------- */
+#define HEARTBEAT_INTERVAL_MS   500     /* heartbeat remains live during spray */
+#define EVENT_TX_BUDGET_MS      1000    /* event spray wall-clock budget       */
+#define EVENT_TX_INTERVAL_MS    100     /* same-event copy spacing              */
+#define EVENT_TX_MIN_COUNT      8       /* copies before normal retirement      */
+#define TX_TICK_MS              30      /* fixed poll cadence                   */
 
 #endif /* APP_CONFIG_H */

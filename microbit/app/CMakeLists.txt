@@ -1,7 +1,18 @@
+include(${CMAKE_CURRENT_SOURCE_DIR}/ble_mesh_node/cmake/TronBleProfiles.cmake)
+
 file(GLOB app_children RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "*")
 list(SORT app_children)
 
 foreach(app_child IN LISTS app_children)
+  if(app_child STREQUAL "ble_mesh_node" AND NOT TRON_PHASE1_TARGET STREQUAL "LEGACY")
+    continue()
+  endif()
+  if(app_child STREQUAL "ble_link_v2_testbed" AND NOT TRON_PHASE1_TARGET STREQUAL "LINK")
+    continue()
+  endif()
+  if(app_child STREQUAL "tavrn_routed_node" AND NOT TRON_PHASE1_TARGET STREQUAL "ROUTED")
+    continue()
+  endif()
   if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${app_child}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${app_child}/CMakeLists.txt")
     add_subdirectory("${app_child}")
   endif()
