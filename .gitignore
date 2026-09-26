@@ -6,18 +6,6 @@ microbit/*.zip
 __pycache__/
 *.py[cod]
 
-# Local opencode recovery artifacts
+# Local opencode artifacts
 .opencode/recovery/
-
-# ESP32 sidecar build output + generated config
-esp-sidecar/build/
-esp-sidecar/.pio/
-esp-sidecar/sdkconfig
-esp-sidecar/sdkconfig.old
-
-# Standalone tool projects under esp-sidecar/tools/ are separate IDF builds,
-# each with its own build output and generated config.
-esp-sidecar/tools/*/build/
-esp-sidecar/tools/*/sdkconfig
-esp-sidecar/tools/*/sdkconfig.old
-esp-sidecar/tools/*/managed_components/
+.opencode/workplan/
