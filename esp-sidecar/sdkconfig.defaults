@@ -1,6 +1,0 @@
-# ESP32-C3 SuperMini sidecar defaults.
-CONFIG_IDF_TARGET="esp32c3"
-
-# SuperMini exposes the console over the native USB Serial/JTAG port, not UART0.
-# Without this, `idf.py monitor` over /dev/ttyACM* shows no output.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
